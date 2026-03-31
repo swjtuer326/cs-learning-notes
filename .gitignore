@@ -1,0 +1,29 @@
+# Zephyr 工作区
+zephyr-project/
+zephyr-src/
+zephyr-sdk/
+
+# Zephyr 构建目录
+build/
+build-*/
+
+# 编译输出
+*.elf
+*.bin
+*.hex
+*.map
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# 其他
+.DS_Store
