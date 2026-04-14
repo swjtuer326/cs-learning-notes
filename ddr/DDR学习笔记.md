@@ -2,7 +2,7 @@
 
 > 本文档面向驱动/嵌入式工程师，从初学者视角系统讲解 DDR 内存技术。
 
----
+***
 
 ## 一、DDR 概述
 
@@ -12,12 +12,12 @@
 
 #### 核心特点
 
-| 特性 | 说明 |
-|-----|------|
+| 特性         | 说明               |
+| ---------- | ---------------- |
 | **双倍数据速率** | 在时钟的上升沿和下降沿都传输数据 |
-| **同步传输** | 与系统时钟同步，提高传输效率 |
-| **动态存储** | 需要定期刷新以保持数据 |
-| **随机访问** | 可任意地址读写 |
+| **同步传输**   | 与系统时钟同步，提高传输效率   |
+| **动态存储**   | 需要定期刷新以保持数据      |
+| **随机访问**   | 可任意地址读写          |
 
 #### 与 SDR 的对比
 
@@ -56,13 +56,14 @@ DDR (Double Data Rate):
 ```
 
 **关键场景**：
+
 - **系统启动**: Bootloader 需要初始化 DDR
 - **驱动开发**: 内存控制器驱动、PMU 电源管理
 - **性能优化**: 内存带宽优化、延迟优化
 - **故障排查**: 内存不稳定、启动失败等问题
 - **硬件调试**: 示波器测量 DDR 信号
 
----
+***
 
 ## 二、DDR 发展历程
 
@@ -77,20 +78,22 @@ DDR (Double Data Rate):
 2014 ──── DDR4   ──── 1.2V  ──── 3200 MT/s
 2020 ──── DDR5   ──── 1.1V  ──── 6400 MT/s
 
-MT/s = Mega Transfers per second (百万次传输/秒)
+MT/s = MegaTransfers per second (百万次传输/秒)
 ```
 
 ### 2.2 各代 DDR 特性对比
 
-| 特性 | DDR | DDR2 | DDR3 | DDR4 | DDR5 |
-|-----|-----|------|------|------|------|
-| **电压** | 2.5V | 1.8V | 1.5V/1.35V | 1.2V | 1.1V |
-| **预取** | 2-bit | 4-bit | 8-bit | 8-bit | 16-bit |
-| **突发长度** | 2/4/8 | 4/8 | 8 | 8 | 16 |
-| **Bank 数量** | 4 | 4/8 | 8 | 16 | 32 |
-| **最大容量** | 1GB | 4GB | 16GB | 64GB | 256GB |
-| **频率范围** | 100-200MHz | 200-400MHz | 400-1066MHz | 800-1600MHz | 1600-3200MHz |
-| **传输速率** | 200-400 MT/s | 400-800 MT/s | 800-2133 MT/s | 1600-3200 MT/s | 3200-6400 MT/s |
+| 特性          | DDR          | DDR2         | DDR3          | DDR4           | DDR5           |
+| ----------- | ------------ | ------------ | ------------- | -------------- | -------------- |
+| **电压**      | 2.5V         | 1.8V         | 1.5V/1.35V    | 1.2V           | 1.1V           |
+| **预取**      | 2-bit        | 4-bit        | 8-bit         | 8-bit          | 16-bit         |
+| **突发长度**    | 2/4/8        | 4/8          | 8             | 8              | 16             |
+| **Bank 数量** | 4            | 4/8          | 8             | 16             | 32             |
+| **单颗最大容量**  | 1Gb          | 4Gb          | 16Gb          | 64Gb           | 256Gb          |
+| **频率范围**    | 100-200MHz   | 200-400MHz   | 400-1066MHz   | 800-1600MHz    | 1600-3200MHz   |
+| **传输速率**    | 200-400 MT/s | 400-800 MT/s | 800-2133 MT/s | 1600-3200 MT/s | 3200-6400 MT/s |
+
+> **注意**: 单颗容量单位为 **Gb (Gigabit, 吉比特)**，不是 GB。1 GB = 8 Gb
 
 ### 2.3 LPDDR 系列（低功耗版）
 
@@ -105,14 +108,14 @@ LPDDR 特点:
 └── 更小的封装尺寸
 ```
 
-| 类型 | 电压 | 典型应用 |
-|-----|------|---------|
-| LPDDR3 | 1.2V | 智能手机、平板 |
-| LPDDR4 | 1.1V | 高端手机 |
-| LPDDR4X | 0.6V (I/O) | 旗舰手机 |
-| LPDDR5 | 1.05V | 5G 手机、AI 设备 |
+| 类型      | 电压         | 典型应用        |
+| ------- | ---------- | ----------- |
+| LPDDR3  | 1.2V       | 智能手机、平板     |
+| LPDDR4  | 1.1V       | 高端手机        |
+| LPDDR4X | 0.6V (I/O) | 旗舰手机        |
+| LPDDR5  | 1.05V      | 5G 手机、AI 设备 |
 
----
+***
 
 ## 三、DDR 系统架构
 
@@ -156,36 +159,390 @@ LPDDR 特点:
 
 ### 3.2 DDR 总线信号
 
-#### 主要信号线
+#### 主要信号线详解
+
+##### 1. 时钟信号 (Clock Signals)
 
 ```
-DDR 总线信号分类:
-
-┌─────────────────────────────────────────────────────────┐
-│  地址/命令总线                                           │
-├─────────────────────────────────────────────────────────┤
-│  A[0:17]     - 地址线 (行/列地址复用)                    │
-│  BA[0:2]     - Bank 地址选择                            │
-│  RAS#        - 行地址选通 (Row Address Strobe)          │
-│  CAS#        - 列地址选通 (Column Address Strobe)       │
-│  WE#         - 写使能 (Write Enable)                    │
-│  CS#         - 片选 (Chip Select)                       │
-│  CKE         - 时钟使能 (Clock Enable)                  │
-└─────────────────────────────────────────────────────────┘
-
-┌─────────────────────────────────────────────────────────┐
-│  数据总线                                                │
-├─────────────────────────────────────────────────────────┤
-│  DQ[0:63]    - 数据线 (64位 = 8字节)                    │
-│  DQS[0:7]    - 数据选通 (每8位数据1个DQS)               │
-│  DM[0:7]     - 数据掩码 (写操作时屏蔽某些字节)          │
-└─────────────────────────────────────────────────────────┘
-
 ┌─────────────────────────────────────────────────────────┐
 │  时钟信号                                                │
 ├─────────────────────────────────────────────────────────┤
-│  CK/CK#     - 差分时钟对                                │
+│  CK_t/CK_c   - 差分时钟对 (Differential Clock Pair)     │
 └─────────────────────────────────────────────────────────┘
+
+作用:
+├── DDR 的所有操作都与时钟同步
+├── 数据在时钟的上升沿和下降沿都传输 (DDR = Double Data Rate)
+├── 命令和地址在时钟上升沿采样
+└── 提供数据传输的时序基准
+
+特性:
+├── 差分信号: CK_t (正) 和 CK_c (负) 相位相反
+├── 所有颗粒共享同一对时钟
+├── 需要严格的等长匹配 (±5mil)
+└── 频率决定 DDR 的数据速率
+
+时序关系:
+        CK_t  ─┐  ┌─┐  ┌─┐  ┌─┐  ┌─┐  ┌─┐  ┌─┐  ┌─
+               └─┘  └─┘  └─┘  └─┘  └─┘  └─┘  └─┘
+        CK_c  ───┐  ┌─┐  ┌─┐  ┌─┐  ┌─┐  ┌─┐  ┌─┐  ┌─
+                 └─┘  └─┘  └─┘  └─┘  └─┘  └─┘  └─┘
+        
+        数据采样点: ↑ 和 ↓ (上升沿和下降沿)
+```
+
+##### 2. 地址/命令总线 (Address/Command Bus)
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  地址/命令总线                                           │
+├─────────────────────────────────────────────────────────┤
+│  A[0:17]     - 地址线 (Address)                          │
+│  BA[0:2]     - Bank 地址 (Bank Address)                  │
+│  BG[0:1]     - Bank Group 地址 (DDR4+)                   │
+│  RAS#        - 行地址选通 (Row Address Strobe)           │
+│  CAS#        - 列地址选通 (Column Address Strobe)        │
+│  WE#         - 写使能 (Write Enable)                     │
+│  CS#         - 片选 (Chip Select)                        │
+│  CKE         - 时钟使能 (Clock Enable)                   │
+│  ODT         - 片上端接使能 (On-Die Termination)         │
+└─────────────────────────────────────────────────────────┘
+```
+
+**A\[0:17] - 地址线**
+
+```C
+作用: 传输行地址和列地址 (分时复用)
+
+行地址激活 (ACTIVATE命令时):
+├── A[0:17] 传输行地址 (Row Address)
+├── 配合 BA/BG 选择 Bank
+└── 示例: 16位行地址可寻址 65536 行
+
+列地址访问 (READ/WRITE命令时):
+├── A[0:9]  传输列地址 (Column Address)
+├── A[10]   自动预充电标志 (Auto Precharge)
+└── 示例: 10位列地址可寻址 1024 列
+
+注意: 行地址和列地址共用同一组地址线，通过 RAS#/CAS# 区分
+```
+
+**BA\[0:2] / BG\[0:1] - Bank 地址**
+
+```
+作用: 选择要访问的 Bank
+
+DDR3 (无 Bank Group):
+├── BA[0:2] 选择 8 个 Bank 之一
+└── 3位地址: 000~111
+
+DDR4 (有 Bank Group):
+├── BG[0:1] 选择 Bank Group (4个)
+├── BA[0:1] 选择 Bank Group 内的 Bank (4个)
+└── 总共: 4 × 4 = 16 个 Bank
+
+寻址示例 (DDR4):
+物理地址 → [Rank] → [Bank Group] → [Bank] → [Row] → [Column]
+           [1位]      [2位]          [2位]     [16位]    [10位]
+```
+
+**RAS# / CAS# / WE# - 命令信号**
+
+```
+这三个信号组合形成 DDR 命令:
+
+┌─────────┬─────────┬─────────┬─────────────────────────────┐
+│  RAS#   │  CAS#   │  WE#    │  命令                        │
+├─────────┼─────────┼─────────┼─────────────────────────────┤
+│    H    │    H    │    H    │  NOP (无操作)                │
+│    H    │    H    │    L    │  预留                        │
+│    H    │    L    │    H    │  READ (读)                   │
+│    H    │    L    │    L    │  WRITE (写)                  │
+│    L    │    H    │    H    │  ACTIVATE (激活行)           │
+│    L    │    H    │    L    │  PRECHARGE (预充电)          │
+│    L    │    L    │    H    │  REFRESH (刷新)              │
+│    L    │    L    │    L    │  MODE REGISTER SET (模式寄存器)│
+└─────────┴─────────┴─────────┴─────────────────────────────┘
+
+注: # 表示低电平有效 (Active Low)
+
+命令详解:
+├── ACTIVATE: 打开指定 Bank 的指定行
+│   └── 参数: Bank 地址 + 行地址
+│
+├── READ: 从已激活的行读取数据
+│   └── 参数: Bank 地址 + 列地址
+│
+├── WRITE: 向已激活的行写入数据
+│   └── 参数: Bank 地址 + 列地址
+│
+├── PRECHARGE: 关闭当前行，准备访问其他行
+│   └── 参数: Bank 地址 (或所有 Bank)
+│
+├── REFRESH: 刷新存储单元，保持数据
+│   └── 无需参数，刷新所有 Bank
+│
+└── MODE REGISTER SET: 配置 DDR 工作模式
+    └── 参数: 寄存器地址 + 配置值
+```
+
+**CS# - 片选信号 (Chip Select)**
+
+```
+作用: 选择要操作的 Rank
+
+单 Rank 系统:
+├── 只有 CS0# 信号
+└── 所有颗粒共享 CS0#
+
+双 Rank 系统:
+├── CS0# 控制 Rank 0 (正面颗粒)
+├── CS1# 控制 Rank 1 (背面颗粒)
+└── 两个 Rank 可以独立操作
+
+重要特性:
+├── 低电平有效 (Active Low)
+├── 同一时刻只能选中一个 Rank (通常)
+├── 用于 Rank 交错访问
+└── 未选中的 Rank 处于空闲状态
+
+Rank 选择时序:
+时钟周期:  1    2    3    4    5    6
+
+CS0#    ─┐      ┌──────┐      ┌────────
+         └──────┘      └──────┘
+         Rank 0 选中   Rank 0 释放
+
+CS1#    ──────────┐      ┌──────────────
+                  └──────┘
+                  Rank 1 选中
+```
+
+**CKE - 时钟使能 (Clock Enable)**
+
+```
+作用: 控制 DDR 时钟的使能和功耗状态
+
+工作状态:
+├── CKE = High: 正常工作模式
+│   ├── 时钟正常运行
+│   ├── 可以执行所有命令
+│   └── 正常功耗
+│
+└── CKE = Low: 低功耗模式
+    ├── 时钟暂停 (内部)
+    ├── 只支持有限命令 (如自刷新)
+    └── 降低功耗
+
+应用场景:
+├── 系统空闲时拉低 CKE 进入低功耗
+├── 休眠前设置自刷新模式
+├── 唤醒时拉高 CKE 恢复正常
+└── 与电源管理配合
+
+状态转换:
+正常 ──CKE=Low──► 低功耗 ──CKE=High──► 正常
+  │                   │
+  │                   ├── 自刷新模式
+  │                   └── 深度休眠
+  │
+  └── 激活状态
+      └── 可以读写
+```
+
+**ODT - 片上端接使能 (On-Die Termination)**
+
+```
+作用: 控制 DDR 内部端接电阻的开关
+
+为什么需要 ODT:
+├── 防止信号反射
+├── 改善信号完整性
+├── 减少信号振铃
+└── 提高信号质量
+
+工作原理:
+├── ODT = High: 使能端接电阻
+│   └── 在颗粒内部连接电阻到 VDDQ/2
+│
+└── ODT = Low: 禁用端接电阻
+    └── 高阻态，不影响总线
+
+应用场景:
+├── 写操作时: 目标颗粒使能 ODT
+├── 读操作时: 控制器使能 ODT (如有)
+├── 空闲时: 禁用 ODT 节省功耗
+└── 训练时: 根据信号质量调整
+
+ODT 阻抗值 (可配置):
+├── DDR4: 240Ω, 120Ω, 80Ω, 60Ω, 48Ω, 40Ω
+└── 通过模式寄存器 MR1 配置
+```
+
+##### 3. 数据总线 (Data Bus)
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  数据总线                                                │
+├─────────────────────────────────────────────────────────┤
+│  DQ[0:63]    - 数据线 (Data)                             │
+│  DQS[0:7]    - 数据选通 (Data Strobe)                    │
+│  DQS#[0:7]   - 数据选通反相 (Differential)               │
+│  DM[0:7]     - 数据掩码 (Data Mask)                      │
+│  DBI[0:7]    - 数据总线翻转 (Data Bus Inversion, DDR4+)  │
+└─────────────────────────────────────────────────────────┘
+```
+
+**DQ\[0:63] - 数据线**
+
+```
+作用: 传输实际的数据
+
+位宽配置:
+├── x4 颗粒: DQ[0:3]   (4位)
+├── x8 颗粒: DQ[0:7]   (8位)
+├── x16 颗粒: DQ[0:15] (16位)
+└── 64位系统: DQ[0:63] (需要 8颗 x8 或 4颗 x16)
+
+数据传输:
+├── 双边沿传输 (DDR)
+├── 突发传输 (Burst): 一次命令传输多个数据
+└── 示例: BL8 突发传输 8 个数据 = 64字节 (64位 × 8)
+
+分组 (Byte Lane):
+├── DQ[0:7]   - Byte 0 (对应 DQS0)
+├── DQ[8:15]  - Byte 1 (对应 DQS1)
+├── ...
+└── DQ[56:63] - Byte 7 (对应 DQS7)
+
+每个 Byte Lane 独立训练和对齐
+```
+
+**DQS/DQS# - 数据选通**
+
+```
+作用: 作为数据采样的时钟参考
+
+为什么需要 DQS:
+├── DQ 和 CK 之间存在传输延迟
+├── 直接用 CK 采样 DQ 会有误差
+├── DQS 与 DQ 一起传输，延迟相同
+└── 用 DQS 采样 DQ 更准确
+
+特性:
+├── 差分信号: DQS (正) 和 DQS# (负)
+├── 边沿对齐: DQS 边沿与 DQ 中心对齐
+├── 每 8位 DQ 对应 1对 DQS
+└── 读时由 DDR 产生，写时由控制器产生
+
+时序关系 (读操作):
+
+CK      ─┐  ┌─┐  ┌─┐  ┌─┐  ┌─┐  ┌─┐  ┌─┐  ┌─
+         └─┘  └─┘  └─┘  └─┘  └─┘  └─┘  └─┘
+
+DQS          ──────┐  ┌─┐  ┌─┐  ┌─┐  ┌────
+                   └─┘  └─┘  └─┘  └─┘
+
+DQ             ─────< D0 >< D1 >< D2 >< D3 >
+                      ↑     ↑     ↑     ↑
+                   采样点: DQS 边沿对齐 DQ 中心
+
+训练目标:
+├── 调整 DQS 延迟，使采样点在 DQ 眼图中心
+├── 保证建立时间 (Setup Time) 和保持时间 (Hold Time)
+└── 最大化时序裕量
+```
+
+**DM - 数据掩码 (Data Mask)**
+
+```
+作用: 在写操作时屏蔽某些字节
+
+工作原理:
+├── DM = High: 屏蔽对应字节 (不写入)
+├── DM = Low:  正常写入对应字节
+└── 每 8位 DQ 对应 1位 DM
+
+应用场景:
+├── 部分写入: 只更新数据的某些字节
+├── 字节对齐写入: 非对齐地址的写入
+└── 避免读-修改-写操作
+
+示例 (Byte Lane 0):
+写入 0x12345678 到地址 0x100，但只更新低 2字节:
+├── DQ[0:7]  = 0x78 (写入)
+├── DQ[8:15] = 0x56 (写入)
+├── DQ[16:23] = 0x34 (屏蔽，DM1=1)
+├── DQ[24:31] = 0x12 (屏蔽，DM2=1)
+└── 结果: 地址 0x100 只更新为 0xXXXX5678
+
+注意: 读操作时 DM 信号通常不使用
+```
+
+**DBI - 数据总线翻转 (DDR4+)**
+
+```
+作用: 减少同时翻转的位数，降低功耗和噪声
+
+工作原理:
+├── 统计要发送的数据中 0 和 1 的数量
+├── 如果 0 多于 1，翻转数据 (0变1，1变0)
+├── 设置 DBI 位指示是否翻转
+└── 接收端根据 DBI 恢复原始数据
+
+优势:
+├── 减少 SSO (Simultaneous Switching Output) 噪声
+├── 降低功耗 (翻转次数减少)
+├── 改善信号完整性
+└── 提高可靠性
+
+示例:
+原始数据: 0x00 (00000000) - 8个0
+翻转后:   0xFF (11111111) - 8个1
+DBI = 1 (表示已翻转)
+
+接收端: 0xFF XOR DBI = 0x00 (恢复原始数据)
+```
+
+##### 4. 信号线总结表
+
+```
+┌─────────────┬─────────────┬────────────────────────────────────────┐
+│ 信号名      │ 方向        │ 作用说明                               │
+├─────────────┼─────────────┼────────────────────────────────────────┤
+│ CK_t/CK_c   │ 控制器→DDR │ 差分时钟，所有操作的时序基准           │
+├─────────────┼─────────────┼────────────────────────────────────────┤
+│ A[0:17]     │ 控制器→DDR │ 地址线，行/列地址复用                  │
+├─────────────┼─────────────┼────────────────────────────────────────┤
+│ BA[0:2]     │ 控制器→DDR │ Bank 地址选择                          │
+├─────────────┼─────────────┼────────────────────────────────────────┤
+│ BG[0:1]     │ 控制器→DDR │ Bank Group 地址 (DDR4+)                │
+├─────────────┼─────────────┼────────────────────────────────────────┤
+│ RAS#/CAS#/  │ 控制器→DDR │ 命令信号，组合形成各种操作命令         │
+│ WE#         │             │                                        │
+├─────────────┼─────────────┼────────────────────────────────────────┤
+│ CS#         │ 控制器→DDR │ 片选，选择要操作的 Rank                │
+├─────────────┼─────────────┼────────────────────────────────────────┤
+│ CKE         │ 控制器→DDR │ 时钟使能，控制功耗状态                 │
+├─────────────┼─────────────┼────────────────────────────────────────┤
+│ ODT         │ 控制器→DDR │ 片上端接使能，改善信号质量             │
+├─────────────┼─────────────┼────────────────────────────────────────┤
+│ DQ[0:63]    │ 双向        │ 数据线，传输实际数据                   │
+├─────────────┼─────────────┼────────────────────────────────────────┤
+│ DQS/DQS#    │ 双向        │ 数据选通，数据采样时钟                 │
+├─────────────┼─────────────┼────────────────────────────────────────┤
+│ DM          │ 控制器→DDR │ 数据掩码，写操作时屏蔽字节             │
+├─────────────┼─────────────┼────────────────────────────────────────┤
+│ DBI         │ 双向        │ 数据总线翻转，降低功耗 (DDR4+)         │
+├─────────────┼─────────────┼────────────────────────────────────────┤
+│ RESET#      │ 控制器→DDR │ 复位信号，初始化 DDR                   │
+├─────────────┼─────────────┼────────────────────────────────────────┤
+│ ALERT#      │ DDR→控制器  │ 告警信号，报告错误 (DDR4+)             │
+├─────────────┼─────────────┼────────────────────────────────────────┤
+│ TEN         │ 控制器→DDR │ 测试使能，用于测试模式                 │
+└─────────────┴─────────────┴────────────────────────────────────────┘
+
+注: # 表示低电平有效
 ```
 
 #### 信号时序关系
@@ -215,17 +572,23 @@ DDR 存储阵列组织:
 
 总容量 = Bank数 × 行数 × 列数 × 位宽
 
-示例 (DDR4 8GB):
+示例 (DDR4 8GB 系统):
 ├── Bank Group: 4 个
 ├── Bank: 每个 Bank Group 4 个 = 共 16 个 Bank
 ├── Row: 每个 Bank 65536 行 (16位行地址)
 ├── Column: 每行 1024 列 (10位列地址)
 └── 位宽: 8 位 (x8 芯片)
 
-计算:
+单颗芯片容量计算:
 16 Banks × 65536 Rows × 1024 Cols × 8 bits
-= 8,589,934,592 bits = 8 Gb = 1 GB (单颗芯片)
-8 颗芯片 × 1 GB = 8 GB (常见配置)
+= 8,589,934,592 bits = 8 Gb = 1 GB (单颗芯片容量)
+
+8GB 系统配置:
+├── 需要 8 颗 1GB (8Gb) 芯片
+├── 总容量: 8 颗 × 1 GB = 8 GB
+└── 总位宽: 8 颗 × 8 位 = 64 位
+
+注意: Gb = Gigabit (吉比特), GB = Gigabyte (吉字节), 1 Byte = 8 bits
 ```
 
 #### 寻址过程
@@ -250,7 +613,7 @@ DDR 存储阵列组织:
 └── tRP (RAS Precharge): PRECHARGE 时间
 ```
 
----
+***
 
 ## 四、DDR 物理组织结构：颗粒、Bank 与 Rank 详解
 
@@ -775,9 +1138,25 @@ Group 7 - 数据组7 (Byte Lane 7):
 
 ```c
 struct ddr_config {
-    uint32_t dram_type;        uint32_t rank_count;        uint32_t channel_count;      uint32_t bus_width;         uint32_t cs0_density;       uint32_t cs1_density;       
-    uint32_t bank_addr_bits;   uint32_t bank_group_bits;   uint32_t row_addr_bits;      uint32_t col_addr_bits;     
-    uint32_t tCL;              uint32_t tRCD;              uint32_t tRP;               uint32_t tRAS;              uint32_t tRC;               uint32_t tWR;               uint32_t tRFC;              uint32_t tFAW;          };
+    uint32_t dram_type;         /* DDR类型: DDR3/DDR4/DDR5 */
+    uint32_t rank_count;        /* Rank数量 */
+    uint32_t channel_count;     /* 通道数量 */
+    uint32_t bus_width;         /* 总线位宽: 32/64 */
+    uint32_t cs0_density;       /* CS0对应的内存容量 */
+    uint32_t cs1_density;       /* CS1对应的内存容量 */
+    uint32_t bank_addr_bits;    /* Bank地址位数 */
+    uint32_t bank_group_bits;   /* Bank Group位数 */
+    uint32_t row_addr_bits;     /* 行地址位数 */
+    uint32_t col_addr_bits;     /* 列地址位数 */
+    uint32_t tCL;               /* CAS Latency */
+    uint32_t tRCD;              /* RAS to CAS Delay */
+    uint32_t tRP;               /* RAS Precharge */
+    uint32_t tRAS;              /* RAS Active Time */
+    uint32_t tRC;               /* Row Cycle Time */
+    uint32_t tWR;               /* Write Recovery */
+    uint32_t tRFC;              /* Refresh Cycle Time */
+    uint32_t tFAW;              /* Four Activate Window */
+};
 
 void ddr_init_controller(struct ddr_config *cfg)
 {
@@ -796,7 +1175,7 @@ void ddr_init_controller(struct ddr_config *cfg)
     
     ctrl->DRAMTMG1 = (cfg->tRCD << tRCD_SHIFT) |
                      (cfg->tRP << tRP_SHIFT) |
-                     (cfg->tRCD << tRCD_SHIFT);
+                     (cfg->tRAS >> 8 << tRAS_MSB_SHIFT);
     
     ctrl->DRAMTMG2 = (cfg->tWR << tWR_SHIFT) |
                      (cfg->tCL << tCL_SHIFT);
@@ -822,30 +1201,45 @@ void ddr_init_controller(struct ddr_config *cfg)
 
 ```c
 struct ddr_config ddr4_8gb_x8_single_rank = {
-    .dram_type      = DDR_TYPE_DDR4,
-    .rank_count     = 1,                    .channel_count  = 1,
-    .bus_width      = 64,                   .cs0_density    = DENSITY_8GB,
-    .cs1_density    = 0,                    
-    .bank_addr_bits = 2,                    .bank_group_bits = 2,           .row_addr_bits  = 16,                  .col_addr_bits  = 10,                 
-    .tCL            = 17,                   .tRCD           = 17,                   .tRP            = 17,                   .tRAS           = 39,                   .tRC            = 56,                   .tWR            = 15,                   .tRFC           = 350,                  .tFAW           = 30,               };
+    .dram_type       = DDR_TYPE_DDR4,
+    .rank_count      = 1,               /* 单Rank */
+    .channel_count   = 1,
+    .bus_width       = 64,              /* 64位总线 */
+    .cs0_density     = DENSITY_8GB,
+    .cs1_density     = 0,
+    .bank_addr_bits  = 2,               /* 4 Banks per Group */
+    .bank_group_bits = 2,               /* 4 Bank Groups */
+    .row_addr_bits   = 16,              /* 65536行 */
+    .col_addr_bits   = 10,              /* 1024列 */
+    .tCL             = 17,              /* CAS Latency */
+    .tRCD            = 17,              /* RAS to CAS */
+    .tRP             = 17,              /* RAS Precharge */
+    .tRAS            = 39,              /* RAS Active */
+    .tRC             = 56,              /* Row Cycle */
+    .tWR             = 15,              /* Write Recovery */
+    .tRFC            = 350,             /* Refresh Cycle */
+    .tFAW            = 30,              /* Four Activate Window */
+};
 
 struct ddr_config ddr4_16gb_x8_dual_rank = {
-    .dram_type      = DDR_TYPE_DDR4,
-    .rank_count     = 2,                    .channel_count  = 1,
-    .bus_width      = 64,                   .cs0_density    = DENSITY_8GB,
-    .cs1_density    = DENSITY_8GB,          
-    .bank_addr_bits = 2,
+    .dram_type       = DDR_TYPE_DDR4,
+    .rank_count      = 2,               /* 双Rank */
+    .channel_count   = 1,
+    .bus_width       = 64,
+    .cs0_density     = DENSITY_8GB,     /* Rank 0: 8GB */
+    .cs1_density     = DENSITY_8GB,     /* Rank 1: 8GB */
+    .bank_addr_bits  = 2,
     .bank_group_bits = 2,
-    .row_addr_bits  = 16,
-    .col_addr_bits  = 10,
-    .tCL            = 17,
-    .tRCD           = 17,
-    .tRP            = 17,
-    .tRAS           = 39,
-    .tRC            = 56,
-    .tWR            = 15,
-    .tRFC           = 350,
-    .tFAW           = 30,
+    .row_addr_bits   = 16,
+    .col_addr_bits   = 10,
+    .tCL             = 17,
+    .tRCD            = 17,
+    .tRP             = 17,
+    .tRAS            = 39,
+    .tRC             = 56,
+    .tWR             = 15,
+    .tRFC            = 350,
+    .tFAW            = 30,
 };
 ```
 
@@ -876,18 +1270,18 @@ void ddr_set_address_mapping(struct ddr_ctrl *ctrl,
 
 /*
  * 地址映射示例 (DDR4, 8GB, 单Rank):
- * 
+ *
  * 物理地址: [63:0]
- * 
- * [63:29] - 未使用
- * [28:26] - Rank 选择 (1位, 单Rank时为0)
- * [25:24] - Bank Group 选择 (2位, 4个Bank Group)
- * [23:22] - Bank 选择 (2位, 每个Bank Group 4个Bank)
- * [21:6]  - 行地址 (16位, 65536行)
- * [5:3]   - 列地址低位 (3位, 用于突发)
+ *
+ * [63:34] - 未使用
+ * [33:34] - Rank 选择 (1位, 单Rank时为0)
+ * [31:30] - Bank Group 选择 (2位, 4个Bank Group)
+ * [29:28] - Bank 选择 (2位, 每个Bank Group 4个Bank)
+ * [27:12] - 行地址 (16位, 65536行)
+ * [11:3]  - 列地址 (9位, 512列地址 + 3位突发内偏移)
  * [2:0]   - 字节偏移 (3位, 8字节)
- * 
- * 注意: 列地址高位在行地址之前，实现Bank交错
+ *
+ * 注意: 实际地址映射因控制器而异，需参考具体芯片手册
  */
 ```
 
@@ -1166,7 +1560,348 @@ DDR 内存容量计算公式:
 └── 参考颗粒数据手册
 ```
 
----
+### 4.9 Channel (通道) 详解
+
+#### 4.9.1 什么是 Channel
+
+**Channel** 是 SoC/CPU 内部 DDR 控制器与外部 DRAM 之间独立的数据通路。一个 SoC 可以有多个 Channel，每个 Channel 有独立的控制器和 PHY。
+
+```
+Channel vs Rank 的区别:
+
+Channel 是控制器侧的概念:
+├── 每个 Channel 有独立的命令/地址总线
+├── 每个 Channel 有独立的数据总线 (64位)
+└── 多个 Channel 可以同时工作，提高总带宽
+
+Rank 是 DRAM 侧的概念:
+├── 一个 Channel 可以连接多个 Rank
+├── 不同 Rank 共享命令/地址总线
+└── 同一时刻只有一个 Rank 处于活动状态
+
+典型配置:
+
+单通道 (Single Channel):
+├── 1 个 DDR 控制器
+├── 1 组命令/地址总线
+├── 1 组 64位数据总线
+└── 理论带宽: DDR4-3200 → 25.6 GB/s
+
+双通道 (Dual Channel):
+├── 2 个独立的 DDR 控制器 (CH0, CH1)
+├── 2 组独立的命令/地址总线
+├── 2 组 64位数据总线 = 128位有效宽度
+└── 理论带宽: DDR4-3200 × 2 → 51.2 GB/s
+
+四通道 (Quad Channel):
+├── 4 个 DDR 控制器
+├── 4 组 64位数据总线 = 256位
+└── 理论带宽: DDR4-3200 × 4 → 102.4 GB/s
+```
+
+#### 4.9.2 嵌入式系统中的 Channel 配置
+
+```
+常见嵌入式 SoC Channel 配置:
+
+NXP i.MX8:
+├── 2 个 DDR 通道
+├── 每个通道支持 32/64 位
+└── 可配置为双通道 32位 (LPDDR4) 或单通道 64位 (DDR4)
+
+Rockchip RK3588:
+├── 2 个 LPDDR 通道
+├── 每个通道 32位
+└── 总带宽: LPDDR4X-4266 × 2 → 68 GB/s
+
+全志 A100:
+├── 1 个 DDR 通道
+├── 支持 16/32 位
+└── 适用于低成本设计
+
+Channel  interleaving (通道交错):
+├── 物理地址在多个 Channel 间交错分布
+├── 提高并行度和带宽利用率
+└── 典型交错粒度: 256 字节 (Cache line 大小)
+```
+
+### 4.10 ECC 内存详解
+
+#### 4.10.1 ECC 原理
+
+**ECC (Error Correction Code)** 通过在标准 64 位数据基础上增加 8 位校验位，实现单比特错误纠正、多比特错误检测。
+
+```
+ECC 数据结构:
+
+非 ECC:
+├── 数据位: DQ[0:63] (64位)
+└── 每传输 64 位数据
+
+ECC (x8 方案):
+├── 数据位: DQ[0:63] (64位)
+├── 校验位: DQ[64:71] (8位)
+├── 总位宽: 72位
+├── 采用 SECDED 编码 (Single Error Correction, Double Error Detection)
+└── 每传输 72 位 (64位数据 + 8位 ECC)
+
+ECC 能力:
+├── 单比特错误: 自动纠正 (Correctable Error, CE)
+├── 双比特错误: 检测到但无法纠正 (Uncorrectable Error, UE)
+├── 多比特错误: 部分方案可检测 (Chipkill 等高级 ECC)
+└── 错误日志记录: 触发中断或记录到寄存器
+```
+
+#### 4.10.2 ECC 硬件设计
+
+```
+ECC 内存模组设计:
+
+非 ECC DIMM (UDIMM):
+├── 数据颗粒: 8颗 x8 颗粒 = 64位
+└── 无 ECC 校验
+
+ECC DIMM (RDIMM/UDIMM):
+├── 数据颗粒: 8颗 x8 颗粒 = 64位数据
+├── ECC 颗粒: 1颗 x8 颗粒 = 8位校验
+├── 总颗粒数: 9颗
+└── 需要额外 PCB 空间和成本
+
+嵌入式 ECC 应用:
+├── 汽车电子: ASIL-B/D 等级要求
+├── 工业控制: 高可靠性要求
+├── 航空航天: 抗辐射环境
+├── 服务器/数据中心: 数据完整性保障
+└── 医疗设备: 安全性关键
+
+ECC 性能开销:
+├── 延迟: 增加约 1-2 个时钟周期
+├── 带宽: 无显著影响 (72位并行传输)
+├── 成本: 增加 1颗 DRAM 芯片
+└── 功耗: 增加约 10-12%
+```
+
+#### 4.10.3 高级 ECC 技术
+
+```
+Advanced ECC / Chipkill:
+
+传统 ECC:
+├── 只能纠正单比特错误
+├── 整颗芯片失效时无法恢复
+└── 适用于一般场景
+
+Chipkill / Advanced ECC:
+├── 可以纠正整颗 x4 芯片失效
+├── 采用更复杂的编码方案 (如 Reed-Solomon)
+├── 需要 x4 颗粒支持
+└── 适用于服务器/关键任务
+
+DDR5 片上 ECC:
+├── DDR5 标准内置 ECC (On-Die ECC)
+├── 仅纠正芯片内部错误
+├── 不替代系统级 ECC
+└── 应对更高密度带来的内部错误率
+```
+
+### 4.11 ODT (On-Die Termination) 详解
+
+#### 4.11.1 ODT 原理
+
+**ODT** 是 DDR2 及以后 DDR 标准中引入的片上端接技术，用于消除高速信号反射。
+
+```
+信号反射问题:
+
+无端接:
+发送端 ──────► 接收端 (开路)
+                          │
+                          └── 信号反射回来 ──► 干扰原始信号
+
+传统端接 (外部电阻):
+发送端 ──────► 接收端
+                   │
+                   └── Rterm 到 VTT
+                          │
+                         GND
+缺点: 持续消耗功耗
+
+ODT (片上端接):
+发送端 ──────► 接收端 (内置端接电阻)
+                   │
+                   └── R_ODT 到 VDDQ (可动态开关)
+优点: 仅在需要时启用，节省功耗
+```
+
+#### 4.11.2 ODT 配置
+
+```
+ODT 阻抗选项 (DDR4):
+
+├── 34Ω (RZQ/6)  - 高速、低容性负载
+├── 40Ω (RZQ/5)  - 平衡选择
+├── 48Ω (RZQ/4)  - 中等速度
+├── 60Ω (RZQ/3)  - 常用配置
+├── 80Ω (RZQ/2.4)- 较低速度
+├── 120Ω (RZQ/1.6) - 最低功耗
+└── 240Ω (RZQ/0.8) - 特殊应用
+
+RZQ = 240Ω (外部精密参考电阻)
+
+ODT 工作模式:
+├── 读操作: 控制器 ODT 开启 (吸收来自 DRAM 的信号)
+├── 写操作: DRAM ODT 开启 (吸收来自控制器的信号)
+├── 空闲: ODT 关闭，降低功耗
+└── 动态切换: 根据命令类型自动切换
+
+多 Rank 配置中的 ODT:
+├── 写 Rank 0: Rank 0 ODT 开启，Rank 1 ODT 关闭
+├── 写 Rank 1: Rank 1 ODT 开启，Rank 0 ODT 关闭
+├── 读操作: 控制器 ODT 开启
+└── 通过模式寄存器 (MR1, MR5) 配置
+```
+
+#### 4.11.3 ODT 调试要点
+
+```
+ODT 配置不当的表现:
+
+ODT 阻抗过低:
+├── 信号幅度过小
+├── 功耗增加
+└── 数据眼图闭合
+
+ODT 阻抗过高:
+├── 信号反射明显
+├── 过冲/下冲增大
+└── 时序抖动增加
+
+调试建议:
+├── 从数据手册推荐的 ODT 值开始
+├── 根据实际 PCB 阻抗微调
+├── 观察眼图判断是否需要调整
+└── 不同频率可能需要不同 ODT 配置
+```
+
+### 4.12 Additive Latency (AL) 详解
+
+#### 4.12.1 什么是 AL
+
+**Additive Latency** 是 DDR2/DDR3/DDR4 中可选的额外延迟参数，允许控制器在发送 ACT 命令后立即发送 RD/WR 命令，无需等待 tRCD。
+
+```
+无 AL (AL=0):
+
+ACT ────tRCD────► RD ──CL──► 数据
+
+有 AL (AL>0):
+
+ACT ─► RD (立即发送)
+     │
+     └── 实际有效延迟 = CL + AL
+            数据在 ACT 后 (tRCD + CL - AL) 周期返回
+
+AL 的作用:
+├── 允许提前发送 RD/WR 命令
+├── DRAM 内部自动延迟执行直到 tRCD 满足
+├── 提高命令调度灵活性
+└── 有助于减少命令总线冲突
+```
+
+#### 4.12.2 AL 配置
+
+```
+AL 可选值 (DDR4):
+
+├── AL = 0 (默认，无附加延迟)
+├── AL = tRCD - 1
+├── AL = tRCD - 2
+└── 由模式寄存器 MR1[5:3] 配置
+
+等效 CAS Latency:
+
+有效读取延迟 = CL + AL
+有效写入延迟 = CWL (CAS Write Latency)
+
+示例 (DDR4-2400):
+├── tRCD = 17, CL = 17
+├── 设置 AL = 15 (tRCD - 2)
+├── 有效读取延迟 = 17 + 15 = 32 周期
+└── 但命令可以提前 15 周期发送
+
+使用场景:
+├── 高频 DDR (减少命令总线瓶颈)
+├── 多 Rank 系统 (错开命令发送)
+└── 优化命令调度
+```
+
+### 4.13 Command Rate (CR) 详解
+
+#### 4.13.1 1T vs 2T
+
+**Command Rate** 定义了命令（ACT, READ, WRITE 等）之间的最小间隔。
+
+```
+Command Rate 对比:
+
+1T (1 Tick):
+├── 每个时钟周期可以发送一个新命令
+├── 命令吞吐量最高
+├── 对信号完整性要求更高
+├── 需要更好的 PCB 设计
+└── 性能最优
+
+2T (2 Ticks):
+├── 每两个时钟周期才能发送一个新命令
+├── 命令吞吐量减半
+├── 信号裕量更大
+├── 适用于多 Rank 或大负载设计
+└── 性能略低 (约 1-5%)
+
+4T (4 Ticks):
+├── 每四个时钟周期发送一个命令
+├── 极少使用
+└── 仅用于极端稳定性要求
+
+时序图:
+
+1T Mode:
+CK   ─┐ ┌─┐ ┌─┐ ┌─┐ ┌─┐
+      └─┘ └─┘ └─┘ └─┘
+CMD  ACT RD  WR  PRE ACT  ← 每周期一个命令
+
+2T Mode:
+CK   ─┐ ┌─┐ ┌─┐ ┌─┐ ┌─┐
+      └─┘ └─┘ └─┘ └─┘
+CMD  ACT ACT RD  RD  WR   ← 命令持续两周期
+           (nop) (nop)
+```
+
+#### 4.13.2 Command Rate 选择
+
+```
+选择建议:
+
+使用 1T:
+├── 单 Rank 设计
+├── PCB 设计良好
+├── 追求极致性能
+└── 频率 <= 2400 MT/s
+
+使用 2T:
+├── 多 Rank 设计 (>= 4 Rank)
+├── 高频运行 (>= 3200 MT/s)
+├── 信号完整性裕量不足
+├── 服务器/工作站 (稳定性优先)
+└──  DIMM 插槽数量多
+
+嵌入式系统:
+├── 焊接式 DDR (非插槽): 通常 1T
+├── LPDDR: 无 CR 概念 (固定 1T)
+└── 根据实际信号质量决定
+```
+
+***
 
 ## 五、DDR 工作原理
 
@@ -1303,11 +2038,11 @@ DRAM 存储单元结构:
 
 #### 刷新类型
 
-| 刷新类型 | 说明 | 特点 |
-|---------|------|------|
-| **自动刷新 (AR)** | DRAM 内部自动执行 | 外部无法访问，影响性能 |
-| **自刷新 (SR)** | 低功耗模式下的刷新 | 用于休眠状态 |
-| **部分阵列自刷新 (PASR)** | 仅刷新部分 Bank | LPDDR 特有，节省功耗 |
+| 刷新类型               | 说明          | 特点            |
+| ------------------ | ----------- | ------------- |
+| **自动刷新 (AR)**      | DRAM 内部自动执行 | 外部无法访问，影响性能   |
+| **自刷新 (SR)**       | 低功耗模式下的刷新   | 用于休眠状态        |
+| **部分阵列自刷新 (PASR)** | 仅刷新部分 Bank  | LPDDR 特有，节省功耗 |
 
 ```
 刷新要求:
@@ -1315,7 +2050,125 @@ DRAM 存储单元结构:
 ├── DDR4: 8192 次刷新 / 64ms
 │   └── 平均每 7.8μs 刷新一次
 └── 刷新命令: REFRESH (REF)
+
+刷新间隔参数:
+├── tREFI (Refresh Interval): 平均刷新间隔
+│   ├── DDR4: 7.8μs (标准温度)
+│   └── DDR4: 3.9μs (高温 > 85°C，刷新频率翻倍)
+├── tRFC (Refresh Cycle Time): 每次刷新占用的时间
+│   ├── 约 350-550 ns (取决于密度)
+│   └── 刷新期间无法访问内存
+└── 刷新开销: 约 3-5% 的带宽
 ```
+
+### 5.2.1 DDR 电源管理与功耗模式
+
+```
+DDR 功耗模式:
+
+Active Mode (活跃模式):
+├── DDR 正常工作，可执行所有命令
+├── 功耗最高
+└── CKE = High
+
+Idle Mode (空闲模式):
+├── 无命令执行，但保持激活
+├── ODT 可能关闭
+├── CKE = High
+└── 功耗约为 Active 的 30-50%
+
+Power Down Mode (功耗降低模式):
+├── DLL 关闭或保持
+├── 外部时钟停止或继续
+├── CKE = Low (进入 Power Down)
+├── 数据保持，但需要定期刷新
+├── 退出延迟: tXP (约 6-10 周期)
+├── 分为:
+│   ├── Fast Exit: DLL 保持，快速退出
+│   └── Slow Exit: DLL 关闭，慢速退出
+└── 功耗约为 Active 的 10-20%
+
+Self Refresh Mode (自刷新模式):
+├── DDR 内部自动执行刷新
+├── 外部控制器无需发送刷新命令
+├── CKE = Low
+├── 时钟可以停止
+├── 退出延迟: tXSDLL (数百周期)
+├── 应用场景:
+│   ├── 系统休眠/待机
+│   ├── 屏幕关闭状态
+│   └── 深度省电模式
+└── 功耗约为 Active 的 1-5%
+
+Deep Power Down Mode (深度功耗降低):
+├── LPDDR 特有
+├── 数据不保持 (内容丢失)
+├── 功耗最低
+├── 退出时需要完整重新初始化
+└── 应用场景: 设备关机但保持供电
+
+模式转换:
+
+Active ──无命令──► Idle ──CKE=L──► Power Down
+  │                    │                │
+  │                    │                └─CKE=H──► Active (快速)
+  │                    │
+  │                    └─SRE命令──► Self Refresh
+  │                                     │
+  │                                     └─SRX命令──► Active (慢速)
+  │
+  └─DPD命令 (LPDDR)──► Deep Power Down
+                            │
+                            └─唤醒──► 重新初始化
+```
+
+#### 5.2.2 DVFS (动态电压频率调节)
+
+```
+DDR DVFS 原理:
+
+根据系统负载动态调整 DDR 频率和电压，实现功耗优化。
+
+场景1: 高负载
+├── 视频播放、游戏运行
+├── DDR 运行在最高频率
+└── 电压保持正常
+
+场景2: 中等负载
+├── 浏览网页、文档编辑
+├── DDR 降至中等频率
+└── 电压略微降低
+
+场景3: 低负载/待机
+├── 屏幕常亮但无交互
+├── DDR 降至最低频率
+├── 电压降低
+└── 或进入 Self Refresh
+
+DVFS 切换过程:
+1. 控制器停止新命令
+2. 等待当前操作完成
+3. 进入 Power Down 模式
+4. 调整频率和电压
+5. 重新训练 (可能需要)
+6. 恢复正常工作
+
+嵌入式系统 DVFS 示例:
+
+Android 设备:
+├── 亮亮息屏: Self Refresh (~10mW)
+├── 亮屏待机: DDR 最低频率 (~200mW)
+├── 中度使用: DDR 中等频率 (~500mW)
+├── 重度使用: DDR 最高频率 (~1W+)
+└── 切换延迟: 约 10-100μs
+
+SoC 集成方案:
+├── 硬件自动 DVFS (基于带宽监控)
+├── 软件控制 DVFS (通过内核驱动)
+└── 混合方案 (硬件触发 + 软件策略)
+```
+
+***
 
 ### 5.3 突发传输
 
@@ -1355,7 +2208,7 @@ DRAM 存储单元结构:
 现代 DDR 主要使用顺序突发
 ```
 
----
+***
 
 ## 六、DDR 时序参数
 
@@ -1385,16 +2238,21 @@ PRECHARGE ──tRP──► ACTIVATE
 
 ### 6.2 时序参数详解
 
-| 参数 | 全称 | 说明 | 典型值 |
-|-----|------|------|--------|
-| **tCL** | CAS Latency | 读命令到数据有效的延迟 | 9-22 时钟周期 |
-| **tRCD** | RAS to CAS Delay | 激活行到读/写命令的延迟 | 9-18 时钟周期 |
-| **tRP** | RAS Precharge | 预充电时间 | 9-18 时钟周期 |
-| **tRAS** | RAS Active Time | 行激活时间 | 24-42 时钟周期 |
-| **tRC** | Row Cycle Time | 行周期时间 (tRAS + tRP) | 33-60 时钟周期 |
-| **tWR** | Write Recovery | 写恢复时间 | 10-16 时钟周期 |
-| **tRFC** | Refresh Cycle Time | 刷新周期时间 | 350-550 ns |
-| **tFAW** | Four Activate Window | 4次激活窗口时间 | 16-30 时钟周期 |
+| 参数          | 全称                       | 说明                 | 典型值                                     |
+| ----------- | ------------------------ | ------------------ | --------------------------------------- |
+| **tCL**     | CAS Latency              | 读命令到数据有效的延迟        | 9-22 时钟周期                               |
+| **tRCD**    | RAS to CAS Delay         | 激活行到读/写命令的延迟       | 9-18 时钟周期                               |
+| **tRP**     | RAS Precharge            | 预充电时间              | 9-18 时钟周期                               |
+| **tRAS**    | RAS Active Time          | 行激活时间              | 24-42 时钟周期                              |
+| **tRC**     | Row Cycle Time           | 行周期时间 (tRAS + tRP) | 33-60 时钟周期                              |
+| **tWR**     | Write Recovery           | 写恢复时间              | 10-16 时钟周期                              |
+| **tRFC**    | Refresh Cycle Time       | 刷新周期时间             | 350-550 ns (约 260-410 cycles @ 1600MHz) |
+| **tFAW**    | Four Activate Window     | 4次激活窗口时间           | 16-30 时钟周期                              |
+| **tRRD**    | RAS to RAS Delay         | 不同行激活最小间隔          | 4-6 时钟周期                                |
+| **tWTR**    | Write to Read Turnaround | 写到读转换延迟            | 8-12 时钟周期                               |
+| **tRTP**    | Read to Precharge        | 读到预充电延迟            | 8-12 时钟周期                               |
+| **tCCD\_L** | CAS to CAS Delay (Long)  | 同Bank Group内命令间隔   | 6-8 时钟周期                                |
+| **tCCD\_S** | CAS to CAS Delay (Short) | 不同Bank Group间命令间隔  | 4 时钟周期                                  |
 
 ### 6.3 时序参数对性能的影响
 
@@ -1451,7 +2309,7 @@ MR1: DLL=Enable, AL=0
 MR2: CWL=12
 ```
 
----
+***
 
 ## 七、DDR 控制器与 PHY
 
@@ -1600,7 +2458,7 @@ DQS 采样窗口:
 最佳采样点: 180° (眼图中心)
 ```
 
----
+***
 
 ## 八、DDR 驱动开发
 
@@ -1663,12 +2521,12 @@ DDR 驱动分层:
 ddr_controller: ddr@ff780000 {
     compatible = "vendor,ddr-controller";
     reg = <0x0 0xff780000 0x0 0x10000>;
-    
+
     clock-frequency = <1600000000>;
-    
+
     ddr-type = "DDR4";
-    ddr-density = <8>;
-    ddr-width = <32>;
+    ddr-density = <8>;          /* 单颗容量: 8Gb */
+    ddr-width = <64>;           /* 总线位宽: 64位 (非颗粒位宽) */
     
     timing {
         tcl = <17>;
@@ -1696,59 +2554,178 @@ ddr_controller: ddr@ff780000 {
 #### 8.3.1 内存测试
 
 ```c
-int mem_test(void *start, size_t size)
+/*
+ * 综合内存测试套件
+ * 包含多种测试模式，覆盖不同类型的内存错误
+ */
+
+/* 测试1: 固定模式测试 (快速验证) */
+static int mem_test_fixed_pattern(volatile u32 *addr, size_t words)
+{
+    u32 patterns[] = {
+        0xAAAAAAAA,  /* 1010... 交替位 */
+        0x55555555,  /* 0101... 交替位 */
+        0xFFFFFFFF,  /* 全1 */
+        0x00000000,  /* 全0 */
+        0x12345678,  /* 随机模式 */
+    };
+    int p, i;
+
+    for (p = 0; p < ARRAY_SIZE(patterns); p++) {
+        for (i = 0; i < words; i++)
+            addr[i] = patterns[p];
+        for (i = 0; i < words; i++) {
+            if (addr[i] != patterns[p]) {
+                printf("Fixed pattern fail at %d: exp=0x%08x got=0x%08x\n",
+                       i, patterns[p], addr[i]);
+                return -1;
+            }
+        }
+    }
+    return 0;
+}
+
+/* 测试2: Walking 1s/0s 测试 (检测位间干扰) */
+static int mem_test_walking_bits(volatile u32 *addr, size_t words)
+{
+    u32 pattern;
+    int i, bit;
+
+    /* Walking 1s */
+    for (bit = 0; bit < 32; bit++) {
+        pattern = 1 << bit;
+        for (i = 0; i < words; i++)
+            addr[i] = pattern;
+        for (i = 0; i < words; i++) {
+            if (addr[i] != pattern) {
+                printf("Walking 1s fail at bit %d, addr %d\n", bit, i);
+                return -1;
+            }
+        }
+    }
+
+    /* Walking 0s */
+    for (bit = 0; bit < 32; bit++) {
+        pattern = ~(1 << bit);
+        for (i = 0; i < words; i++)
+            addr[i] = pattern;
+        for (i = 0; i < words; i++) {
+            if (addr[i] != pattern) {
+                printf("Walking 0s fail at bit %d, addr %d\n", bit, i);
+                return -1;
+            }
+        }
+    }
+    return 0;
+}
+
+/* 测试3: Checkerboard 模式 (检测相邻单元干扰) */
+static int mem_test_checkerboard(volatile u32 *addr, size_t words)
+{
+    int i;
+
+    /* 写 Checkerboard 模式 */
+    for (i = 0; i < words; i++) {
+        addr[i] = (i % 2) ? 0xAAAAAAAA : 0x55555555;
+    }
+    /* 验证 */
+    for (i = 0; i < words; i++) {
+        u32 expected = (i % 2) ? 0xAAAAAAAA : 0x55555555;
+        if (addr[i] != expected) {
+            printf("Checkerboard fail at %d: exp=0x%08x got=0x%08x\n",
+                   i, expected, addr[i]);
+            return -1;
+        }
+    }
+    return 0;
+}
+
+/* 测试4: 地址线测试 (检测地址线短路/开路) */
+static int mem_test_address_lines(volatile u32 *addr, size_t words)
+{
+    int i;
+
+    /* 每个地址写入唯一值 (地址本身) */
+    for (i = 0; i < words; i++)
+        addr[i] = (u32)i;
+
+    /* 回读验证 */
+    for (i = 0; i < words; i++) {
+        if (addr[i] != (u32)i) {
+            printf("Address test fail at %d: exp=0x%08x got=0x%08x\n",
+                   i, (u32)i, addr[i]);
+            return -1;
+        }
+    }
+    return 0;
+}
+
+/* 测试5: 边界测试 (检测 Bank/Row 边界问题) */
+static int mem_test_boundary(volatile u32 *addr, size_t words)
+{
+    /* 测试 256 字节边界 (Cache line 大小) */
+    int i, step = 64; /* 64 words = 256 bytes */
+
+    for (i = 0; i < words; i += step) {
+        addr[i] = 0xDEADBEEF;
+    }
+    for (i = 0; i < words; i += step) {
+        if (addr[i] != 0xDEADBEEF) {
+            printf("Boundary test fail at %d\n", i);
+            return -1;
+        }
+    }
+    return 0;
+}
+
+/* 综合测试入口 */
+int mem_test_comprehensive(void *start, size_t size)
 {
     volatile u32 *addr = (volatile u32 *)start;
     size_t words = size / sizeof(u32);
-    u32 pattern;
-    int i;
-    
-    pattern = 0xAAAAAAAA;
-    for (i = 0; i < words; i++)
-        addr[i] = pattern;
-    for (i = 0; i < words; i++) {
-        if (addr[i] != pattern)
-            return -1;
-    }
-    
-    pattern = 0x55555555;
-    for (i = 0; i < words; i++)
-        addr[i] = pattern;
-    for (i = 0; i < words; i++) {
-        if (addr[i] != pattern)
-            return -1;
-    }
-    
-    pattern = 0xFFFFFFFF;
-    for (i = 0; i < words; i++)
-        addr[i] = pattern;
-    for (i = 0; i < words; i++) {
-        if (addr[i] != pattern)
-            return -1;
-    }
-    
-    pattern = 0x00000000;
-    for (i = 0; i < words; i++)
-        addr[i] = pattern;
-    for (i = 0; i < words; i++) {
-        if (addr[i] != pattern)
-            return -1;
-    }
-    
-    for (i = 0; i < words; i++)
-        addr[i] = i;
-    for (i = 0; i < words; i++) {
-        if (addr[i] != i)
-            return -1;
-    }
-    
+    int ret;
+
+    printf("Running fixed pattern test...\n");
+    ret = mem_test_fixed_pattern(addr, words);
+    if (ret) return ret;
+
+    printf("Running walking bits test...\n");
+    ret = mem_test_walking_bits(addr, words);
+    if (ret) return ret;
+
+    printf("Running checkerboard test...\n");
+    ret = mem_test_checkerboard(addr, words);
+    if (ret) return ret;
+
+    printf("Running address line test...\n");
+    ret = mem_test_address_lines(addr, words);
+    if (ret) return ret;
+
+    printf("Running boundary test...\n");
+    ret = mem_test_boundary(addr, words);
+    if (ret) return ret;
+
+    printf("All tests passed!\n");
     return 0;
 }
+```
+
+**测试策略选择**:
+
+| 测试类型          | 检测问题        | 执行时间 | 推荐场景  |
+| ------------- | ----------- | ---- | ----- |
+| Fixed Pattern | 基本读写功能      | 最快   | 初始化验证 |
+| Walking Bits  | 位间干扰、短路     | 较快   | 信号完整性 |
+| Checkerboard  | 相邻单元干扰      | 中等   | 密集性测试 |
+| Address Lines | 地址线故障       | 较快   | 硬件验证  |
+| Boundary      | Bank/Row 边界 | 快    | 配置验证  |
+
 ```
 
 #### 8.3.2 DDR 调试工具
 
 ```
+
 常用调试工具:
 
 软件工具:
@@ -1764,16 +2741,19 @@ int mem_test(void *start, size_t size)
 └── JTAG: 访问 DDR 控制器寄存器
 
 调试步骤:
+
 1. 检查电源电压是否稳定
 2. 测量时钟信号频率和抖动
 3. 检查 DQS/DQ 时序关系
 4. 运行内存测试程序
 5. 调整训练参数
+
 ```
 
 #### 8.3.3 常见问题排查
 
 ```
+
 DDR 常见问题:
 
 问题1: 启动失败，卡在 DDR 初始化
@@ -1799,6 +2779,7 @@ DDR 常见问题:
 ├── 检查: Bank 交错是否开启
 ├── 检查: 调度策略
 └── 检查: 地址映射是否优化
+
 ```
 
 ---
@@ -1808,6 +2789,7 @@ DDR 常见问题:
 ### 9.1 带宽计算
 
 ```
+
 DDR 带宽计算公式:
 
 理论带宽 = 数据速率 × 位宽 / 8
@@ -1823,17 +2805,19 @@ DDR 带宽计算公式:
 ├── 行切换开销: 取决于访问模式
 ├── 时序延迟: tRCD, tCL, tRP
 └── 协议开销: 命令/地址传输
+
 ```
 
 ### 9.2 Bank 交错
 
 ```
+
 Bank 交错访问:
 
 无交错:
 Bank 0: ACT ──tRCD──► RD ──数据──► PRE ──tRP──► ACT ...
 Bank 1: 空闲                                           RD ...
-        └─ 等待 Bank 0 ─┘
+└─ 等待 Bank 0 ─┘
 
 有交错:
 Bank 0: ACT ──tRCD──► RD ──数据──► PRE ──tRP──► ACT ...
@@ -1845,28 +2829,30 @@ Bank 3:                  ACT ──tRCD──► RD ──数据──► ...
 ├── 隐藏 tRCD, tRP 延迟
 ├── 提高总线利用率
 └── 提升有效带宽
+
 ```
 
 ### 9.3 地址映射优化
 
 ```
+
 地址映射策略:
 
 方案1: Bank 交错映射
-地址 [31:0]
-├── [31:28] Rank 选择
-├── [27:25] Bank 选择 (用于交错)
-├── [24:12] 行地址
-└── [11:0]  列地址
+地址 \[31:0]
+├── \[31:28] Rank 选择
+├── \[27:25] Bank 选择 (用于交错)
+├── \[24:12] 行地址
+└── \[11:0]  列地址
 
 优势: 连续访问不同 Bank，实现交错
 
 方案2: 行优先映射
-地址 [31:0]
-├── [31:28] Rank 选择
-├── [27:14] 行地址
-├── [13:11] Bank 选择
-└── [10:0]  列地址
+地址 \[31:0]
+├── \[31:28] Rank 选择
+├── \[27:14] 行地址
+├── \[13:11] Bank 选择
+└── \[10:0]  列地址
 
 优势: 同一行数据连续访问，减少 ACT/PRE
 
@@ -1874,29 +2860,263 @@ Bank 3:                  ACT ──tRCD──► RD ──数据──► ...
 ├── 应用访问模式
 ├── Cache 行大小
 └── 页大小
+
 ```
 
 ### 9.4 调度策略
 
 ```
+
 DDR 调度策略:
 
 1. 先来先服务 (FCFS)
    └── 简单，但效率低
-
 2. 行命中优先 (Row Hit First)
    ├── 优先调度已打开行的请求
    └── 减少 ACT/PRE 次数
-
 3. 写回读优先 (Write-Read First)
    ├── 写数据后立即读回验证
    └── 提高写后读性能
-
 4. 饥饿防止 (Anti-Starvation)
    ├── 长时间等待的请求提高优先级
    └── 保证公平性
 
 现代 DDR 控制器通常采用组合策略
+
+```
+
+### 9.5 内存地址映射详解
+
+#### 9.5.1 物理地址到 DDR 地址的转换
+
+```
+
+地址映射层级:
+
+CPU 物理地址 → DDR 控制器 → DDR 芯片内部地址
+
+典型 DDR4 地址映射 (8GB, 双Rank, 4BG×4Bank):
+
+物理地址位:  \[63:0]
+│
+├── \[63:34]  - 未使用 (保留)
+├── \[33]     - Rank 选择 (1位: 0=Rank0, 1=Rank1)
+├── \[32:31]  - Bank Group 选择 (2位: 4个Bank Group)
+├── \[30:29]  - Bank 选择 (2位: 每个Group 4个Bank)
+├── \[28:13]  - 行地址 (16位: 65536行)
+├── \[12:3]   - 列地址 (10位: 1024列)
+└── \[2:0]    - 字节偏移 (3位: 8字节对齐)
+
+地址映射示例:
+
+物理地址 0x4\_8000\_0000:
+├── 二进制: 0100 1000 0000 0000 0000 0000 0000 0000
+├── \[33] = 1 → Rank 1
+├── \[32:31] = 0 → Bank Group 0
+├── \[30:29] = 0 → Bank 0
+├── \[28:13] = 0 → Row 0
+├── \[12:3] = 0 → Column 0
+└── \[2:0] = 0 → Byte 0
+→ Rank 1, BG0, Bank0, Row0, Col0, Byte0
+
+物理地址 0x5\_1234\_5678:
+├── \[33] = 1 → Rank 1
+├── \[32:31] = 0 → Bank Group 0
+├── \[30:29] = 1 → Bank 1
+├── \[28:13] = 0x91A2 → Row 37282
+├── \[12:3] = 0x33C → Column 828
+└── \[2:0] = 0 → Byte 0
+→ Rank 1, BG0, Bank1, Row 37282, Col 828, Byte 0
+
+```
+
+#### 9.5.2 地址映射策略
+
+```
+
+策略1: Bank 交错映射 (推荐用于随机访问)
+
+物理地址 \[31:0]:
+├── \[31:28] - Rank
+├── \[27:25] - Bank (低3位)
+├── \[24:14] - Row
+├── \[13:3]  - Column
+└── \[2:0]   - Byte
+
+优势:
+├── 连续物理地址分散在不同 Bank
+├── 提高并行访问概率
+└── 适合通用计算
+
+策略2: 行优先映射 (推荐用于顺序访问)
+
+物理地址 \[31:0]:
+├── \[31:28] - Rank
+├── \[27:14] - Row
+├── \[13:11] - Bank (高3位)
+├── \[10:3]  - Column
+└── \[2:0]   - Byte
+
+优势:
+├── 连续物理地址在同一行内
+├── 提高行命中率
+└── 适合流媒体/视频处理
+
+策略3: 混合映射 (现代系统常用)
+
+物理地址 \[31:0]:
+├── \[31:30] - Channel (双通道)
+├── \[29]    - Rank
+├── \[28:27] - Bank Group
+├── \[26:25] - Bank
+├── \[24:13] - Row
+├── \[12:6]  - Column
+├── \[5:3]   - Cache Line 内偏移 (64字节)
+└── \[2:0]   - 保留
+
+特点:
+├── Cache line (64B) 作为基本单位
+├── 优化多核系统性能
+└── 减少 False Sharing
+
+```
+
+### 9.6 Cache 与 DDR 交互
+
+#### 9.6.1 缓存行与 DDR 的关系
+
+```
+
+缓存行 (Cache Line) 大小:
+├── 通常 64 字节 (ARM, x86)
+├── DDR 突发传输: BL8 = 8 × 8字节 = 64字节
+└── 完美对齐!
+
+一次 Cache Fill (缓存填充):
+
+CPU 请求地址 X
+│
+├── 检查 L1/L2 Cache → Miss
+│
+├── 生成 DDR 读请求
+│   └── 对齐到 Cache Line 边界
+│       例如: 地址 0x1234 → 对齐到 0x1200
+│
+├── DDR 执行 ACT → READ → 数据传输
+│   └── BL8 突发: 返回 64 字节
+│
+└── 填充 Cache Line
+└── 后续访问直接在 Cache 中命中
+
+性能影响:
+
+空间局部性好的代码:
+for (i = 0; i < N; i++)  /\* 顺序访问 \*/
+sum += arr\[i];
+├── 每次 Cache Miss 加载 64 字节
+├── 后续 15 次访问 (64/4-1) 在 Cache 中命中
+├── DDR 访问次数: N/16
+└── DDR 带宽利用率高
+
+空间局部性差的代码:
+for (i = 0; i < N; i += 16)  /\* 跨步访问 \*/
+sum += arr\[i \* 16];
+├── 每次 Cache Miss 只用到 1 个数据
+├── 其余 15 个数据浪费
+├── DDR 访问次数: N/16 (但每个都 Miss)
+└── DDR 带宽利用率低
+
+```
+
+#### 9.6.2 DMA 与 DDR 交互
+
+```
+
+DMA (Direct Memory Access):
+
+DMA 传输: 外设 ↔ DDR (不经过 CPU)
+
+典型场景:
+├── 网络包: NIC ↔ DDR
+├── 存储读写: eMMC/NVMe ↔ DDR
+├── 显示输出: GPU/Display ↔ DDR (Frame Buffer)
+├── 音频: Audio Codec ↔ DDR
+└── 摄像头: CSI ↔ DDR
+
+Cache 一致性问题:
+
+CPU 写入数据 → Cache (未写回 DDR)
+│
+└── DMA 从 DDR 读取 → 读到旧数据!
+
+解决方案:
+├── 1. DMA 前: Clean/Flush Cache (CPU → DDR)
+├── 2. DMA 传输
+├── 3. DMA 后: Invalidate Cache (DDR → CPU)
+└── Linux 内核提供 API:
+├── dma\_sync\_single\_for\_device()
+├── dma\_sync\_single\_for\_cpu()
+└── dma\_map\_single()
+
+Cache 一致性示例:
+
+/\* 发送数据 (CPU → 外设) \*/
+void dma\_send(void *buf, size\_t len)
+{
+/* 确保 CPU 写入的数据已刷新到 DDR \*/
+clean\_dcache\_range(buf, len);
+
+```
+/* 启动 DMA 传输 */
+dma_start(buf, len, DMA_TO_DEVICE);
+
+/* 等待 DMA 完成 */
+dma_wait();
+```
+
+}
+
+/\* 接收数据 (外设 → CPU) \*/
+void dma\_recv(void *buf, size\_t len)
+{
+/* 启动 DMA 传输 \*/
+dma\_start(buf, len, DMA\_FROM\_DEVICE);
+
+```
+/* 等待 DMA 完成 */
+dma_wait();
+
+/* 使缓存无效，从 DDR 重新读取 */
+invalidate_dcache_range(buf, len);
+```
+
+}
+
+```
+
+#### 9.6.3 TLB 与 DDR 性能
+
+```
+
+TLB (Translation Lookaside Buffer):
+
+虚拟地址 → 物理地址转换的缓存
+
+影响:
+├── TLB Miss → 需要页表遍历 (访问 DDR 多次)
+├── 大页 (2MB/1GB) 减少 TLB 压力
+└── 大页适合大内存连续分配 (如帧缓冲)
+
+Linux 大页配置:
+├── HugePages\_Total: 查看配置
+├── HugePages\_Free: 查看可用页
+└── 挂载 hugetlbfs 使用大页
+
+DDR 性能影响:
+├── 标准页 (4KB): TLB 条目多，Miss 率高
+├── 大页 (2MB): 减少 TLB Miss，降低 DDR 访问
+└── 关键应用 (数据库、VM) 建议使用大页
+
 ```
 
 ---
@@ -1908,6 +3128,7 @@ DDR 调度策略:
 #### 测量点
 
 ```
+
 DDR 关键测量点:
 
 ┌─────────────────────────────────────────┐
@@ -1924,23 +3145,25 @@ DDR 关键测量点:
 ├── 探头接地要短，减少噪声
 ├── 测量点尽量靠近 DDR 芯片
 └── 注意探头负载效应
+
 ```
 
 #### 眼图测量
 
 ```
+
 DDR 眼图:
 
 数据眼图 (DQ vs DQS):
-        ←── 单位间隔 (UI) ──→
-        │                  │
-    错误│    ┌────────┐    │错误
-    区域│    │  眼图  │    │区域
-        │    │  开口  │    │
-        │    └────────┘    │
-        │                  │
-    ────┼──────────────────┼────→ DQS 相位
-        0°              360°
+←── 单位间隔 (UI) ──→
+│                  │
+错误│    ┌────────┐    │错误
+区域│    │  眼图  │    │区域
+│    │  开口  │    │
+│    └────────┘    │
+│                  │
+────┼──────────────────┼────→ DQS 相位
+0°              360°
 
 眼图参数:
 ├── 眼高: 信号幅度裕量
@@ -1951,32 +3174,31 @@ DDR 眼图:
 ├── 眼图开口足够大
 ├── 无明显抖动
 └── 信号单调性良好
+
 ```
 
 ### 10.2 信号完整性分析
 
 ```
+
 DDR 信号完整性问题:
 
 1. 反射 (Reflection)
    原因: 阻抗不匹配
    解决: 正确的端接电阻 (ODT)
-
 2. 串扰 (Crosstalk)
    原因: 相邻信号线耦合
    解决: 增加间距、地屏蔽
-
 3. 抖动 (Jitter)
    原因: 电源噪声、时钟抖动
    解决: 电源滤波、时钟优化
-
 4. 码间干扰 (ISI)
    原因: 传输线损耗
    解决: 均衡技术
-
 5. 同步开关噪声 (SSN)
    原因: 多位同时翻转
    解决: 电源去耦、降低驱动强度
+
 ```
 
 ---
@@ -1986,20 +3208,20 @@ DDR 信号完整性问题:
 ### 11.1 案例1: DDR 训练失败
 
 ```
+
 问题描述:
 某开发板 DDR4 初始化时，读训练失败
 
 排查步骤:
+
 1. 检查训练日志
    ├── 写均衡: 通过
    ├── 读训练: 失败 (某些 DQ 位错误)
    └── Vref 训练: 未执行
-
 2. 示波器测量
    ├── CK 时钟: 正常
    ├── DQS 信号: 发现某一位 DQS 边沿变缓
    └── DQ 信号: 发现某一位 DQ 幅度偏低
-
 3. PCB 检查
    ├── 发现 DQS 走线有残桩
    └── DQ 走线阻抗偏差较大
@@ -2009,25 +3231,26 @@ DDR 信号完整性问题:
 ├── 调整 ODT 阻抗配置
 ├── 降低数据速率测试
 └── 重新训练后通过
+
 ```
 
 ### 11.2 案例2: 内存随机错误
 
 ```
+
 问题描述:
 系统运行一段时间后出现随机内存错误
 
 排查步骤:
+
 1. 内存测试
    ├── 运行 memtester
    ├── 发现错误集中在某些地址
    └── 温度升高时错误率增加
-
 2. 环境测试
    ├── 常温: 偶发错误
    ├── 高温 (85°C): 错误频繁
    └── 低温 (-40°C): 无错误
-
 3. 时序检查
    ├── 发现 tREFI 配置偏大
    └── 高温下刷新不及时
@@ -2037,26 +3260,27 @@ DDR 信号完整性问题:
 ├── 开启温度补偿自刷新
 ├── 增加时序裕量
 └── 增强散热措施
+
 ```
 
 ### 11.3 案例3: 性能不达标
 
 ```
+
 问题描述:
 DDR4-3200 理论带宽 25.6 GB/s，实测仅 12 GB/s
 
 排查步骤:
+
 1. 带宽测试
    ├── 使用 STREAM 基准测试
    ├── Copy: 12 GB/s
    ├── Scale: 11 GB/s
    └── Add: 10 GB/s
-
 2. 性能分析
    ├── 检查 DDR 控制器配置
    ├── 发现 Bank 交错未开启
    └── 地址映射未优化
-
 3. 寄存器检查
    ├── Bank 交错: 禁用
    ├── 调度策略: FCFS
@@ -2067,6 +3291,7 @@ DDR4-3200 理论带宽 25.6 GB/s，实测仅 12 GB/s
 ├── 优化地址映射
 ├── 调整调度策略
 └── 重新测试: 带宽提升至 20 GB/s
+
 ```
 
 ---
@@ -2076,34 +3301,119 @@ DDR4-3200 理论带宽 25.6 GB/s，实测仅 12 GB/s
 ### 12.1 DDR5 新特性
 
 ```
+
 DDR5 主要改进:
 
 1. 更高带宽
    ├── 数据速率: 3200-6400 MT/s (DDR4 最高 3200)
    └── 理论带宽: 最高 51.2 GB/s (64位)
-
 2. 更大容量
    ├── 单芯片最大 64Gb (DDR4 最大 16Gb)
    └── 支持 8 层 3DS 封装
-
 3. 更低功耗
    ├── 工作电压: 1.1V (DDR4: 1.2V)
    └── 集成电源管理 IC (PMIC)
-
 4. 架构改进
    ├── 2 个独立 32 位子通道
    ├── 突发长度: BL16
    └── Bank 数量翻倍
-
 5. 可靠性增强
    ├── 片上 ECC
    ├── 链路 ECC
    └── 命令/地址奇偶校验
+
+```
+
+#### 12.1.1 DDR5 双通道子通道架构详解
+
+```
+
+DDR5 子通道架构:
+
+DDR4 (单通道):
+├── 1 个 64 位数据总线
+├── 单一命令/地址总线
+└── 所有 Bank 共享同一命令总线
+
+DDR5 (双通道):
+├── 子通道 0: 32 位数据 + 独立命令/地址
+├── 子通道 1: 32 位数据 + 独立命令/地址
+├── 两个子通道完全独立
+└── 可以同时执行不同操作
+
+架构示意图:
+
+DDR4 DIMM:
+┌─────────────────────────────────────────┐
+│  命令/地址 (共享)                        │
+│  │                                      │
+│  ▼                                      │
+│  ┌─────────────────────────────────┐    │
+│  │         64位数据总线            │    │
+│  │  DQ\[0:63]  DQS\[0:7]  DM\[0:7]   │    │
+│  └─────────────────────────────────┘    │
+└─────────────────────────────────────────┘
+
+DDR5 DIMM:
+┌─────────────────────────────────────────┐
+│  命令/地址0    │     命令/地址1          │
+│  │            │     │                   │
+│  ▼            │     ▼                   │
+│  ┌──────────┐ │  ┌──────────┐          │
+│  │ 32位数据0│ │  │ 32位数据1│          │
+│  │DQ\[0:31]  │ │  │DQ\[32:63] │          │
+│  └──────────┘ │  └──────────┘          │
+└─────────────────────────────────────────┘
+
+优势:
+├── 提高命令并行度 (两路独立命令流)
+├── 减少命令总线瓶颈
+├── 提高小随机访问性能
+├── 更灵活的数据调度
+└── 适合现代多核处理器
+
+对驱动开发的影响:
+├── 需要分别配置两个子通道
+├── 地址映射更复杂
+├── 训练需对每个子通道执行
+└── 内核中需要识别子通道拓扑
+
+```
+
+#### 12.1.2 DDR5 PMIC 详解
+
+```
+
+DDR5 PMIC (Power Management IC):
+
+变化:
+├── DDR4: 主板提供 1.2V/0.6V 电源
+└── DDR5: 模块集成 PMIC，输入 5V/3.3V，内部转换
+
+PMIC 功能:
+├── VDD (1.1V): 核心电源
+├── VDDQ (1.1V): I/O 电源
+├── VPP (1.8V): 字线电源 (DDR5 新增)
+├── 动态电压调节 (DVS)
+└── 电源时序控制
+
+优势:
+├── 更精确的电源控制
+├── 支持 DVFS
+├── 降低主板设计复杂度
+└── 更好的噪声隔离
+
+驱动注意事项:
+├── 通过 I2C 访问 PMIC
+├── 需要配置电压调节
+└── 监控电源状态
+
 ```
 
 ### 12.2 HBM (高带宽内存)
 
 ```
+
 HBM 特点:
 
 架构:
@@ -2123,11 +3433,13 @@ HBM 特点:
 ├── AI 加速器
 ├── 高性能计算 (HPC)
 └── 网络处理器
+
 ```
 
 ### 12.3 GDDR (图形 DDR)
 
 ```
+
 GDDR 特点:
 
 设计目标:
@@ -2144,6 +3456,7 @@ GDDR 特点:
 ├── 显卡 (GPU)
 ├── 游戏主机
 └── 高性能显示设备
+
 ```
 
 ---
@@ -2153,6 +3466,7 @@ GDDR 特点:
 ### 13.1 规范文档
 
 ```
+
 DDR 规范文档:
 
 1. JEDEC 标准
@@ -2160,54 +3474,50 @@ DDR 规范文档:
    ├── JESD79-5: DDR5 SDRAM 标准
    ├── JESD209-4: LPDDR4 标准
    └── JESD209-5: LPDDR5 标准
-
 2. 获取方式
-   └── JEDEC 官网: https://www.jedec.org/
-
+   └── JEDEC 官网: <https://www.jedec.org/>
 3. 厂商文档
    ├── Samsung DDR 数据手册
    ├── Micron DDR 技术笔记
    ├── SK Hynix DDR 应用指南
    └── SoC 厂商 DDR 控制器手册
+
 ```
 
 ### 13.2 推荐书籍
 
 ```
+
 推荐书籍:
 
 1. 《DDR SDRAM 规范与应用》
    └── 系统讲解 DDR 原理与应用
-
 2. 《高速数字设计》
    └── Howard Johnson 著
    └── 信号完整性理论基础
-
 3. 《DDR 存储器设计与应用》
    └── 硬件设计实践
-
 4. 《嵌入式系统内存管理》
    └── 软件视角的内存管理
+
 ```
 
 ### 13.3 在线资源
 
 ```
+
 在线学习资源:
 
 1. JEDEC 官网
    └── 标准规范下载
-
 2. 厂商技术社区
    ├── NXP 社区: DDR 调试指南
    ├── TI Wiki: DDR 设计指南
    └── Xilinx Wiki: MIG (Memory Interface Generator)
-
 3. 技术博客
    ├── Udoo: DDR4 Training 详解
    ├── RocketBoards: DDR 调试案例
    └── CNX Software: DDR 技术文章
-
 4. 开源项目
    ├── U-Boot: DDR 初始化代码
    ├── Linux Kernel: DDR 驱动
@@ -2259,7 +3569,7 @@ memtester <size> <loops>  memtester 1G 5
 dmidecode -t memory       lshw -C memory
 ```
 
----
+***
 
 ## 十五、总结
 
@@ -2320,50 +3630,51 @@ DDR 核心知识点:
    └── 日志分析: 定位问题
 ```
 
----
+***
 
 ## 附录
 
 ### A. DDR 术语表
 
-| 术语 | 全称 | 说明 |
-|-----|------|------|
-| **ACT** | Activate | 激活命令 |
-| **BL** | Burst Length | 突发长度 |
-| **CAS** | Column Address Strobe | 列地址选通 |
-| **CL** | CAS Latency | CAS 延迟 |
-| **DLL** | Delay Locked Loop | 延迟锁定环 |
-| **DM** | Data Mask | 数据掩码 |
-| **DQ** | Data | 数据线 |
-| **DQS** | Data Strobe | 数据选通 |
-| **ODT** | On-Die Termination | 片上端接 |
-| **PRE** | Precharge | 预充电命令 |
-| **RAS** | Row Address Strobe | 行地址选通 |
-| **REF** | Refresh | 刷新命令 |
-| **tRCD** | RAS to CAS Delay | RAS 到 CAS 延迟 |
-| **tRP** | RAS Precharge | RAS 预充电时间 |
-| **tWR** | Write Recovery | 写恢复时间 |
-| **ZQ** | Impedance Calibration | 阻抗校准 |
+| 术语       | 全称                    | 说明           |
+| -------- | --------------------- | ------------ |
+| **ACT**  | Activate              | 激活命令         |
+| **BL**   | Burst Length          | 突发长度         |
+| **CAS**  | Column Address Strobe | 列地址选通        |
+| **CL**   | CAS Latency           | CAS 延迟       |
+| **DLL**  | Delay Locked Loop     | 延迟锁定环        |
+| **DM**   | Data Mask             | 数据掩码         |
+| **DQ**   | Data                  | 数据线          |
+| **DQS**  | Data Strobe           | 数据选通         |
+| **ODT**  | On-Die Termination    | 片上端接         |
+| **PRE**  | Precharge             | 预充电命令        |
+| **RAS**  | Row Address Strobe    | 行地址选通        |
+| **REF**  | Refresh               | 刷新命令         |
+| **tRCD** | RAS to CAS Delay      | RAS 到 CAS 延迟 |
+| **tRP**  | RAS Precharge         | RAS 预充电时间    |
+| **tWR**  | Write Recovery        | 写恢复时间        |
+| **ZQ**   | Impedance Calibration | 阻抗校准         |
 
 ### B. DDR 频率对照表
 
-| 标准 | 时钟频率 | 数据速率 | 理论带宽 (64位) |
-|-----|---------|---------|----------------|
-| DDR4-1600 | 800 MHz | 1600 MT/s | 12.8 GB/s |
-| DDR4-2133 | 1066 MHz | 2133 MT/s | 17.0 GB/s |
-| DDR4-2400 | 1200 MHz | 2400 MT/s | 19.2 GB/s |
-| DDR4-2666 | 1333 MHz | 2666 MT/s | 21.3 GB/s |
-| DDR4-3200 | 1600 MHz | 3200 MT/s | 25.6 GB/s |
-| DDR5-4800 | 2400 MHz | 4800 MT/s | 38.4 GB/s |
-| DDR5-5600 | 2800 MHz | 5600 MT/s | 44.8 GB/s |
-| DDR5-6400 | 3200 MHz | 6400 MT/s | 51.2 GB/s |
+| 标准        | 时钟频率     | 数据速率      | 理论带宽 (64位) |
+| --------- | -------- | --------- | ---------- |
+| DDR4-1600 | 800 MHz  | 1600 MT/s | 12.8 GB/s  |
+| DDR4-2133 | 1066 MHz | 2133 MT/s | 17.0 GB/s  |
+| DDR4-2400 | 1200 MHz | 2400 MT/s | 19.2 GB/s  |
+| DDR4-2666 | 1333 MHz | 2666 MT/s | 21.3 GB/s  |
+| DDR4-3200 | 1600 MHz | 3200 MT/s | 25.6 GB/s  |
+| DDR5-4800 | 2400 MHz | 4800 MT/s | 38.4 GB/s  |
+| DDR5-5600 | 2800 MHz | 5600 MT/s | 44.8 GB/s  |
+| DDR5-6400 | 3200 MHz | 6400 MT/s | 51.2 GB/s  |
 
----
+***
 
-**文档版本**: v1.0  
-**最后更新**: 2026-04-12  
+**文档版本**: v1.0\
+**最后更新**: 2026-04-12\
 **适用对象**: 驱动工程师、嵌入式工程师、硬件工程师
 
----
+***
 
 > 本文档持续更新中，如有疑问或建议，欢迎反馈。
+
