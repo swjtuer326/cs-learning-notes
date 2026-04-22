@@ -85,7 +85,7 @@ struct ddr_config ddr4_8gb_x8_single_rank = {
     .bank_group_bits = 2,               /* 4 Bank Groups */
     .row_addr_bits   = 16,              /* 65536行 */
     .col_addr_bits   = 10,              /* 1024列 */
-    .tCL             = 17,              /* CAS Latency */
+    .tCL             = 16,              /* CAS Latency */
     .tRCD            = 17,              /* RAS to CAS */
     .tRP             = 17,              /* RAS Precharge */
     .tRAS            = 39,              /* RAS Active */
@@ -106,7 +106,7 @@ struct ddr_config ddr4_16gb_x8_dual_rank = {
     .bank_group_bits = 2,
     .row_addr_bits   = 16,
     .col_addr_bits   = 10,
-    .tCL             = 17,
+    .tCL             = 16,
     .tRCD            = 17,
     .tRP             = 17,
     .tRAS            = 39,
@@ -487,27 +487,28 @@ static void ddr_enable_cke(void)
  */
 ```
 
-**步骤 4: DRAM 复位 (通过 MR1)**
+**步骤 4: DRAM 复位 (通过 MR0 DLL Reset)**
 
 | 要点 | 说明 |
 |------|------|
-| 命令方式 | 通过 MR1[0] 发送 DLL Reset，等效于硬件 RESET# 的软件版本 |
+| 命令方式 | 通过 MR0[11] 发送 DLL Reset，这是 JEDEC 标准定义的 DLL 复位位 |
 | 执行时机 | CKE 使能后、配置其他 MR 之前 |
 | 复位后等待 | DLL 锁定时间 tDLLK = max(512 CK, 10μs) |
 
 ```c
 /*
- * 步骤4: 通过 MR1 发送 DRAM 复位命令
- * MR1[0] = 1 → DLL Reset
+ * 步骤4: 通过 MR0 发送 DLL Reset
+ * MR0[11] = 1 → DLL Reset (JEDEC JESD79-4)
  */
-static void ddr_reset_via_mr1(void)
+static void ddr_reset_via_mr0(void)
 {
     /*
-     * 发送 MRS 命令写入 MR1
-     * MR1 地址编码: A0=1 (DLL Reset), 其他位=0
-     * 实际编码为: MA[0]=1, MA[1:17]=0
+     * 发送 MRS 命令写入 MR0
+     * MR0 地址编码: A11=1 (DLL Reset), 其他位=0
+     * 实际编码为: MA[11]=1, MA[0:10,12:17]=0
+     * 0x0800 = 1 << 11
      */
-    ddr_mr_write(1, 0x0001);
+    ddr_mr_write(0, 0x0800);
 
     /*
      * DLL 复位后需要等待锁定
@@ -516,18 +517,19 @@ static void ddr_reset_via_mr1(void)
      */
     udelay(10);
 
-    debug("DDR: DRAM reset via MR1, DLL reset issued\n");
+    debug("DDR: DRAM reset via MR0, DLL reset issued\n");
 }
 
 /*
  * 常见错误:
- * 1. 忘记等待 DLL 锁定 → 后续读写操作失败
- * 2. MR1 其他位被意外修改 → ODT/驱动强度配置错误
- * 3. 在错误的时序点发送复位命令
+ * 1. 将 DLL Reset 写入 MR1 而非 MR0 → DLL 未复位，后续读写失败
+ * 2. 忘记等待 DLL 锁定 → 后续读写操作失败
+ * 3. MR0 其他位被意外修改 → BL/CL/WR 配置错误
+ * 4. 在错误的时序点发送复位命令
  *
  * 调试方法:
  * - 增加 DLL 锁定等待时间
- * - 读取 MR1 确认写入值正确
+ * - 读取 MR0 确认写入值正确
  * - 检查控制器日志中是否有 DLL 锁定状态位
  */
 ```
@@ -537,7 +539,7 @@ static void ddr_reset_via_mr1(void)
 | 要点 | 说明 |
 |------|------|
 | 功能 | 模式寄存器 (MR) 定义 DRAM 的操作模式 |
-| 配置顺序 | JEDEC 规定：MR2→MR3→MR1→MR0→MR5→MR4→MR6，不可打乱 |
+| 配置顺序 | JEDEC 规定：MR2→MR3→MR1→MR5→MR4→MR6→MR0，MR0 最后配置（因包含 DLL Reset） |
 | 配置方法 | 通过 MRS 命令，MR 值通过地址线 A[0:17] 传递 |
 
 ```c
@@ -567,28 +569,37 @@ static u32 ddr_calc_mr2(u32 cwl, u32 odt_cfg)
     return mr2;
 }
 
-/* MR0: 突发长度, CAS Latency, 写恢复, 电源 down 模式 */
+/* MR0: 突发长度, CAS Latency, 写恢复, DLL Reset, 电源 down 模式 */
 static u32 ddr_calc_mr0(u32 bl, u32 cl, u32 wr)
 {
     /*
-     * MR0 位域定义:
+     * MR0 位域定义 (DDR4, JEDEC JESD79-4):
      * [1:0]   - 突发长度 (BL8=0b10, BC4=0b01, OTF=0b00)
-     * [2]     - 读突发类型 (0: sequential)
-     * [3]     - CAS Latency [2] (MSB)
-     * [6:4]   - CAS Latency [1:0] (LSB)
-     * [9:7]   - 写恢复 (WR)
-     * [11]    - 电源下使能
+     * [2]     - CAS Latency MSB (A2): 0→CL=9+A[6:4], 1→CL=18+2*A[6:4]
+     * [6:4]   - CAS Latency [1:0] (A[6:4])
+     * [9:7]   - 写恢复 (WR): 编码查表
+     * [10]    - DLL 状态 (只读)
+     * [11]    - DLL Reset (写1触发DLL复位)
+     * [12]    - 电源下使能 (PD)
+     *
+     * DDR4 CL 编码规则:
+     * A2=0: CL = 9 + A[6:4]  (CL 范围 9~16)
+     * A2=1: CL = 18 + 2*A[6:4] (CL 范围 18,20,22,...,32)
+     *
+     * WR 编码: WR=10→0b000, WR=12→0b001, WR=14→0b010,
+     *          WR=16→0b011, WR=18→0b100, WR=20→0b101,
+     *          WR=24→0b110, WR=28→0b111 (留空=0b010即WR=14)
      */
     u32 mr0 = 0;
 
     /* 突发长度: BL8 (on-the-fly) */
     mr0 |= (0x0 & 0x3) << 0;
 
-    /* CAS Latency = 17 → 编码: CL[2]=0, CL[1:0]=1 */
-    mr0 |= ((cl >> 2) & 0x1) << 3;
-    mr0 |= ((cl - 4) & 0x7) << 4;
+    /* CAS Latency = 16 → A2=0, A[6:4]=7 (CL = 9 + 7 = 16) */
+    mr0 |= ((cl >> 2) & 0x1) << 2;     /* A2: CL MSB */
+    mr0 |= ((cl - 9) & 0x7) << 4;      /* A[6:4]: CL LSB (A2=0时) */
 
-    /* Write Recovery = 15 → 编码值查表 */
+    /* Write Recovery = 15 → 近似取 WR=16, 编码值=0b011 */
     mr0 |= (wr & 0x7) << 7;
 
     return mr0;
@@ -603,14 +614,15 @@ static void ddr_config_mode_registers(void)
     mr2 = ddr_calc_mr2(12, 0x2);   /* CWL=12, RTT_WR=60Ω */
     mr3 = 0x0000;                   /* MR3: 默认值 */
     mr1 = 0x0006;                   /* MR1: DLL=1, ODT=60Ω(RTT_NOM) */
-    mr0 = ddr_calc_mr0(8, 17, 15); /* MR0: BL8, CL=17, WR=15 */
+    mr0 = ddr_calc_mr0(8, 16, 15); /* MR0: BL8, CL=16, WR=15 */
     mr5 = 0x0000;                   /* MR5: 默认值 */
     mr4 = 0x0000;                   /* MR4: 默认值 */
     mr6 = 0x0000;                   /* MR6: 默认值 */
 
     /*
      * 严格按 JEDEC 规定顺序写入:
-     * MR2 → MR3 → MR1 → MR0 → MR5 → MR4 → MR6
+     * MR2 → MR3 → MR1 → MR5 → MR4 → MR6 → MR0
+     * MR0 最后配置，因为包含 DLL Reset 位
      */
     ddr_mr_write(2, mr2);  /* MR2: CWL, 动态ODT */
     debug("DDR: MR2 = 0x%04x\n", mr2);
@@ -621,9 +633,6 @@ static void ddr_config_mode_registers(void)
     ddr_mr_write(1, mr1);  /* MR1: DLL, ODT, 驱动强度 */
     debug("DDR: MR1 = 0x%04x\n", mr1);
 
-    ddr_mr_write(0, mr0);  /* MR0: BL, CL, WR */
-    debug("DDR: MR0 = 0x%04x\n", mr0);
-
     ddr_mr_write(5, mr5);  /* MR5: 数据掩码, CA parity */
     debug("DDR: MR5 = 0x%04x\n", mr5);
 
@@ -632,6 +641,9 @@ static void ddr_config_mode_registers(void)
 
     ddr_mr_write(6, mr6);  /* MR6: VrefDQ 范围 */
     debug("DDR: MR6 = 0x%04x\n", mr6);
+
+    ddr_mr_write(0, mr0);  /* MR0: BL, CL, WR (最后配置) */
+    debug("DDR: MR0 = 0x%04x\n", mr0);
 
     debug("DDR: all mode registers configured\n");
 }
@@ -1038,18 +1050,18 @@ int dram_init(void)
     writel(DDR_CTRL_CKE_EN, DDR_CTRL_BASE + DDR_CTRL_CKE);
     udelay(10);  /* tINIT1 >= 500ns + tXPR */
 
-    /* ====== 步骤4: DRAM 复位 (MR1 DLL Reset) ====== */
-    ddr_mr_write(1, 0x100);  /* MR1[8]=1, DLL Reset */
+    /* ====== 步骤4: DRAM 复位 (MR0 DLL Reset) ====== */
+    ddr_mr_write(0, 0x0800);  /* MR0[11]=1, DLL Reset */
     udelay(200);              /* 等待 DLL 锁定 */
 
     /* ====== 步骤5: 配置模式寄存器 (JEDEC 规定顺序) ====== */
     ddr_mr_write(2, 0x0020);  /* MR2: CWL=12, RTT_WR=60Ω */
     ddr_mr_write(3, 0x0000);  /* MR3: 默认值 */
     ddr_mr_write(1, 0x0006);  /* MR1: DLL=1, RTT_NOM=60Ω */
-    ddr_mr_write(0, 0x1100);  /* MR0: BL=8(OTF), CL=17 */
     ddr_mr_write(5, 0x0000);  /* MR5: 默认值 */
     ddr_mr_write(4, 0x0000);  /* MR4: 默认值 */
     ddr_mr_write(6, 0x0000);  /* MR6: 默认值 */
+    ddr_mr_write(0, 0x01F0);  /* MR0: BL=8(OTF), CL=16, WR=16 (最后配置) */
 
     /* ====== 步骤6: ZQ 校准 ====== */
     writel(DDR_CTRL_ZQCL_CMD, DDR_CTRL_BASE + DDR_CTRL_ZQCR);
