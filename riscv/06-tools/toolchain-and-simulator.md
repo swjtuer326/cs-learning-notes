@@ -1,0 +1,278 @@
+# 工具链与模拟器
+
+> 工欲善其事，必先利其器。掌握 RISC-V 的交叉编译工具链和模拟器，是实际开发的前提。
+
+---
+
+## 1. 交叉编译工具链
+
+### 1.1 工具链选择
+
+| 工具链 | 前缀 | 来源 | 说明 |
+|--------|------|------|------|
+| **GCC (riscv-gnu-toolchain)** | `riscv64-unknown-elf-` | 社区维护 | 裸机开发 |
+| **GCC (Linux)** | `riscv64-unknown-linux-gnu-` | 社区维护 | Linux 用户态开发 |
+| **LLVM/Clang** | 无需前缀 | LLVM 项目 | 统一工具链，多架构支持 |
+
+### 1.2 安装工具链
+
+```bash
+# 方式 1：包管理器安装（Ubuntu/Debian）
+sudo apt install gcc-riscv64-unknown-elf     # 裸机
+sudo apt install gcc-riscv64-linux-gnu       # Linux
+sudo apt install qemu-system-misc            # QEMU
+
+# 方式 2：从源码编译（推荐，版本最新）
+git clone https://github.com/riscv/riscv-gnu-toolchain
+cd riscv-gnu-toolchain
+
+# 裸机工具链
+./configure --prefix=/opt/riscv --with-arch=rv64imac --with-abi=lp64
+make -j$(nproc)
+
+# Linux 工具链
+./configure --prefix=/opt/riscv --with-arch=rv64gc --with-abi=lp64d
+make linux -j$(nproc)
+```
+
+### 1.3 常用编译选项
+
+| 选项 | 说明 | 示例 |
+|------|------|------|
+| `-march=rv64imac` | 指定 ISA 扩展 | rv32imac, rv64gc |
+| `-mabi=lp64` | 指定 ABI | lp64, lp64d (双精度浮点) |
+| `-mcmodel=medany` | 代码模型（内核用） | medlow, medany |
+| `-ffreestanding` | 无标准库 | 裸机开发必须 |
+| `-nostdlib` | 不链接标准库 | 裸机开发必须 |
+| `-nostartfiles` | 不使用标准启动文件 | 自定义入口 |
+
+### 1.4 ISA 与 ABI 的对应关系
+
+| -march | -mabi | 说明 |
+|--------|-------|------|
+| rv32i | ilp32 | 最小 32 位 |
+| rv32imac | ilp32 | 嵌入式常用 |
+| rv32imafdc | ilp32d | 全功能 32 位 |
+| rv64imac | lp64 | 64 位，无浮点 ABI |
+| rv64gc | lp64d | 64 位，双精度浮点 ABI |
+
+> **gc = imafdc_zicsr_zifencei**，G 是 IMAFDZicsr_Zifencei 的缩写。
+
+---
+
+## 2. QEMU
+
+### 2.1 QEMU RISC-V 模式
+
+| 模式 | 命令 | 用途 |
+|------|------|------|
+| **系统模拟** | `qemu-system-riscv64` | 运行完整 OS |
+| **用户态模拟** | `qemu-riscv64` | 运行 RISC-V Linux 程序 |
+
+### 2.2 常用 QEMU 命令
+
+```bash
+# 运行 Linux（完整启动链）
+qemu-system-riscv64 \
+    -machine virt \
+    -nographic \
+    -bios default \              # 使用 OpenSBI
+    -kernel vmlinux \            # Linux 内核
+    -initrd rootfs.cpio \        # 根文件系统
+    -append "root=/dev/ram console=ttyS0" \
+    -smp 2 \                     # 2 个 CPU
+    -m 2G                        # 2GB 内存
+
+# 运行裸机程序
+qemu-system-riscv64 \
+    -machine virt \
+    -nographic \
+    -bios none \
+    -kernel firmware.elf
+
+# 启用 GDB 调试
+qemu-system-riscv64 \
+    -machine virt \
+    -nographic \
+    -bios none \
+    -kernel firmware.elf \
+    -S \                         # 启动时暂停
+    -gdb tcp::1234               # GDB 端口
+
+# 用户态模拟
+qemu-riscv64 ./hello_riscv      # 运行 RISC-V 可执行文件
+qemu-riscv64 -L /opt/riscv/sysroot ./hello_riscv  # 指定 sysroot
+```
+
+### 2.3 QEMU virt 机器的内存映射
+
+```
+QEMU virt 机器地址映射:
+
+0x00000000 - 0x00000FFF  MROM (复位向量)
+0x00001000 - 0x00001FFF  MROM
+0x00002000 - 0x00002FFF  CLINT
+0x0C000000 - 0x0FFFFFFF  PLIC
+0x10000000 - 0x100000FF  UART0
+0x10001000 - 0x10001FFF  VirtIO NET
+0x10002000 - 0x10002FFF  VirtIO BLK
+0x10003000 - 0x10003FFF  VirtIO GPU
+0x2000000  - 0x200BFFF   CLINT (mtime/mtimecmp)
+0x80000000 - ...          DRAM
+```
+
+### 2.4 GDB 调试
+
+```bash
+# 终端 1：启动 QEMU（带 -S -gdb）
+qemu-system-riscv64 -machine virt -nographic -bios none -kernel fw.elf -S -gdb tcp::1234
+
+# 终端 2：启动 GDB
+riscv64-unknown-elf-gdb fw.elf
+(gdb) target remote :1234
+(gdb) break _start
+(gdb) continue
+(gdb) info registers
+(gdb) x/10i $pc
+(gdb) stepi
+```
+
+---
+
+## 3. Spike（RISC-V ISA 模拟器）
+
+Spike 是 RISC-V 官方的 ISA 模拟器，专注于指令集正确性验证：
+
+```bash
+# 安装
+git clone https://github.com/riscv-software-src/riscv-isa-sim
+cd riscv-isa-sim
+mkdir build && cd build
+../configure --prefix=/opt/spike
+make -j$(nproc)
+make install
+
+# 运行
+spike pk hello                    # 运行程序（pk = proxy kernel）
+spike -m2 +disk=rootfs.img pk vmlinux  # 运行 Linux
+spike --isa=rv64gc pk hello       # 指定 ISA
+spike -d hello                    # 调试模式
+```
+
+### Spike vs QEMU
+
+| 特性 | Spike | QEMU |
+|------|-------|------|
+| **定位** | ISA 参考模拟器 | 全系统模拟器 |
+| **速度** | 慢（~10 MIPS） | 快（~1000 MIPS） |
+| **准确性** | 最高（官方参考） | 高 |
+| **外设支持** | 最小 | 丰富（VirtIO 等） |
+| **调试** | 基础 | 完善（GDB stub） |
+| **适用场景** | ISA 验证、教学 | 开发、测试、CI |
+
+---
+
+## 4. gem5（性能模拟器）
+
+gem5 是学术界广泛使用的系统级模拟器，支持详细的时序建模：
+
+```bash
+# 安装
+git clone https://github.com/gem5/gem5
+cd gem5
+scons build/RISCV/gem5.opt -j$(nproc)
+
+# 运行
+./build/RISCV/gem5.opt configs/example/se.py \
+    --cpu-type=DerivO3CPU \
+    --cmd=/path/to/binary
+```
+
+| 特性 | 说明 |
+|------|------|
+| **详细时序模型** | 可以模拟流水线、Cache、分支预测器 |
+| **可配置 CPU** | AtomicSimpleCPU, TimingSimpleCPU, DerivO3CPU |
+| **可配置 Cache** | L1/L2 大小、关联度、替换策略 |
+| **统计输出** | CPI, Cache miss rate, 分支预测准确率等 |
+| **适用场景** | 学术研究、架构探索 |
+
+---
+
+## 5. OpenOCD + JTAG 调试
+
+### 5.1 OpenOCD 配置
+
+```bash
+# 安装
+sudo apt install openocd
+
+# 启动（以 SiFive HiFive1 为例）
+openocd -f interface/ftdi/olimex-arm-usb-tiny-h.cfg \
+        -f target/riscv.cfg
+```
+
+### 5.2 GDB 连接
+
+```bash
+riscv64-unknown-elf-gdb firmware.elf
+(gdb) target extended-remote :3333
+(gdb) monitor reset halt
+(gdb) load
+(gdb) break main
+(gdb) continue
+```
+
+---
+
+## 6. 实用工具
+
+### 6.1 objdump 反汇编
+
+```bash
+# 反汇编 ELF 文件
+riscv64-unknown-elf-objdump -d firmware.elf
+
+# 反汇编特定段
+riscv64-unknown-elf-objdump -d -j .text firmware.elf
+
+# 显示段信息
+riscv64-unknown-elf-objdump -h firmware.elf
+```
+
+### 6.2 readelf 查看 ELF 信息
+
+```bash
+# 查看 ELF 头
+riscv64-unknown-elf-readelf -h firmware.elf
+
+# 查看段表
+riscv64-unknown-elf-readelf -S firmware.elf
+
+# 查看符号表
+riscv64-unknown-elf-readelf -s firmware.elf
+```
+
+### 6.3 nm 查看符号
+
+```bash
+# 查看所有符号
+riscv64-unknown-elf-nm firmware.elf | sort
+
+# 查看未定义符号
+riscv64-unknown-elf-nm -u firmware.elf
+```
+
+---
+
+## 小结
+
+| 工具 | 用途 | 命令前缀 |
+|------|------|----------|
+| GCC | 交叉编译 | riscv64-unknown-elf- |
+| QEMU | 全系统模拟 | qemu-system-riscv64 |
+| Spike | ISA 验证 | spike |
+| gem5 | 性能模拟 | gem5.opt |
+| OpenOCD | JTAG 调试 | openocd |
+| GDB | 源码级调试 | riscv64-unknown-elf-gdb |
+
+→ 下一节：[硬件平台与前沿方向](../07-practice/hardware-platforms.md)
