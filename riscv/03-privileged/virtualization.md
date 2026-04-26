@@ -18,18 +18,18 @@
 
 ```mermaid
 graph TB
-    subgraph "无虚拟化"
+    subgraph novm ["无虚拟化"]
         APP1[App] --> OS1[Linux]
         OS1 --> HW1[硬件]
     end
 
-    subgraph "Type-1 虚拟化（裸金属）"
+    subgraph type1 ["Type-1 虚拟化（裸金属）"]
         G1[Guest OS] --> VMM1[Hypervisor]
         G2[Guest OS] --> VMM1
         VMM1 --> HW2[硬件]
     end
 
-    subgraph "Type-2 虚拟化（宿主型）"
+    subgraph type2 ["Type-2 虚拟化（宿主型）"]
         G3[Guest OS] --> VMM2[KVM]
         G4[Guest OS] --> VMM2
         VMM2 --> OS2[Host Linux]
@@ -189,9 +189,9 @@ hgatp 布局 (RV64):
 
 MODE:
   0000 = Bare（不启用第二阶段翻译）
-  1000 = Sv39x4（40 位 GPA，4 级页表）
-  1001 = Sv48x4（49 位 GPA，5 级页表）
-  1010 = Sv57x4（58 位 GPA，6 级页表）
+  1000 = Sv39x4（40 位 GPA，3 级页表，根页表 1024 项）
+  1001 = Sv48x4（49 位 GPA，4 级页表，根页表 1024 项）
+  1010 = Sv57x4（58 位 GPA，5 级页表，根页表 1024 项）
 
 VMID: 虚拟机 ID，用于 TLB 标记，避免 VM 切换时刷新全部 TLB
 PPN:  第二阶段页表的根物理页号
@@ -199,11 +199,11 @@ PPN:  第二阶段页表的根物理页号
 
 | 模式 | GPA 宽度 | 页表级数 | 最大 Guest 物理地址空间 |
 |------|----------|----------|----------------------|
-| **Sv39x4** | 40 bit | 4 | 1 TB |
-| **Sv48x4** | 49 bit | 5 | 512 TB |
-| **Sv57x4** | 58 bit | 6 | 256 PB |
+| **Sv39x4** | 40 bit | 3（根页表 1024 项） | 1 TB |
+| **Sv48x4** | 49 bit | 4（根页表 1024 项） | 512 TB |
+| **Sv57x4** | 58 bit | 5（根页表 1024 项） | 256 PB |
 
-> **为什么叫 x4？** 因为第二阶段页表比同位宽的第一阶段页表多一级。Sv39 是 3 级，Sv39x4 是 4 级。多出的一级用于将 Guest 物理地址空间映射到更大的 Host 物理地址空间。
+> **为什么叫 x4？** x4 变体与原版页表级数相同，但根页表从 512 项扩展为 1024 项（占 8 KiB），从而多使用 1 位地址作为根页表索引，将 GPA 地址空间扩大一倍。例如 Sv39 使用 39 位地址，Sv39x4 使用 40 位地址，GPA 空间从 512 GB 扩展到 1 TB。
 
 ---
 
@@ -317,17 +317,17 @@ Linux KVM 在 RISC-V 上的实现采用 Type-2 架构：
 
 ```mermaid
 graph TB
-    subgraph "User Space"
+    subgraph uspace ["User Space"]
         QEMU[QEMU / Firecracker]
         VMM[VMM 设备接口<br/>/dev/kvm]
     end
 
-    subgraph "Kernel Space (HS-mode)"
+    subgraph kspace ["Kernel Space (HS-mode)"]
         KVM[KVM Module<br/>arch/riscv/kvm]
         HOST_K[Host Kernel<br/>设备驱动、调度器]
     end
 
-    subgraph "Guest (VS-mode)"
+    subgraph guest ["Guest (VS-mode)"]
         GK1[Guest Kernel 1]
         GK2[Guest Kernel 2]
     end
@@ -413,11 +413,11 @@ sequenceDiagram
 
 ```mermaid
 graph LR
-    subgraph "无 IOMMU"
+    subgraph noiommu ["无 IOMMU"]
         D1[设备] --> |"DMA 直接访问<br/>任意物理内存"| M1[内存]
     end
 
-    subgraph "有 IOMMU"
+    subgraph withiommu ["有 IOMMU"]
         D2[设备] --> |"DMA 地址<br/>(IOVA/GPA)"| IOMMU[IOMMU<br/>地址翻译 + 权限检查]
         IOMMU --> |"物理地址<br/>(HPA)"| M2[内存]
     end
@@ -441,16 +441,16 @@ RISC-V IOMMU 规范于 2024 年批准，主要特性：
 
 ```mermaid
 graph TB
-    subgraph "Guest (VS-mode)"
-        GDRV[Guest 驱动<br/>使用 GPA 做 DMA"]
+    subgraph guest2 ["Guest (VS-mode)"]
+        GDRV[Guest 驱动<br/>使用 GPA 做 DMA]
     end
 
-    subgraph "Host (HS-mode)"
-        KVM[KVM<br/>管理 IOMMU 映射"]
+    subgraph host ["Host (HS-mode)"]
+        KVM[KVM<br/>管理 IOMMU 映射]
         HDRV[Host 驱动<br/>管理设备]
     end
 
-    subgraph "硬件"
+    subgraph hw ["硬件"]
         IOMMU[IOMMU<br/>GPA → HPA 翻译]
         DEV[PCIe 设备]
     end
@@ -483,7 +483,7 @@ AIA（Advanced Interrupt Architecture）是 RISC-V 新一代中断架构，对�
 
 ```mermaid
 graph TB
-    subgraph "IMSIC 虚拟化"
+    subgraph imsicv ["IMSIC 虚拟化"]
         GIMSIC["Guest IMSIC<br/>（虚拟文件）<br/>VS-mode 可直接访问"]
         HIMSIC["Host IMSIC<br/>（物理文件）<br/>HS-mode 管理"]
     end

@@ -62,15 +62,15 @@ OpenSBI 是 RISC-V 官方的 M-mode 固件，类似于 x86 的 BIOS/UEFI。
 
 ```mermaid
 graph TB
-    subgraph "FW_DYNAMIC / FW_JUMP"
+    subgraph fwdyn ["FW_DYNAMIC / FW_JUMP"]
         M1["OpenSBI (M-mode)"] --> |"直接跳转"| S1["Bootloader<br/>U-Boot (S-mode)"]
     end
 
-    subgraph "FW_PAYLOAD"
+    subgraph fwpay ["FW_PAYLOAD"]
         M2["OpenSBI (M-mode)"] --> |"内置跳转"| S2["U-Boot (S-mode)<br/>与 OpenSBI 一起编译"]
     end
 
-    subgraph "FW_PAYLOAD (Linux)"
+    subgraph fwlinux ["FW_PAYLOAD (Linux)"]
         M3["OpenSBI (M-mode)"] --> |"直接启动"| S3["Linux (S-mode)<br/>跳过 Bootloader"]
     end
 
@@ -273,7 +273,7 @@ _start:
 
     // 6. 启用 MMU
     la      t0, swapper_pg_dir
-    csr_write satp, t0
+    csrw    satp, t0
     sfence.vma
 
     // 7. 跳转到虚拟地址
@@ -341,13 +341,13 @@ RISC-V 服务器场景采用 UEFI + ACPI 启动模式，与 x86 服务器保持�
 
 ```mermaid
 graph TB
-    subgraph "嵌入式启动（Device Tree）"
+    subgraph embedded ["嵌入式启动（Device Tree）"]
         E1[ROM] --> E2[OpenSBI]
         E2 --> E3[U-Boot]
         E3 --> E4[Linux + DTB]
     end
 
-    subgraph "服务器启动（UEFI + ACPI）"
+    subgraph server ["服务器启动（UEFI + ACPI）"]
         S1[ROM] --> S2[OpenSBI]
         S2 --> S3[UEFI Firmware<br/>edk2-staging]
         S3 --> S4[GRUB/systemd-boot]

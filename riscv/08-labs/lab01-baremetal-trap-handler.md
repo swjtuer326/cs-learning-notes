@@ -202,7 +202,7 @@ _start:
     call    timer_init
 
     /* 7. 使能 M-mode 全局中断和定时器中断 */
-    li      t0, (1 << 3) | (1 << 7)   /* MIE + MTIE */
+    li      t0, (1 << 3) | (1 << 7)   /* mstatus: MIE+MPIE; mie: MSIE+MTIE */
     csrw    mstatus, t0
     csrw    mie, t0
 
@@ -461,7 +461,7 @@ trap_entry_nested:
 ## 8. 思考题
 
 1. 为什么 `mscratch` 要在初始化时设置，而不是在 trap entry 里动态分配？
-2. 如果 `trap_handler` 是 C 函数，为什么不需要保存 `s0-s11`？（提示：C 编译器会做什么？）
+2. 如果 `trap_handler` 是 C 函数，C 编译器会自动保存/恢复 callee-saved 寄存器（s0-s11），那为什么 trap entry 还需要保存 s0-s11？
 3. 在嵌套中断场景中，如果 `mscratch` 只有一个，第二层中断会覆盖第一层的 `sp` 吗？如何解决？
 4. 为什么 `write_mtimecmp` 要先写高 32 位为 `0xFFFFFFFF`？
 

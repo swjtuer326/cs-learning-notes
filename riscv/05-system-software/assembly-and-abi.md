@@ -319,7 +319,7 @@ static inline unsigned long read_cycle(void) {
 }
 ```
 
-> **性能提示**：`rdcycle` 读取的是核心本地时钟，不受频率缩放影响；`rdtime` 读取的是平台级实时时钟，适合跨核心比较时间戳。在 Linux 中，`rdtime` 被映射到 `vDSO`，用户态调用无需陷入内核。
+> **性能提示**：`rdcycle` 读取的是处理器周期计数器，受 DVFS 频率缩放影响；`rdtime` 读取的是平台级实时时钟（mtime），频率固定，适合跨核心比较时间戳。在 Linux 中，`rdtime` 被映射到 `vDSO`，用户态调用无需陷入内核。
 
 ---
 

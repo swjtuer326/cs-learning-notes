@@ -431,7 +431,7 @@ graph TD
 # OpenSBI 的典型委托设置
 # 将大部分异常和中断委托给 S-mode（Linux）
 
-li      t0, (1 << 8) | (1 << 9) | (1 << 11)  # ecall from U/S/M
+li      t0, (1 << 8) | (1 << 9)  # ecall from U/S
 csrw    medeleg, t0
 
 li      t0, 0x222    # SSIE, STIE, SEIE 委托

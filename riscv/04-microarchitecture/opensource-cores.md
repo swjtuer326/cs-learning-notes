@@ -10,18 +10,18 @@
 
 ```mermaid
 graph TB
-    subgraph 高性能服务器级
+    subgraph high ["高性能服务器级"]
         BOOM["BOOM<br/>伯克利 乱序超标量<br/>3-4 宽发射"]
         XS["香山 XiangShan<br/>中科院 高性能<br/>6 宽发射"]
         P870["SiFive P870<br/>商业 高性能"]
     end
 
-    subgraph 中端应用级
+    subgraph mid ["中端应用级"]
         ROCKET["Rocket<br/>伯克利 顺序标量<br/>经典教学核心"]
         CVA6["CVA6 (Ariane)<br/>ETH Zurich<br/>6 级流水线"]
     end
 
-    subgraph 低功耗/嵌入式
+    subgraph low ["低功耗/嵌入式"]
         E203["蜂鸟 E203<br/>芯来科技<br/>2 级流水线"]
         PICO["PicoRV32<br/>极简<br/>LUT 友好"]
         VEXR["VexRiscv<br/>SpinalHDL<br/>可配置"]
@@ -106,14 +106,14 @@ graph TB
 
 ```mermaid
 graph TB
-    subgraph 前端
+    subgraph frontend ["前端"]
         FETCH["取指<br/>2-4 条/周期"]
-        BP["分支预测<br/>GShare/BTBP"]
+        BP["分支预测<br/>GShare/BTB"]
         DECODE["译码<br/>2-4 条/周期"]
         RENAME["寄存器重命名"]
     end
 
-    subgraph 执行
+    subgraph exec ["执行"]
         IQ["发射队列<br/>4 个独立队列"]
         ALU1["ALU 0"]
         ALU2["ALU 1"]
@@ -123,7 +123,7 @@ graph TB
         FPU["FPU"]
     end
 
-    subgraph 提交
+    subgraph commit ["提交"]
         ROB["ROB<br/>重排序缓冲"]
         COMMIT["顺序提交"]
     end

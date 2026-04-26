@@ -78,7 +78,7 @@ RV64IMAFDC
 │  |||└───── A: 原子指令扩展
 │  ||└────── M: 乘除法扩展
 │  |└─────── I: 基础整数指令集（必须）
-│  └──────── 64: 地址宽度 64 位
+│  └──────── 64: 整数寄存器宽度 64 位（XLEN=64）
 └─────────── RV: RISC-V
 
 常用组合：
@@ -104,8 +104,8 @@ RV64IMAFDC
 | | Zbb | 基本位操作 | 已冻结 |
 | | Zbs | 单位操作 | 已冻结 |
 | **向量** | V | 向量扩展 | 已冻结 |
-| **新兴** | Zicond | 条件操作 | 开发中 |
-| | Zc | 额外压缩指令 | 开发中 |
+| **新兴** | Zicond | 条件操作 | 已冻结 |
+| | Zc | 额外压缩指令 | 已冻结 |
 
 > **命名规则：** 标准扩展用单个大写字母，子扩展用 Z + 小写字母组合。这种命名方式使得扩展可以独立开发和验证。
 
@@ -150,21 +150,21 @@ add  [rax], rbx      # 直接对内存操作数做运算
 
 ```mermaid
 graph TB
-    subgraph 软件生态
+    subgraph sw ["软件生态"]
         OS[操作系统<br/>Linux/FreeRTOS/Zephyr]
         TOOL[工具链<br/>GCC/LLVM]
         SIM[模拟器<br/>QEMU/Spike/gem5]
         FW[固件<br/>OpenSBI/U-Boot]
     end
 
-    subgraph 芯片实现
+    subgraph hw ["芯片实现"]
         HIGH[高性能核心<br/>香山/BOOM/SiFive P870]
         MID[中端核心<br/>Rocket/CVA6]
         LOW[低功耗核心<br/>蜂鸟E203/SiFive E系列]
         MCU[微控制器<br/>CH32V/ESP32-C3]
     end
 
-    subgraph 规范标准
+    subgraph spec ["规范标准"]
         ISA[ISA 规范<br/>Unprivileged + Privileged]
         EXT[扩展规范<br/>V/H/AIA/Zbb...]
         DBG[调试规范<br/>Debug/Trace]
@@ -172,10 +172,10 @@ graph TB
 
     ISA --> EXT
     ISA --> DBG
-    EXT --> 芯片实现
-    DBG --> 芯片实现
-    芯片实现 --> 软件生态
-    规范标准 --> 软件生态
+    EXT --> hw
+    DBG --> hw
+    hw --> sw
+    spec --> sw
 ```
 
 ### 关键组织
@@ -253,7 +253,7 @@ RVA23 在 RVA22 基础上增加了向量扩展和更多子扩展：
 | **向量** | V | 可变长度向量扩展 |
 | **向量浮点** | Zvfh, Zvfhmin | 向量半精度浮点 |
 | **条件操作** | Zicond | 条件选择指令（类似 x86 CMOV） |
-| **可能为0的操作** | Zimop | 操作数可能为零的指令 |
+| **可能为0的操作** | Zimop | 预留操作指令（当前为 NOP，未来可扩展） |
 | **压缩操作** | Zcmop | 压缩的条件操作 |
 | **页表** | Sv48 | 48 位虚拟地址（可选 Sv57） |
 

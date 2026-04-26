@@ -351,7 +351,7 @@ void __init setup_arch(char **cmdline_p) {
     early_init_dt_scan(dtb_base);
 
     // 内存初始化
-    arm64_memblock_init();
+    memblock_init();
 
     // 解析 CPU 信息
     parse_cpu_dt();

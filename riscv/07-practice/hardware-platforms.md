@@ -90,17 +90,17 @@ graph TD
 
 ```mermaid
 graph LR
-    subgraph 当前
+    subgraph cur ["当前"]
         C1["64 核服务器<br/>SG2042"]
         C2["向量扩展 V<br/>AI 推理加速"]
     end
 
-    subgraph 近期
+    subgraph near ["近期"]
         N1["128+ 核<br/>Chiplet 架构"]
         N2["RVA22/RVA23<br/>服务器 ISA Profile"]
     end
 
-    subgraph 未来
+    subgraph fut ["未来"]
         F1["RISC-V 数据中心<br/>大规模部署"]
         F2["异构计算<br/>CPU + 加速器"]
     end
@@ -203,7 +203,7 @@ graph TD
 
 ---
 
-## 5. 如何为这份笔记做贡献
+## 6. 如何为这份笔记做贡献
 
 这份笔记采用"理论 + 实战"的双轨结构。如果你发现内容有误或希望补充：
 

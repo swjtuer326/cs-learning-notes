@@ -10,7 +10,7 @@
 
 ```mermaid
 graph LR
-    subgraph 性能提升路径
+    subgraph perf ["性能提升路径"]
         A["5 级标量<br/>CPI ≈ 1"] --> B["超标量<br/>IPC > 1"]
         B --> C["乱序执行<br/>挖掘 ILP"]
         C --> D["多核<br/>挖掘 TLP"]
@@ -177,7 +177,6 @@ stateDiagram-v2
     E --> S: 其他核读取
     E --> I: 其他核写入
     S --> I: 其他核写入
-    S --> E: 其他核 Invalidate
     I --> E: 本核读取（无其他副本）
     I --> S: 本核读取（有其他副本）
     I --> M: 本核写入
@@ -229,7 +228,7 @@ graph TB
         C1_CORE["Core 1"]
     end
 
-    subgraph 共享资源
+    subgraph shared ["共享资源"]
         L2["L2 Cache<br/>（共享或分 Bank）"]
         BUS["互连总线<br/>Crossbar / NoC"]
         DRAM["DRAM 控制器"]
@@ -266,11 +265,11 @@ SMT（Intel 称 Hyper-Threading）让一个物理核心同时执行多个线程�
 
 ```mermaid
 graph LR
-    subgraph "单线程核心"
+    subgraph st ["单线程核心"]
         ST1["线程 A<br/>ALU 30% 利用率<br/>Cache 等待时空闲"]
     end
 
-    subgraph "SMT 核心（2 线程）"
+    subgraph smt ["SMT 核心（2 线程）"]
         MT1["线程 A<br/>使用 ALU 和 Cache"]
         MT2["线程 B<br/>使用 ALU 和 Cache<br/>填补 A 的空闲"]
     end

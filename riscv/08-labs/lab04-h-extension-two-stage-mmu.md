@@ -221,22 +221,30 @@ void kvm_riscv_stage2_map_page(struct kvm *kvm,
     struct kvm_mmu_page *root = kvm->arch.pgd;
     uint64_t *table = root->spt;
 
-    /* Sv39x4: 4 级页表 */
-    for (int level = 3; level > 0; level--) {
-        uint64_t idx = (gpa >> (12 + level * 9)) & 0x3FF;  /* L3 有 10 位 */
-        if (level < 3) idx &= 0x1FF;  /* L2/L1/L0 有 9 位 */
-
-        uint64_t pte = table[idx];
-        if (!(pte & PTE_V)) {
-            struct kvm_mmu_page *new = alloc_stage2_page();
-            table[idx] = make_pte(virt_to_phys(new), PTE_V);
-            pte = table[idx];
-        }
-        table = phys_to_virt((pte >> PTE_PPN_SHIFT) << 12);
+    /* Sv39x4: 3 级页表（根页表 1024 项） */
+    /* Level 3 (root): GPA[39:30], 10-bit index, 1024 entries */
+    uint64_t idx3 = (gpa >> 30) & 0x3FF;
+    uint64_t pte3 = table[idx3];
+    if (!(pte3 & PTE_V)) {
+        struct kvm_mmu_page *new = alloc_stage2_page();
+        table[idx3] = make_pte(virt_to_phys(new), PTE_V);
+        pte3 = table[idx3];
     }
+    table = phys_to_virt((pte3 >> PTE_PPN_SHIFT) << 12);
 
-    uint64_t idx0 = (gpa >> 12) & 0x1FF;
-    table[idx0] = make_pte(hpa, flags | PTE_V | PTE_A | PTE_D);
+    /* Level 2: GPA[29:21], 9-bit index */
+    uint64_t idx2 = (gpa >> 21) & 0x1FF;
+    uint64_t pte2 = table[idx2];
+    if (!(pte2 & PTE_V)) {
+        struct kvm_mmu_page *new = alloc_stage2_page();
+        table[idx2] = make_pte(virt_to_phys(new), PTE_V);
+        pte2 = table[idx2];
+    }
+    table = phys_to_virt((pte2 >> PTE_PPN_SHIFT) << 12);
+
+    /* Level 1 (leaf): GPA[20:12], 9-bit index */
+    uint64_t idx1 = (gpa >> 12) & 0x1FF;
+    table[idx1] = make_pte(hpa, flags | PTE_V | PTE_A | PTE_D);
 }
 
 /* VM 切换时写 hgatp */
@@ -307,7 +315,7 @@ cat trace
 | 要点 | 说明 |
 |------|------|
 | 两阶段翻译 | vsatp（GVA→GPA）+ hgatp（GPA→HPA） |
-| Sv39x4 | 第二阶段专用，4 级页表，1TB GPA |
+| Sv39x4 | 第二阶段专用，3 级页表（根页表 1024 项），1TB GPA |
 | VMID | TLB 标记，避免 VM 切换全刷 |
 | VM Exit/Entry | Guest trap → Host KVM 处理 → sret 返回 |
 | KVM API | /dev/kvm → KVM_CREATE_VM → KVM_CREATE_VCPU → KVM_RUN |

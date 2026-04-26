@@ -136,7 +136,7 @@ graph LR
     MSIP --> |中断码 3| CPU_M[CPU M-mode]
     MTIME --> |mtime &gt;= mtimecmp<br/>中断码 7| CPU_M
 
-    subgraph 软件中断触发
+    subgraph swirq ["软件中断触发"]
         CORE0[Core 0] --> |写 msip| MSIP
     end
 ```
@@ -169,7 +169,7 @@ PLIC 处理**外部设备**的中断，支持多中断源、优先级和多核�
 
 ```mermaid
 graph TB
-    subgraph 外部设备
+    subgraph devs ["外部设备"]
         D1[UART]
         D2[以太网]
         D3[SPI]

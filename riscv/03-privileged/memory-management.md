@@ -43,17 +43,17 @@ Lock:
 
 ```mermaid
 graph TB
-    subgraph "TOR (Top of Range)"
+    subgraph tor ["TOR (Top of Range)"]
         TOR1["pmpaddr[i-1] = 0x2000"]
         TOR2["pmpaddr[i] = 0x3000"]
         TOR3["保护范围: 0x2000 - 0x3000"]
     end
 
-    subgraph "NA4"
+    subgraph na4 ["NA4"]
         NA4["pmpaddr[i] = 0x2000<br/>保护范围: 0x2000 - 0x2004<br/>仅 4 字节"]
     end
 
-    subgraph "NAPOT"
+    subgraph napot ["NAPOT"]
         NAPOT["pmpaddr[i] = 0x2001<br/>低位置 1 表示 8 字节<br/>保护范围: 0x2000 - 0x2008"]
     end
 ```
@@ -342,14 +342,14 @@ Sv39x4 的 Guest 物理地址 (40-bit):
 └─────────┴─────────┴─────────┴───────────┘
 
 注意：比 Sv39 多了 1 位（bit 39），因此 VPN[3] 有 10 bits
-→ 第 4 级页表有 1024 项（而非 512 项）
-→ 总共 4 级页表
+→ 根页表有 1024 项（而非 512 项），占 8 KiB
+→ 仍为 3 级页表（与 Sv39 相同，根页表扩展为 1024 项）
 ```
 
 | 特性 | Sv39（第一阶段） | Sv39x4（第二阶段） |
 |------|------------------|-------------------|
 | 输入地址宽度 | 39 bit (GVA) | 40 bit (GPA) |
-| 页表级数 | 3 | 4 |
+| 页表级数 | 3 | 3（根页表扩展为 1024 项） |
 | 根页表项数 | 512 | 1024 |
 | 非根页表项数 | 512 | 512 |
 | 页大小 | 4 KB | 4 KB |
@@ -441,8 +441,8 @@ sequenceDiagram
 ```
 1. 拆分虚拟地址：
    VPN[2] = 0x000000000  (bits 38:30)
-   VPN[1] = 0x000000091  (bits 29:21) = 0x123 >> 3 = 0x91
-   VPN[0] = 0x0000001A3  (bits 20:12) = 0x456 >> 3 = 0x1A3
+   VPN[1] = 0x000000091  (bits 29:21)
+   VPN[0] = 0x000000145  (bits 20:12)
    Offset = 0x678        (bits 11:0)
 
 2. 查第 2 级页表：

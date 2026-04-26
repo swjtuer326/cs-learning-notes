@@ -15,7 +15,7 @@ graph TB
         CPU1["CPU Core 1"]
         L2["L2 Cache"]
 
-        subgraph 互连总线
+    subgraph bus ["互连总线"]
             BUS["Crossbar / NoC"]
         end
 
@@ -58,7 +58,7 @@ graph TB
 
 ```mermaid
 graph LR
-    subgraph AMBA 总线层次
+    subgraph amba ["AMBA 总线层次"]
         AHB["AHB<br/>高速总线<br/>CPU/DDR/DMA"]
         APB["APB<br/>外设总线<br/>UART/SPI/I2C"]
         AXI["AXI<br/>高性能总线<br/>现代 SoC 标准"]

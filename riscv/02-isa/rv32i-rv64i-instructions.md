@@ -34,10 +34,10 @@ RISC-V 有 32 个通用寄存器（x0-x31），其中 x0 硬连线为 0。
 
 ```mermaid
 graph LR
-    subgraph Caller-saved 临时/参数
+    subgraph caller ["Caller-saved 临时/参数"]
         T["t0-t6<br/>a0-a7<br/>ra"]
     end
-    subgraph Callee-saved 保存
+    subgraph callee ["Callee-saved 保存"]
         S["s0-s11<br/>sp<br/>gp/tp"]
     end
 
@@ -135,7 +135,7 @@ RISC-V 是 Load-Store 架构，只有这两类指令可以访问内存。
 | `LBU rd, offset(rs1)` | 加载无符号字节 | 8-bit | ❌ 零扩展 |
 | `LH rd, offset(rs1)` | 加载半字 | 16-bit | ✅ 符号扩展 |
 | `LHU rd, offset(rs1)` | 加载无符号半字 | 16-bit | ❌ 零扩展 |
-| `LW rd, offset(rs1)` | 加载字 | 32-bit | — |
+| `LW rd, offset(rs1)` | 加载字 | 32-bit | RV64 中符号扩展到 64 位 |
 | `LD rd, offset(rs1)` | 加载双字（RV64） | 64-bit | — |
 
 #### 存储指令（S-type）
@@ -226,13 +226,13 @@ addi  t0, t0, -1         # t0 = 0x12345FFF (-1 = 0xFFF 符号扩展)
 │ 条件分支  │ BEQ BNE BLT BGE BLTU BGEU                   │
 │ 跳转     │ JAL JALR                                     │
 │ 上位立即数│ LUI AUIPC                                    │
-│ 系统     │ ECALL EBREAK FENCE FENCE.I                   │
+│ 系统     │ ECALL EBREAK FENCE                           │
 ├──────────┼──────────────────────────────────────────────┤
-│ 合计     │ 40 条指令（含 Zicsr + Zifencei）            │
+│ 合计     │ 40 条指令（不含 Zicsr 和 Zifencei）         │
 └──────────┴──────────────────────────────────────────────┘
 ```
 
-> **关于指令计数：** RV32I 基础整数指令为 37 条，加上 CSR 指令（CSRRW/CSRRS/CSRRC/CSRRWI/CSRRSI/CSRRCI）和 FENCE/FENCE.I 共计约 40 条。自 20191213 版规范起，CSR 指令被拆分为独立的 **Zicsr** 扩展，FENCE.I 被拆分为独立的 **Zifencei** 扩展。在 GCC 工具链中，`-march=rv64i` 默认包含这两个扩展，但严格来说它们已不属于 I 扩展本身。
+> **关于指令计数：** RV32I 基础整数指令为 40 条（不含 Zicsr 和 Zifencei）。CSR 指令（CSRRW/CSRRS/CSRRC/CSRRWI/CSRRSI/CSRRCI）共 6 条属于 **Zicsr** 扩展，FENCE.I 属于 **Zifencei** 扩展。自 20191213 版规范起，这两个子扩展从 I 扩展中独立出来。在 GCC 工具链中，`-march=rv64i` 默认包含这两个扩展，但严格来说它们已不属于 I 扩展本身。
 
 ---
 

@@ -1554,8 +1554,11 @@ VM 换入：
 | 0x32 | eie0 | 中断使能 0 (ID 0-63) | M/S/VS |
 | 0x33 | eie1 | 中断使能 1 (ID 64-127) | M/S/VS |
 | 0x34-0x71 | eie2-eie63 | 中断使能 2-63 | M/S/VS |
-| 0x70 | topi | 最高优先级中断信息 | M/S/VS |
-| 0x72 | topei | 最高优先级中断 ID | M/S/VS |
+| 0xC0 | eip0 | 中断 pending 0 (ID 0-63) | M/S/VS |
+| 0xC1 | eip1 | 中断 pending 1 (ID 64-127) | M/S/VS |
+| 0xC2-0xFF | eip2-eip63 | 中断 pending 2-63 | M/S/VS |
+
+> **注意**：`topi` 和 `topei` 不是间接寄存器，而是直接 CSR。`mtopi`(0xFB0)、`stopi`(0xDB0)、`htopi`(0xEB0) 为只读；`mtopei`(0x35C)、`stopei`(0x15C)、`htopei`(0x65C) 可读写（写入完成中断确认）。
 
 ---
 
