@@ -80,6 +80,17 @@ graph LR
 |------|------|
 | [硬件平台与前沿方向](./07-practice/hardware-platforms.md) | 开发板选型、RTOS 移植、AI 加速器、服务器 |
 
+### 实战 Lab（贯穿各阶段）
+
+> 以下 Lab 案例将理论知识转化为可运行代码，建议在阅读对应章节后动手实践。
+
+| Lab | 主题 | 涉及知识点 | 对应章节 |
+|-----|------|-----------|----------|
+| [Lab 1](./08-labs/lab01-baremetal-trap-handler.md) | 裸机中断框架 + 上下文切换 | CSR、trap 处理、sscratch 技巧 | 03-privileged, 05-system-software |
+| [Lab 2](./08-labs/lab02-minimal-sbi.md) | 最小 SBI 实现 + 跨模式调用 | M/S 模式切换、PMP、SBI 调用约定 | 03-privileged, 05-system-software |
+| [Lab 3](./08-labs/lab03-sv39-page-table.md) | 页表遍历与缺页处理 | Sv39、MMU 启用、页故障处理 | 03-privileged |
+| [Lab 4](./08-labs/lab04-h-extension-two-stage-mmu.md) | 虚拟化两阶段翻译 | H 扩展、vsatp/hgatp、KVM API | 03-privileged |
+
 ### 专题文档
 
 | 文档 | 说明 |
@@ -87,6 +98,16 @@ graph LR
 | [RISC-V AIA 完全指南](./aia/riscv-aia-notes.md) | 高级中断架构详解 |
 
 ---
+
+## 文档特色
+
+| 特色 | 说明 |
+|------|------|
+| **双重视角** | 每章兼顾"初学者理解"和"工程师实战"两个层面 |
+| **Lab 驱动** | 4 个完整实战案例，从裸机到虚拟化，覆盖固件/内核开发核心技能 |
+| **交叉引用** | 理论章节与 Lab 案例相互引用，形成知识网络 |
+| **调试导向** | 包含大量 GDB、QEMU、objdump 的实战调试技巧 |
+| **中文优先** | 核心概念中文解释，保留英文术语便于对照官方 Spec |
 
 ## 推荐学习资源
 

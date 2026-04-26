@@ -1,6 +1,8 @@
 # 特权模式与 CSR
 
 > 特权架构是操作系统运行的基础。理解 M/S/U 三级特权模式和 CSR 寄存器，是掌握 RISC-V 系统软件的关键。
+>
+> **工程师视角**：特权模式不仅是"权限分级"，更是故障隔离的最后一道防线。当用户态程序触发非法指令时，CPU 自动切换到 S-mode 处理；当 S-mode 遇到无法处理的异常时，M-mode 的固件接管。理解这个"升级"流程，是调试"神秘重启"和"权限违规"问题的关键。
 
 ---
 
@@ -87,13 +89,13 @@ CSR 地址: [11:10] [9:8] [7:0]
 |----------|------|------|------|
 | 0x000-0x0FF | U 级 | 读/写 | fflags, frm, fcsr |
 | 0x100-0x1FF | S 级 | 读/写 | sstatus, sepc, stvec |
-| 0x200-0x2FF | S 级 | 只读 | — |
-| 0x400-0x4FF | HS 级 | 读/写 | hstatus, hgatp, hideleg |
-| 0x500-0x5FF | HS 级 | 只读 | — |
+| 0x200-0x2FF | VS 级 / S 级只读 | 读/写 | vsstatus, vsepc, vstvec |
 | 0x300-0x3FF | M 级 | 读/写 | mstatus, mepc, mtvec |
-| 0x400-0x4FF | M 级 | 只读 | — |
+| 0x400-0x4FF | M 级 | 只读 | mvendorid, marchid, mimpid, mhartid |
+| 0x500-0x5FF | M 级 | 只读 | mhpmcounter3-31 等 |
+| 0x600-0x6FF | HS 级 | 读/写 | hstatus, hgatp, hideleg, hie |
 
-> **H 扩展 CSR：** 地址 0x600-0x6FF 的 CSR 属于 Hypervisor（HS 级），如 hstatus、hgatp 等。VS-mode 的 CSR 位于 0x200-0x2FF（如 vsstatus、vsepc），与 S-mode CSR 地址不同但功能对称。详见 [虚拟化专题](./virtualization.md)。
+> **H 扩展 CSR：** 地址 0x600-0x6FF 的 CSR 属于 Hypervisor（HS 级），如 hstatus、hgatp 等。VS-mode 的 CSR 位于 0x200-0x2FF（如 vsstatus=0x200, vsepc=0x241），与 S-mode CSR 地址不同但功能对称。详见 [虚拟化专题](./virtualization.md)。
 
 > **访问规则：** 低特权级不能访问高特权级的 CSR，否则触发非法指令异常。高特权级可以访问低特权级的 CSR。
 
@@ -153,7 +155,7 @@ RV64 mstatus 布局（关键位）:
 | **MPP** [12:11] | M-mode 特权级保存 | trap 前的特权级（00=U, 01=S, 11=M） |
 | **SPP** [8] | S-mode 特权级保存 | trap 前的特权级（0=U, 1=S） |
 | **MPRV** [17] | 内存特权 | 1=load/store 使用 MPP 指定的特权级 |
-| **SXL** [34:33] | S-mode XLEN | RV64=10, RV32=01 |
+| **SXL** [35:34] | S-mode XLEN | RV64=10, RV32=01 |
 | **UXL** [33:32] | U-mode XLEN | RV64=10, RV32=01 |
 
 > **MIE/SIE 的嵌套机制：** 进入 trap 时，当前中断使能位保存到 MPIE/SPIE，然后 MIE/SIE 被清零（禁止中断）。执行 mret/sret 时，从 MPIE/SPIE 恢复。
@@ -463,6 +465,34 @@ graph TD
 | HS → VS | `hedeleg` / `hideleg` | HS 委托给 VS | Hypervisor 将部分异常/中断直接交给 Guest |
 
 > **注意：** VS-mode 不能处理所有异常。例如 I/O 访问、第二阶段页错误等必须由 HS-mode 处理（模拟设备或分配物理页），这些异常不应委托给 VS-mode。
+
+---
+
+## 8. Debug Mode（调试模式）
+
+RISC-V 定义了一个独立于 M/S/U 的 **Debug Mode**（调试模式），用于 JTAG 调试器控制处理器：
+
+| 特性 | 说明 |
+|------|------|
+| 特权级 | 独立于 M/S/U，高于 M-mode |
+| 进入方式 | 通过 JTAG 接口触发，或执行 `ebreak`（当 `dcsr.ebreakm=1` 时） |
+| 核心寄存器 | `dcsr`（调试状态）、`dpc`（调试 PC）、`dscratch0/1`（调试暂存） |
+| 能力 | 单步执行、硬件断点、观察点、读写任意 CSR 和内存 |
+
+```
+特权级关系：
+
+  Debug Mode > M-mode > HS-mode > VS-mode > VU-mode > U-mode
+
+  调试器通过 JTAG 可以：
+    1. 暂停/恢复任意 hart
+    2. 读写 GPR 和 CSR
+    3. 设置硬件断点（地址/数据观察点）
+    4. 单步执行
+    5. 强制 hart 进入/退出复位状态
+```
+
+> **Bring-up 场景：** 在芯片 bring-up 阶段，串口可能还未就绪，JTAG + Debug Mode 是唯一的调试手段。OpenOCD 是常用的开源 JTAG 调试服务器，配合 GDB 可实现源码级调试。
 
 ---
 

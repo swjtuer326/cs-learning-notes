@@ -1,6 +1,8 @@
 # 工具链与模拟器
 
 > 工欲善其事，必先利其器。掌握 RISC-V 的交叉编译工具链和模拟器，是实际开发的前提。
+>
+> **工程师视角**：工具链不仅是"编译代码"，更是定位问题的显微镜。当内核在目标板上 panic，而串口只输出乱码时，QEMU + GDB 的组合能让你在宿主机上精确复现和调试；当怀疑编译器生成错误指令时，`objdump` 是你的仲裁者。
 
 ---
 
@@ -57,6 +59,17 @@ make linux -j$(nproc)
 | rv64gc | lp64d | 64 位，双精度浮点 ABI |
 
 > **gc = imafdc_zicsr_zifencei**，G 是 IMAFDZicsr_Zifencei 的缩写。
+
+### 1.5 固件与内核的编译选项差异
+
+| 场景 | 推荐选项 | 原因 |
+|------|----------|------|
+| **Boot ROM** | `-march=rv64imac -mabi=lp64 -mcmodel=medany -Os` | 最小体积，位置无关 |
+| **OpenSBI** | `-march=rv64imafdc -mabi=lp64d -mcmodel=medany` | 需要浮点保存/恢复 |
+| **Linux 内核** | `-march=rv64imafdc -mabi=lp64d -mcmodel=medany` | 内核虚拟地址高半部分 |
+| **用户态程序** | `-march=rv64gc -mabi=lp64d -mcmodel=medlow` | 低地址，直接寻址 |
+
+> **关键区别**：`-mcmodel=medany` 允许代码和数据引用整个 64 位地址空间（使用 `auipc` + `addi`），这是内核必须的；`-mcmodel=medlow` 假设所有符号都在 2GB 范围内（使用 `lui` + `addi`），生成更小更快的代码。
 
 ---
 
@@ -136,6 +149,19 @@ riscv64-unknown-elf-gdb fw.elf
 (gdb) x/10i $pc
 (gdb) stepi
 ```
+
+#### GDB 常用命令速查
+
+| 命令 | 作用 | 固件调试场景 |
+|------|------|-------------|
+| `info registers` | 查看所有寄存器 | 检查 a0/a1 启动参数 |
+| `info registers mcause mepc mtval` | 查看异常 CSR | 定位 panic 原因 |
+| `x/10gx $sp` | 查看栈内容 | 检查栈溢出或损坏 |
+| `x/20i $pc` | 反汇编当前位置 | 确认代码执行路径 |
+| `set $pc = 0x80000000` | 修改 PC | 跳过故障指令继续调试 |
+| `monitor reset` | 复位目标 | 重新启动调试会话 |
+
+> **TUI 模式**：`riscv64-unknown-elf-gdb -tui fw.elf` 可以开启分屏界面，同时显示源代码和汇编，调试体验大幅提升。
 
 ---
 
@@ -262,6 +288,72 @@ riscv64-unknown-elf-nm firmware.elf | sort
 riscv64-unknown-elf-nm -u firmware.elf
 ```
 
+### 6.4 固件调试实战流程
+
+当固件在 QEMU 或真实硬件上崩溃时，按以下流程诊断：
+
+```
+1. 确认崩溃现象
+   └── 串口无输出？→ 检查链接脚本入口地址、QEMU -kernel 参数
+   └── 乱码？→ 检查波特率、时钟配置
+   └── 输出一半卡住？→ 可能是 trap 循环，查看 mcause
+
+2. 提取关键信息
+   └── 读取 mcause, mepc, mtval（通过 GDB 或 OpenSBI 控制台）
+   └── mcause = 0x2 (非法指令) → 检查 mepc 指向的指令
+   └── mcause = 0xf (存储页错误) → 检查 mtval 的地址和页表
+
+3. 复现与定位
+   └── QEMU: 添加 -d int 查看中断/异常日志
+   └── QEMU: 添加 -d in_asm 查看执行轨迹
+   └── GDB: 在 mepc 附近设置断点，单步跟踪
+
+4. 修复验证
+   └── 修改代码 → 重新编译 → 测试
+   └── 如果是硬件问题，检查设备树地址、PMP 配置
+```
+
+> **QEMU 调试日志示例**：
+> ```bash
+> qemu-system-riscv64 -machine virt -nographic -kernel fw.elf -d int
+> # 输出：riscv_cpu_do_interrupt: hart:0, async:0, cause: 0x0000000000000002, epc: 0x0000000080001040
+> # 表示核心 0 发生了同步异常（async:0），非法指令（cause:2），在地址 0x80001040
+> ```
+
+---
+
+## 7. 持续集成与自动化测试
+
+对于系统软件工程师，工具链的自动化是效率的关键：
+
+```bash
+# 使用 QEMU 进行自动化测试的脚本示例
+#!/bin/bash
+set -e
+
+# 编译固件
+make clean && make
+
+# 运行测试，设置 10 秒超时
+timeout 10 qemu-system-riscv64 \
+    -machine virt \
+    -nographic \
+    -bios none \
+    -kernel firmware.elf \
+    -serial stdio | tee qemu.log
+
+# 检查预期输出
+if grep -q "TEST PASSED" qemu.log; then
+    echo "✓ 测试通过"
+    exit 0
+else
+    echo "✗ 测试失败"
+    exit 1
+fi
+```
+
+> **CI 建议**：GitHub Actions 或 GitLab CI 中可以使用 `qemu-system-riscv64` 运行回归测试，确保每次代码提交都不会破坏已有的 Lab 案例。
+
 ---
 
 ## 小结
@@ -274,5 +366,12 @@ riscv64-unknown-elf-nm -u firmware.elf
 | gem5 | 性能模拟 | gem5.opt |
 | OpenOCD | JTAG 调试 | openocd |
 | GDB | 源码级调试 | riscv64-unknown-elf-gdb |
+
+| 调试场景 | 推荐工具组合 |
+|----------|-------------|
+| 启动失败 | QEMU `-d int` + `mcause` 分析 |
+| 随机崩溃 | GDB + QEMU stub，断点跟踪 |
+| 性能问题 | `rdcycle` 计数 + gem5 模拟 |
+| 指令验证 | Spike + QEMU 交叉对比 |
 
 → 下一节：[硬件平台与前沿方向](../07-practice/hardware-platforms.md)

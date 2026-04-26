@@ -1,6 +1,8 @@
 # 操作系统移植
 
 > 将操作系统运行在 RISC-V 上是系统软件工程师的核心能力。本文以 Linux 为主，讲解移植的关键步骤。
+>
+> **工程师视角**：OS 移植不是"一次性任务"，而是持续迭代的过程。从 bring-up 阶段的"串口输出第一个字符"，到生产环境的"NUMA 调度优化"，每个阶段都需要深入理解硬件与软件的交互边界。
 
 ---
 
@@ -65,6 +67,32 @@ void setup_vm(void) {
     pgdp[PAGE_OFFSET / PGDIR_SIZE] = pte_create(PA_START, PTE_R | PTE_W | PTE_X);  // 内核映射
 }
 ```
+
+> **为什么需要恒等映射？** 启用 MMU 的那条指令本身还在物理地址上执行。如果没有恒等映射，CPU 在写入 `satp` 后的下一条指令就会因为"找不到页表"而触发页错误。恒等映射确保了"开 MMU 瞬间"的平滑过渡。
+>
+> **生产环境注意**：实际 Linux 代码中，`setup_vm()` 还会处理 `KASLR`（内核地址空间布局随机化）和 `EFI` 内存映射，比上述简化版复杂得多。
+
+### 2.4 启动调试技巧
+
+```bash
+# 查看 OpenSBI 传递给内核的参数
+qemu-system-riscv64 -machine virt -nographic -kernel vmlinux -append "earlycon"
+
+# 使用 QEMU 的 GDB stub 跟踪启动流程
+qemu-system-riscv64 -machine virt -nographic -kernel vmlinux -S -gdb tcp::1234
+# 另一个终端：
+riscv64-unknown-elf-gdb vmlinux
+(gdb) target remote :1234
+(gdb) break _start
+(gdb) continue
+(gdb) info registers a0 a1  # 查看 hartid 和 FDT 地址
+(gdb) x/10gx $a1            # 查看 FDT 头
+```
+
+> **常见问题**：如果内核启动后立刻崩溃，检查：
+> 1. `a1` 是否指向有效的 FDT（魔数应为 `0xd00dfeed`）
+> 2. 早期页表是否正确建立了恒等映射
+> 3. `satp` 写入后是否执行了 `sfence.vma`
 
 ---
 
@@ -216,6 +244,12 @@ void do_trap(struct pt_regs *regs) {
     }
 }
 ```
+
+> **调试技巧**：当内核 panic 时，`scause` 的值是诊断关键：
+> - `0x0` = 指令地址未对齐（通常是链接错误）
+> - `0x1` = 指令访问错误（PMP/IOMMU 拦截）
+> - `0xc/0xd/0xf` = 页错误（检查页表权限和 `satp`）
+> - `0x2` = 非法指令（可能是不支持的扩展，或 PC 跑飞）
 
 ---
 
@@ -388,6 +422,38 @@ arch/riscv/
     └── ...
 ```
 
+### 8.3 从 RTOS 到 Linux 的演进路径
+
+对于系统软件工程师，建议按以下路径实践：
+
+```
+阶段 1: 裸机编程
+    └── 掌握寄存器操作、trap 处理、UART 驱动
+    └── 验证：QEMU 输出 "Hello World"
+
+阶段 2: 最小 RTOS
+    └── 实现上下文切换、简单调度器
+    └── 验证：两个任务交替打印
+
+阶段 3: 完整 RTOS 移植
+    └── 移植 FreeRTOS/Zephyr，支持中断和定时器
+    └── 验证：通过官方测试套件
+
+阶段 4: Linux  bring-up
+    └── 配置早期页表、PLIC 驱动、SBI 接口
+    └── 验证：启动到 shell
+
+阶段 5: Linux 驱动开发
+    └── 编写字符设备驱动、中断处理
+    └── 验证：insmod 加载，读写测试
+
+阶段 6: 性能优化
+    └── CPU 亲和性、NUMA 感知、锁优化
+    └── 验证：benchmark 提升
+```
+
+> **学习建议**：每个阶段都要有"可运行的产出"，不要停留在"看懂代码"。[Lab 系列](../08-labs/) 提供了阶段 1-4 的完整代码框架。
+
 ---
 
 ## 小结
@@ -401,5 +467,6 @@ arch/riscv/
 | 定时器 | 通过 SBI 设置 mtimecmp |
 | PLIC | Claim → 处理 → Complete |
 | 设备树 | 描述硬件信息，内核动态解析 |
+| 调试关键 | scause 值、GDB stub、earlycon |
 
 → 下一节：[工具链与模拟器](../06-tools/toolchain-and-simulator.md)

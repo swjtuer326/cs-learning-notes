@@ -1,6 +1,8 @@
 # 中断与异常处理
 
 > 中断和异常是操作系统与硬件交互的核心机制。本文深入解析 RISC-V 的 trap 处理流程、中断控制器和实际编程。
+>
+> **工程师视角**：中断不是"异步事件"那么简单。在服务器 SoC 中，一个网络包到达后，从网卡 DMA → PLIC 仲裁 → CPU 中断 → 内核协议栈处理，全链路的延迟决定了系统吞吐。理解每个环节，是性能优化的起点。
 
 ---
 
@@ -141,9 +143,11 @@ graph LR
 
 | 寄存器 | 地址偏移 | 功能 |
 |--------|----------|------|
-| `msip` | 0x0000 | 软件中断：写 1 触发 M-mode 软件中断，写 0 清除 |
-| `mtime` | 0xBFF8 | 当前时间计数器（只读，由硬件自增） |
-| `mtimecmp` | 0x4000 | 定时器比较值：mtime >= mtimecmp 时触发定时器中断 |
+| `msip` | 0x0000 + 4×hartid | 软件中断：写 1 触发 M-mode 软件中断，写 0 清除 |
+| `mtime` | 0xBFF8 | 当前时间计数器（只读，由硬件自增，所有 hart 共享） |
+| `mtimecmp` | 0x4000 + 8×hartid | 定时器比较值：mtime >= mtimecmp 时触发定时器中断（per-hart） |
+
+> **Per-hart 寄存器：** msip 和 mtimecmp 是每个 hart 独立的。hart 0 的 mtimecmp 在 0x4000，hart 1 在 0x4008，hart N 在 0x4000 + 8×N。mtime 是全局共享的。
 
 ```asm
 # 设置定时器中断（1ms 后触发）
@@ -303,7 +307,27 @@ graph TD
     style S_MODE fill:#ffa502,color:#fff
 ```
 
-### 5.2 Linux 中的中断处理
+### 5.2 Sstc 扩展：S-mode 直接接收定时器中断
+
+传统方式下，定时器中断只能由 M-mode 的 CLINT 产生，S-mode 需要通过 M-mode 中转（trap → M-mode → SBI 转发 → S-mode），增加了延迟。**Sstc 扩展**为 S-mode 提供了独立的定时器比较寄存器 `stimecmp`，使 S-mode 可以直接接收定时器中断，无需 M-mode 介入。
+
+| CSR | 地址 | 说明 |
+|-----|------|------|
+| `stimecmp` | 0x14D | S-mode 定时器比较值（Sstc 扩展） |
+| `vstimecmp` | 0x24D | VS-mode 定时器比较值（Sstc + H 扩展） |
+
+```asm
+# Sstc 方式设置定时器中断（无需 trap 到 M-mode）
+# 直接写 stimecmp 即可
+rdtime  t0                  # 读取当前时间
+li      t1, 10000           # 10ms 后
+add     t0, t0, t1
+csrw    stimecmp, t0        # 直接设置，无需 ecall
+```
+
+> **性能影响：** 在虚拟化场景中，Sstc 的意义更大。没有 Sstc 时，Guest 的定时器中断需要 VS→HS→M→HS→VS 的漫长路径；有了 Sstc + vstimecmp，Guest 可以直接设置定时器，大幅减少 VM Exit 次数。Linux 6.6+ 已默认启用 Sstc 支持。
+
+### 5.3 Linux 中的中断处理
 
 Linux（RISC-V）的中断处理路径：
 
