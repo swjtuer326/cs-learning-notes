@@ -13,6 +13,23 @@
 
 **一句话总结**：不懂 EDK2，你的 RISC-V SoC 就是一块没有灵魂的硅片。
 
+### 1.1 从 BIOS 到 UEFI：为什么要替换传统 BIOS
+
+传统 BIOS（Legacy BIOS）诞生于 1981 年 IBM PC 时代，在近 40 年的演进中积累了根本性的架构缺陷，UEFI 的出现正是为了解决这些问题：
+
+| 传统 BIOS 的局限 | UEFI 的解决方案 |
+|------------------|-----------------|
+| 16 位实模式运行，只能寻址 1MB | 保护模式/长模式运行，完整地址空间 |
+| 汇编语言编写，不可移植 | C 语言编写，跨架构（x86/ARM/RISC-V） |
+| 512KB 空间限制（Option ROM） | 无空间限制，支持大容量固件 |
+| 无网络栈，只能从本地启动 | 内置网络栈，支持 PXE/HTTP 启动 |
+| INT 13h 中断接口，只能读 8GB | Block I/O 协议，支持大容量存储 |
+| 无安全启动机制 | Secure Boot 防止恶意代码执行 |
+| MBR 分区表，最多 4 个主分区 | GPT 分区表，支持 128 个分区 |
+| 图形界面简陋（VGA 文字模式） | GOP 图形协议，支持高分辨率 |
+
+> **设计背景**：Intel 在 1998 年启动 EFI（Extensible Firmware Interface）项目，最初用于 Itanium（IA-64）服务器。2005 年，Intel 将 EFI 捐赠给 UEFI Forum，更名为 UEFI。同时，AMD、ARM、IBM、Microsoft 等公司共同参与制定规范，使其成为跨厂商的行业标准。
+
 ## 2. EDK2 是什么
 
 EDK II (EFI Development Kit II) 是一个现代化的、跨平台的固件开发环境，实现了 UEFI (Unified Extensible Firmware Interface) 和 PI (Platform Initialization) 规范。
@@ -21,37 +38,56 @@ EDK II (EFI Development Kit II) 是一个现代化的、跨平台的固件开发
 
 理解 EDK2 必须先理解它实现的规范体系，这是整个知识体系的骨架：
 
-```
-┌─────────────────────────────────────────────────────┐
-│                    UEFI 规范                          │
-│  (OS 与固件的接口：Boot Services, Runtime Services,   │
-│   Protocols, 变量服务, GPT 分区, 网络栈...)          │
-├─────────────────────────────────────────────────────┤
-│                    PI 规范                            │
-│  (固件内部架构：SEC → PEI → DXE → BDS → TSL → RT)  │
-│  ├─ PI PEI 规范 (PEI Core, PPI, HOB)                │
-│  ├─ PI DXE 规范 (DXE Core, Protocol, 驱动模型)       │
-│  └─ PI SMM 规范 (SMM Core, SMI Handler)             │
-├─────────────────────────────────────────────────────┤
-│                  ACPI 规范                            │
-│  (OS 与硬件的接口：电源管理, 设备描述, 中断路由...)    │
-└─────────────────────────────────────────────────────┘
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {\
+    "primaryColor": "#EEEDFF",\
+    "primaryTextColor": "#333333",\
+    "primaryBorderColor": "#8B7EC8",\
+    "secondaryColor": "#FFF8E1",\
+    "secondaryTextColor": "#333333",\
+    "secondaryBorderColor": "#FFB300",\
+    "tertiaryColor": "#F5F5F5",\
+    "tertiaryTextColor": "#333333",\
+    "tertiaryBorderColor": "#9E9E9E",\
+    "lineColor": "#888888",\
+    "textColor": "#333333",\
+    "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
+flowchart TD
+    UEFI["UEFI 规范<br/>OS 与固件的接口<br/>Boot Services · Runtime Services · Protocols<br/>变量服务 · GPT 分区 · 网络栈"]
+    PI["PI 规范<br/>固件内部架构<br/>SEC → PEI → DXE → BDS → TSL → RT"]
+    PI_PEI["PI PEI 规范<br/>PEI Core · PPI · HOB"]
+    PI_DXE["PI DXE 规范<br/>DXE Core · Protocol · 驱动模型"]
+    PI_SMM["PI SMM 规范<br/>SMM Core · SMI Handler"]
+    ACPI["ACPI 规范<br/>OS 与硬件的接口<br/>电源管理 · 设备描述 · 中断路由"]
+
+    UEFI --> PI
+    PI --> PI_PEI
+    PI --> PI_DXE
+    PI --> PI_SMM
+    PI --> ACPI
+
+    style UEFI fill:#EEEDFF,stroke:#333
+    style PI fill:#E8F5E9,stroke:#333
+    style ACPI fill:#FFF8E1,stroke:#333
 ```
 
 **UEFI vs PI 的区别**（这是初学者最容易混淆的点）：
+
+> **设计背景**：为什么需要两套规范？因为它们服务的对象不同。UEFI 规范面向 OS 开发者——定义"OS 能从固件获得什么服务"；PI 规范面向固件开发者——定义"固件内部各阶段如何协作"。这种分离让 OS 不需要关心固件内部实现，也让固件内部架构可以独立演进。
+
 - **UEFI 规范**定义的是固件暴露给 OS 的接口（对外的契约）
 - **PI 规范**定义的是固件内部各阶段之间的接口（对内的契约）
 - EDK2 同时实现了两者
 
 ### 2.2 EDK2 的核心设计哲学
 
-| 设计哲学 | 体现 |
-|----------|------|
-| **模块化** | 每个功能是一个独立的 Module（.inf 描述），可独立编译 |
-| **包化管理** | 相关模块组织成 Package（.dec 描述），包是发布和版本管理的基本单位 |
-| **接口与实现分离** | Library Class（接口）vs Library Instance（实现），DSC 中做绑定 |
-| **数据驱动** | PCD (Platform Configuration Database) 实现配置与代码分离 |
-| **声明式构建** | DSC/FDF 声明"要构建什么"，构建系统自动解决依赖和生成代码 |
+| 设计哲学 | 体现 | 设计动机 |
+|----------|------|----------|
+| **模块化** | 每个功能是一个独立的 Module（.inf 描述），可独立编译 | 固件代码量巨大（百万行级），模块化使团队可以并行开发、独立测试 |
+| **包化管理** | 相关模块组织成 Package（.dec 描述），包是发布和版本管理的基本单位 | 不同厂商（CPU/SoC/OEM）各自维护自己的包，互不干扰 |
+| **接口与实现分离** | Library Class（接口）vs Library Instance（实现），DSC 中做绑定 | 同一接口在不同阶段（PEI/DXE）或不同平台有不同实现，代码无需修改 |
+| **数据驱动** | PCD (Platform Configuration Database) 实现配置与代码分离 | 平台差异通过配置数据表达，而非 `#ifdef` 条件编译，降低代码复杂度 |
+| **声明式构建** | DSC/FDF 声明"要构建什么"，构建系统自动解决依赖和生成代码 | 固件构建涉及数千模块和复杂的依赖关系，手动管理 Makefile 不现实 |
 
 ## 3. 源码目录全景
 
@@ -103,50 +139,42 @@ EDK2 源码树庞大但组织有序。以下是按功能分类的目录地图：
 
 这是理解 EDK2 最重要的心智模型——从按下电源键到 OS 启动的完整旅程：
 
-```
-  CPU 上电/复位
-       │
-       ▼
-  ┌──────────┐    纯汇编，CPU 复位向量 (0xFFFFFFF0 on x86)
-  │ResetVector│    搜索 BFV → 定位 SEC Core → 跳转
-  └────┬─────┘
-       │
-       ▼
-  ┌──────────┐    第一个 C 代码阶段
-  │   SEC    │    初始化临时 RAM (CAR) → 设置 IDT → 定位 PEI Core
-  └────┬─────┘
-       │
-       ▼
-  ┌──────────┐    初始化永久内存 → 调度 PEIM → 构建 HOB
-  │   PEI    │    Shadow 自身到内存 → 定位 DXE Core → 跳转
-  └────┬─────┘
-       │
-       ▼
-  ┌──────────┐    建立 EFI 服务表 → 调度 DXE 驱动 → 等待架构协议就绪
-  │   DXE    │    加载 SMM Core 到 SMRAM → 调用 BDS Entry
-  └────┬─────┘
-       │
-       ▼
-  ┌──────────┐    枚举启动设备 → 连接控制台 → 加载 OS 引导程序
-  │   BDS    │    处理 BootOrder/BootNext 变量
-  └────┬─────┘
-       │
-       ▼
-  ┌──────────┐    OS Loader 执行 → 调用 ExitBootServices
-  │   TSL    │    固件从 Boot Services 过渡到 Runtime Services
-  └────┬─────┘
-       │
-       ▼
-  ┌──────────┐    仅保留 Runtime Services（变量服务、时间、重置）
-  │    RT    │    OS 内核接管系统
-  └──────────┘
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {\
+    "primaryColor": "#EEEDFF",\
+    "primaryTextColor": "#333333",\
+    "primaryBorderColor": "#8B7EC8",\
+    "secondaryColor": "#FFF8E1",\
+    "secondaryTextColor": "#333333",\
+    "secondaryBorderColor": "#FFB300",\
+    "tertiaryColor": "#F5F5F5",\
+    "tertiaryTextColor": "#333333",\
+    "tertiaryBorderColor": "#9E9E9E",\
+    "lineColor": "#888888",\
+    "textColor": "#333333",\
+    "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
+flowchart TD
+    A["CPU 上电/复位"] --> B["ResetVector<br/>纯汇编，CPU 复位向量<br/>(x86: 0xFFFFFFF0, RISC-V: 平台特定)"]
+    B --> C["SEC — 安全阶段<br/>第一个 C 代码阶段<br/>初始化临时 RAM → 设置 IDT → 定位 PEI Core"]
+    C --> D["PEI — Pre-EFI 初始化<br/>初始化永久内存 → 调度 PEIM → 构建 HOB<br/>Shadow 自身到内存 → 定位 DXE Core"]
+    D --> E["DXE — 驱动执行环境<br/>建立 EFI 服务表 → 调度 DXE 驱动<br/>等待架构协议就绪 → 加载 SMM Core"]
+    E --> F["BDS — 启动设备选择<br/>枚举启动设备 → 连接控制台<br/>加载 OS 引导程序"]
+    F --> G["TSL — 过渡系统加载<br/>OS Loader 执行 → 调用 ExitBootServices<br/>固件从 Boot Services 过渡到 Runtime Services"]
+    G --> H["RT — 运行时<br/>仅保留 Runtime Services<br/>OS 内核接管系统"]
 
-  ┌──────────┐    (独立运行) SMI 中断触发 → 进入 SMM
-  │   SMM    │    运行在隔离的 SMRAM 中，OS 不可见
-  └──────────┘
+    I["SMM — 系统管理模式<br/>(x86 特有) SMI 中断触发 → 进入 SMM<br/>运行在隔离的 SMRAM 中，OS 不可见"]
+
+    style B fill:#FFEBEE,stroke:#333
+    style C fill:#EEEDFF,stroke:#333
+    style D fill:#E8F5E9,stroke:#333
+    style E fill:#fbf,stroke:#333
+    style F fill:#FFF8E1,stroke:#333
+    style G fill:#FFEBEE,stroke:#333
+    style H fill:#ddd,stroke:#333
+    style I fill:#f66,stroke:#333,color:#fff
 ```
 
-**RISC-V 的差异**：RISC-V 没有 x86 的实模式/保护模式切换，也没有 SMM。RISC-V 的启动从 M-mode 开始，通过 SBI (Supervisor Binary Interface) 与上层交互。SEC 阶段直接在 M-mode 运行，后续阶段切换到 S-mode。
+**RISC-V 的差异**：RISC-V 没有 x86 的实模式/保护模式切换，也没有 SMM。在典型的 OpenSBI + UEFI 流程中，OpenSBI 在 M-mode 运行，通过 SBI ecall 为上层提供服务；UEFI 固件（从 SEC 开始）运行在 S-mode。RISC-V 的安全隔离通过 StandaloneMmPkg 在独立的安全环境中实现。
 
 ## 5. 核心文件类型速查
 
@@ -164,26 +192,40 @@ EDK2 有自己独特的元数据文件体系，这是理解项目的钥匙：
 
 **文件之间的依赖关系**：
 
-```
-DEC (包接口定义)
- ├── 被 DSC 引用（指定使用哪些包）
- ├── 被 INF 引用（声明依赖哪些包的接口）
- └── 被 FDF 引用（引用 GUID 定义）
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {\
+    "primaryColor": "#EEEDFF",\
+    "primaryTextColor": "#333333",\
+    "primaryBorderColor": "#8B7EC8",\
+    "secondaryColor": "#FFF8E1",\
+    "secondaryTextColor": "#333333",\
+    "secondaryBorderColor": "#FFB300",\
+    "tertiaryColor": "#F5F5F5",\
+    "tertiaryTextColor": "#333333",\
+    "tertiaryBorderColor": "#9E9E9E",\
+    "lineColor": "#888888",\
+    "textColor": "#333333",\
+    "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
+graph LR
+    DEC["DEC<br/>包接口定义"]
+    DSC["DSC<br/>平台构建配置"]
+    INF["INF<br/>模块定义"]
+    FDF["FDF<br/>固件布局"]
 
-DSC (平台构建配置)
- ├── 引用 DEC（指定包依赖）
- ├── 引用 INF（指定要构建的模块）
- ├── 引用 FDF（指定固件布局）
- └── 设置 PCD 值
+    DEC -->|被引用：指定包依赖| DSC
+    DEC -->|被引用：声明包依赖| INF
+    DEC -->|被引用：引用 GUID| FDF
 
-INF (模块定义)
- ├── 引用 DEC（声明包依赖）
- └── 被 DSC 引用（被包含在平台构建中）
+    DSC -->|引用 INF：指定要构建的模块| INF
+    DSC -->|引用 FDF：指定固件布局| FDF
+    DSC -->|设置 PCD 值| PCD["PCD 值"]
 
-FDF (固件布局)
- ├── 引用 DEC（使用 GUID）
- ├── 引用 INF（指定模块放入哪个 FV）
- └── 被 DSC 引用（关联平台构建）
+    FDF -->|引用 INF：指定模块放入哪个 FV| INF
+
+    style DEC fill:#EEEDFF,stroke:#333
+    style DSC fill:#E8F5E9,stroke:#333
+    style INF fill:#fbf,stroke:#333
+    style FDF fill:#FFF8E1,stroke:#333
 ```
 
 ## 6. 官方文档导航
@@ -224,37 +266,34 @@ TianoCore 官方文档体系庞大，按学习阶段推荐阅读顺序：
 
 针对 RISC-V 固件开发者的推荐学习路线：
 
-```
-Phase 1: 建立心智模型（1-2 周）
-├── 理解 UEFI/PI 规范体系
-├── 掌握启动流程全景
-├── 熟悉源码目录结构
-└── 理解 DEC/DSC/INF/FDF 文件关系
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {\
+    "primaryColor": "#EEEDFF",\
+    "primaryTextColor": "#333333",\
+    "primaryBorderColor": "#8B7EC8",\
+    "secondaryColor": "#FFF8E1",\
+    "secondaryTextColor": "#333333",\
+    "secondaryBorderColor": "#FFB300",\
+    "tertiaryColor": "#F5F5F5",\
+    "tertiaryTextColor": "#333333",\
+    "tertiaryBorderColor": "#9E9E9E",\
+    "lineColor": "#888888",\
+    "textColor": "#333333",\
+    "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
+flowchart TD
+    P1["Phase 1: 建立心智模型<br/>理解 UEFI/PI 规范体系<br/>掌握启动流程全景<br/>熟悉源码目录结构<br/>理解 DEC/DSC/INF/FDF 文件关系"]
+    P2["Phase 2: 构建与运行<br/>搭建构建环境<br/>构建 OvmfPkg/RiscVVirt（QEMU RISC-V）<br/>在 QEMU 中运行 RISC-V UEFI 固件<br/>使用 GDB 调试固件"]
+    P3["Phase 3: 核心概念深入<br/>MdePkg 类型系统与库类体系<br/>PEI/DXE Core 源码分析<br/>BDS 启动流程分析"]
+    P4["Phase 4: 模块开发实战<br/>编写简单的 DXE 驱动<br/>编写 PEIM 模块<br/>使用 PCD 做平台配置<br/>Library Class 设计与实现"]
+    P5["Phase 5: RISC-V 平台移植<br/>分析 RiscVVirt 架构<br/>RISC-V MMU 与页表配置<br/>ACPI 表生成 · 为新 SoC 创建平台包"]
 
-Phase 2: 构建与运行（1-2 周）
-├── 搭建构建环境
-├── 构建 OvmfPkg/RiscVVirt（QEMU RISC-V）
-├── 在 QEMU 中运行 RISC-V UEFI 固件
-└── 使用 GDB 调试固件
+    P1 --> P2 --> P3 --> P4 --> P5
 
-Phase 3: 核心概念深入（2-4 周）
-├── MdePkg 类型系统与库类体系
-├── PEI Core 源码分析（HOB、PPI、调度器）
-├── DXE Core 源码分析（Protocol、事件、GCD）
-└── BDS 启动流程分析
-
-Phase 4: 模块开发实战（2-4 周）
-├── 编写简单的 DXE 驱动
-├── 编写 PEIM 模块
-├── 使用 PCD 做平台配置
-└── Library Class 设计与实现
-
-Phase 5: RISC-V 平台移植（4-8 周）
-├── 分析 OvmfPkg/RiscVVirt 架构
-├── 理解 RISC-V SEC/PEI 初始化流程
-├── RISC-V MMU 与页表配置
-├── RISC-V ACPI 表生成（DynamicTablesPkg）
-└── 为新 SoC 创建平台包
+    style P1 fill:#E8F5E9
+    style P2 fill:#E3F2FD
+    style P3 fill:#FFF8E1
+    style P4 fill:#fce4ec
+    style P5 fill:#f3e5f5
 ```
 
 ## 8. 关键术语表

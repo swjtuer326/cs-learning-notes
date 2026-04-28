@@ -6,34 +6,52 @@
 
 EDK2 的构建系统是一个**双层架构**：先用 make 编译构建工具（BaseTools），再用构建工具编译固件。
 
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {\
+    "primaryColor": "#EEEDFF",\
+    "primaryTextColor": "#333333",\
+    "primaryBorderColor": "#8B7EC8",\
+    "secondaryColor": "#FFF8E1",\
+    "secondaryTextColor": "#333333",\
+    "secondaryBorderColor": "#FFB300",\
+    "tertiaryColor": "#F5F5F5",\
+    "tertiaryTextColor": "#333333",\
+    "tertiaryBorderColor": "#9E9E9E",\
+    "lineColor": "#888888",\
+    "textColor": "#333333",\
+    "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
+flowchart TD
+    subgraph Step1["1. 环境初始化"]
+        A["source edksetup.sh"] --> B["设置 WORKSPACE, PYTHON_COMMAND"]
+        B --> C["source BaseTools/BuildEnv"]
+        C --> D["设置 EDK_TOOLS_PATH"]
+        D --> E["将 BaseTools/Bin 添加到 PATH"]
+        E --> F["复制 Conf/*.template → Conf/*.txt"]
+        F --> G["保存配置到 Conf/BuildEnv.sh"]
+    end
+
+    subgraph Step2["2. 编译 BaseTools（首次）"]
+        H["make -C BaseTools"] --> I["编译 C 工具<br/>GenFv, GenFfs, VfrCompile..."]
+        I --> J["输出到 BaseTools/Source/C/bin/"]
+    end
+
+    subgraph Step3["3. 执行构建"]
+        K["build -p DSC -a ARCH -b TARGET -t TOOL"] --> L["解析 Conf/target.txt, tools_def.txt"]
+        L --> M["解析 DSC/DEC/INF/FDF 元数据文件"]
+        M --> N["AutoGen: 自动生成 .c/.h/Makefile"]
+        N --> O["调用 make 执行编译"]
+        O --> P["GenFds: 生成固件映像 FD/FV/Capsule"]
+        P --> Q["生成构建报告"]
+    end
+
+    Step1 --> Step2 --> Step3
+
+    style Step1 fill:#E8F5E9
+    style Step2 fill:#E3F2FD
+    style Step3 fill:#FFF8E1
 ```
-┌───────────────────────────────────────────────────────┐
-│                  固件构建流程                           │
-│                                                       │
-│  1. 环境初始化                                         │
-│     $ . edksetup.sh                                   │
-│     ├── 设置 WORKSPACE, PYTHON_COMMAND                │
-│     ├── source BaseTools/BuildEnv                     │
-│     │   ├── 设置 EDK_TOOLS_PATH                      │
-│     │   ├── 将 BaseTools/Bin 添加到 PATH              │
-│     │   └── 复制 Conf/*.template → Conf/*.txt        │
-│     └── 保存配置到 Conf/BuildEnv.sh                   │
-│                                                       │
-│  2. 编译 BaseTools（首次）                              │
-│     $ make -C BaseTools                               │
-│     ├── 编译 C 工具 (GenFv, GenFfs, VfrCompile...)   │
-│     └── 输出到 BaseTools/Source/C/bin/               │
-│                                                       │
-│  3. 执行构建                                           │
-│     $ build -p <DSC> -a <ARCH> -b <TARGET> -t <TOOL> │
-│     ├── 解析 Conf/target.txt, Conf/tools_def.txt     │
-│     ├── 解析 DSC/DEC/INF/FDF 元数据文件               │
-│     ├── AutoGen: 自动生成 .c/.h/Makefile              │
-│     ├── 调用 make 执行编译                             │
-│     ├── GenFds: 生成固件映像 (FD/FV/Capsule)          │
-│     └── 生成构建报告                                   │
-└───────────────────────────────────────────────────────┘
-```
+
+> **设计背景 — 为什么是双层架构？** BaseTools 中的 C 工具（如 GenFv、VfrCompile）需要先编译才能使用，而这些工具的编译使用标准的 make 构建系统。固件的编译则使用 BaseTools 提供的 Python 构建引擎。这种分离让 BaseTools 可以独立更新，也避免了"鸡生蛋"问题——构建工具本身不需要 EDK2 的构建系统来编译。
 
 ## 2. BaseTools 详解
 
@@ -96,15 +114,31 @@ BaseTools/
 
 **工具链的数据流**：
 
-```
-源码 (.c/.h/.S)
-  → 编译器 → .o 目标文件
-  → 链接器 → .dll/.so (PE/COFF 或 ELF)
-  → GenFw → .efi (UEFI 可执行文件)
-  → GenSec → .section (封装为 Section，可选压缩)
-  → GenFfs → .ffs (封装为 FFS 文件)
-  → GenFv → .fv (组装为固件卷)
-  → 最终 → .fd (完整固件映像)
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {\
+    "primaryColor": "#EEEDFF",\
+    "primaryTextColor": "#333333",\
+    "primaryBorderColor": "#8B7EC8",\
+    "secondaryColor": "#FFF8E1",\
+    "secondaryTextColor": "#333333",\
+    "secondaryBorderColor": "#FFB300",\
+    "tertiaryColor": "#F5F5F5",\
+    "tertiaryTextColor": "#333333",\
+    "tertiaryBorderColor": "#9E9E9E",\
+    "lineColor": "#888888",\
+    "textColor": "#333333",\
+    "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
+flowchart LR
+    SRC["源码 .c/.h/.S"] --> OBJ["编译器 → .o 目标文件"]
+    OBJ --> DLL["链接器 → .dll/.so<br/>PE/COFF 或 ELF"]
+    DLL --> EFI["GenFw → .efi<br/>UEFI 可执行文件"]
+    EFI --> SEC["GenSec → .section<br/>封装为 Section · 可选压缩"]
+    SEC --> FFS["GenFfs → .ffs<br/>封装为 FFS 文件"]
+    FFS --> FV["GenFv → .fv<br/>组装为固件卷"]
+    FV --> FD["最终 → .fd<br/>完整固件映像"]
+
+    style SRC fill:#E8F5E9
+    style FD fill:#FFEBEE
 ```
 
 ### 2.3 Python 构建引擎
@@ -136,6 +170,8 @@ build.py (入口)
 | `AutoGen.c` | 同上 | PCD 初始化代码、ModuleInfo |
 | `Makefile` | 同上 | 模块的编译规则 |
 | `<Module>.depex` | 同上 | 依赖表达式字节码 |
+
+> **设计背景 — 为什么需要 AutoGen？** EDK2 的元数据文件（DSC/DEC/INF）声明了模块的依赖、PCD 值、库绑定等信息，但 C 编译器不理解这些声明式格式。AutoGen 将元数据转换为 C 代码和 Makefile：`AutoGen.h` 包含 PCD 宏定义和库头文件包含；`AutoGen.c` 包含 PCD 初始值和模块信息字符串；`Makefile` 定义编译规则。这种"声明式元数据 + 自动代码生成"的模式让开发者只需关注"要构建什么"，而不需要手动编写样板代码。
 
 ## 3. 配置文件详解
 
@@ -252,7 +288,7 @@ build [选项]
 构建目标：
   all                     完整构建（默认）
   genc                    仅生成 C 代码
-  genmake                 仅生成 Makefile
+  genmake                仅生成 Makefile
   modules                 编译所有模块
   fds                     生成固件映像
   clean                   清理构建产物
@@ -353,6 +389,8 @@ DEC 文件定义包的公共接口，是包的"头文件"。
   gEfiMdePkgTokenSpaceGuid.PcdMaximumUnicodeStringLength|1000000|UINT32|0x00000001
 ```
 
+> **设计背景 — DEC 的"头文件"角色**：DEC 文件与 C 语言的 `.h` 文件类比非常贴切。C 的 `.h` 声明了函数签名和类型，调用者只需要包含 `.h` 就能编译通过，不需要知道实现。同样，DEC 声明了包的公共接口（库类、GUID、PCD），其他包的模块只需要在 INF 中引用这个 DEC，就能使用这些接口。具体实现由 DSC 中的库绑定决定。这种"接口与实现分离"是 EDK2 包化管理的核心。
+
 ### 5.2 DSC 文件（平台描述）
 
 DSC 文件定义如何构建一个平台，是"构建配置"的核心。
@@ -401,6 +439,8 @@ DSC 文件定义如何构建一个平台，是"构建配置"的核心。
   MdeModulePkg/Universal/BdsDxe/BdsDxe.inf
   UefiCpuPkg/CpuDxeRiscV64/CpuDxeRiscV64.inf
 ```
+
+> **设计背景 — DSC 的"构建配置"角色**：DSC 文件回答了"如何构建这个平台"的所有问题：使用哪些库实现？PCD 值是什么？编译选项是什么？包含哪些模块？同一个包的模块可以通过不同的 DSC 文件构建出不同的平台配置。例如，MdeModulePkg 的模块在 OVMF 的 DSC 和真实硬件的 DSC 中使用不同的库绑定和 PCD 值。
 
 ### 5.3 INF 文件（模块定义）
 
@@ -518,6 +558,8 @@ FDF 文件定义 Flash 布局和固件卷内容。
   FV = FvMain
 ```
 
+> **设计背景 — FDF 的"链接脚本 + 分区表"角色**：FDF 做两件事：定义 Flash 的物理布局（哪些地址放什么）和指定模块放入哪个固件卷。这类似于嵌入式开发中的链接脚本（定义内存布局）和分区表（定义 Flash 分区）的组合。FDF 中的 `[FD]` 段定义完整的固件映像，`[FV]` 段定义固件卷的内容。构建系统根据 FDF 调用 GenFds 工具生成最终的 `.fd` 文件。
+
 ## 6. AutoGen 机制
 
 AutoGen 是 EDK2 构建系统最精巧的设计——根据元数据文件自动生成代码。
@@ -572,7 +614,7 @@ DXE Dispatcher 使用栈式求值器执行这些字节码来决定驱动调度�
 ```bash
 # 安装依赖
 sudo apt install build-essential uuid-dev iasl git \
-    python3 python3-distutils python3-setuptools \
+    python3 python3-venv \
     qemu-system-misc
 
 # 安装 RISC-V 交叉编译工具链
@@ -583,6 +625,8 @@ git clone https://github.com/tianocore/edk2.git
 cd edk2
 git submodule update --init
 ```
+
+> **注意**：`python3-distutils` 在 Python 3.12+ 中已被移除。如果你使用 Python 3.12 或更高版本，EDK2 的最新版本已经不再依赖 `distutils`。如果遇到相关问题，请确保使用最新版本的 EDK2 源码。
 
 ### 7.2 构建步骤
 
@@ -607,7 +651,16 @@ ls Build/RiscVVirtQemu/DEBUG_GCC5/FV/RISCV_VIRT.fd
 ### 7.3 运行固件
 
 ```bash
-# 使用 QEMU 运行
+# 使用 QEMU 运行（带 OpenSBI）
+qemu-system-riscv64 \
+    -machine virt \
+    -m 2048 \
+    -bios default \
+    -pflash Build/RiscVVirtQemu/DEBUG_GCC5/FV/RISCV_VIRT_CODE.fd \
+    -pflash Build/RiscVVirtQemu/DEBUG_GCC5/FV/RISCV_VIRT_VARS.fd \
+    -nographic
+
+# 不使用 OpenSBI（UEFI 直接作为 payload）
 qemu-system-riscv64 \
     -machine virt \
     -m 2048 \
@@ -615,16 +668,9 @@ qemu-system-riscv64 \
     -pflash Build/RiscVVirtQemu/DEBUG_GCC5/FV/RISCV_VIRT_CODE.fd \
     -pflash Build/RiscVVirtQemu/DEBUG_GCC5/FV/RISCV_VIRT_VARS.fd \
     -nographic
-
-# 或使用默认的 OpenSBI + UEFI 组合
-qemu-system-riscv64 \
-    -machine virt \
-    -m 2048 \
-    -bios default \
-    -pflash Build/RiscVVirtQemu/DEBUG_GCC5/FV/RISCV_VIRT_CODE.fd \
-    -pflash Build/RiscVVirtQemu/DEBUG_GCC5/FV/RISCV_VIRT_VARS.fd \
-    -nographic
 ```
+
+> **设计背景 — `-bios default` vs `-bios none`**：QEMU 的 `-bios` 参数指定 M-mode 固件。`-bios default` 使用 QEMU 自带的 OpenSBI，它会初始化 M-mode 然后跳转到 `-pflash` 指定的 UEFI 固件。`-bios none` 则不加载任何 M-mode 固件，UEFI 需要自行处理 M-mode 初始化（通常不推荐，除非你有自定义的 M-mode 固件）。对于 RiscVVirt 平台，推荐使用 `-bios default`。
 
 ### 7.4 调试固件
 
@@ -632,13 +678,14 @@ qemu-system-riscv64 \
 # 使用 GDB 调试
 riscv64-unknown-elf-gdb Build/RiscVVirtQemu/DEBUG_GCC5/MdeModulePkg/Core/Dxe/DxeMain/DxeMain/DEBUG/DxeCore.dll
 
-# GDB 连接 QEMU（QEMU 端加 -s -S 参数）
+# QEMU 端加 -s -S 参数（-s = GDB 端口 1234, -S = 启动时暂停）
 qemu-system-riscv64 -machine virt -m 2048 \
     -bios default \
     -pflash ... \
     -nographic -s -S
 
 # GDB 端
+(gdb) set architecture riscv:rv64
 (gdb) target remote :1234
 (gdb) break DxeMain
 (gdb) continue
@@ -647,6 +694,8 @@ qemu-system-riscv64 -machine virt -m 2048 \
 ## 8. CI 系统
 
 EDK2 使用基于 Stuart/PyTool 的 CI 系统，配置在 `.pytool/CISettings.py` 中。
+
+> **设计背景 — 为什么从传统 CI 迁移到 Stuart/PyTool？** EDK2 传统的 `build` 命令是单平台构建工具，而 CI 需要同时验证多个平台和架构的组合。Stuart/PyTool 是 TianoCore 开发的基于 Python 的构建/CI 框架，支持：多平台并行构建、依赖自动管理（nuget/pip）、细粒度的 CI 插件（编码规范、GUID 唯一性检查等）、以及与 Azure Pipelines/GitHub Actions 的集成。
 
 ### 8.1 CI 执行流程
 

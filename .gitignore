@@ -16,6 +16,7 @@ build-*/
 # IDE
 .vscode/
 .idea/
+.trae/
 *.swp
 *.swo
 *~
@@ -27,3 +28,4 @@ __pycache__/
 
 # 其他
 .DS_Store
+.edk2/edk2-src/
