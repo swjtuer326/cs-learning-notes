@@ -2,6 +2,23 @@
 
 > 写代码是工程师的本能，但在 EDK2 中写代码需要先理解它的"世界观"——模块、协议、库类、PCD 构成了一个精密的齿轮系统。
 
+### 关键术语
+
+| 缩写 | 全称 | 含义 |
+|------|------|------|
+| Protocol | EFI Protocol | DXE 阶段的驱动接口机制，通过 GUID 标识 |
+| PPI | PEIM-to-PEIM Interface | PEI 阶段模块间通信接口 |
+| HOB | Hand-Off Block | 阶段间数据传递结构 |
+| PCD | Platform Configuration Database | 平台配置数据库 |
+| DEPEX | Dependency Expression | 依赖表达式 |
+| TPL | Task Priority Level | 任务优先级级别 |
+| GUID | Globally Unique Identifier | 全局唯一标识符 |
+| INF | Information | 模块定义文件 |
+| DSC | Platform Description | 平台描述文件 |
+| FDF | Flash Description File | 固件描述文件 |
+
+---
+
 ## 1. 模块开发基础
 
 ### 1.1 模块类型与入口点
@@ -617,7 +634,7 @@ UefiMain (
 
 ```bash
 # 构建后，.efi 文件位于
-# Build/<Platform>/DEBUG_GCC5/MdeModulePkg/Application/HelloWorld/HelloWorld/OUTPUT/HelloWorld.efi
+# Build/<Platform>/DEBUG_GCC/MdeModulePkg/Application/HelloWorld/HelloWorld/OUTPUT/HelloWorld.efi
 
 # 在 UEFI Shell 中
 fs0:
@@ -669,7 +686,7 @@ ASSERT_EFI_ERROR (Status);
 
 ```bash
 # 1. 构建 DEBUG 目标
-build -p <DSC> -a RISCV64 -b DEBUG -t GCC5
+build -p <DSC> -a RISCV64 -b DEBUG -t GCC
 
 # 2. 启动 QEMU（带 GDB 等待）
 qemu-system-riscv64 -machine virt -m 2048 \
@@ -700,50 +717,11 @@ qemu-system-riscv64 ... -serial file:uefi.log
 qemu-system-riscv64 ... -nographic  # 串口输出到终端
 ```
 
-## 8. 编码规范要点
+## 8. 编码规范
 
-### 8.1 命名约定
-
-| 类型 | 规范 | 示例 |
-|------|------|------|
-| 函数 | PascalCase | `InitializePlatform` |
-| 宏 | UPPER_SNAKE_CASE | `MAX_BUFFER_SIZE` |
-| 全局变量 | m 前缀 + PascalCase | `mDriverHandle` |
-| 局部变量 | 小写 + 下划线 | `buffer_size` |
-| 结构体类型 | _ 前缀 + PascalCase | `_MY_DRIVER_CONTEXT` |
-| Protocol/PPI | g 前缀 | `gMyProtocolGuid` |
-| PCD | Pcd 前缀 | `PcdMaxVariableSize` |
-
-> **设计背景 — 命名前缀的意图**：`m` 前缀（member）标识模块级全局变量，`g` 前缀（global）标识跨模块共享的全局符号（如 GUID）。这种命名约定让代码审查者一眼就能区分变量的作用域，避免意外修改模块级状态。EDK2 的 ECC 工具会强制检查这些命名约定。
-
-### 8.2 关键规则
-
-1. **所有公共函数必须使用 EFIAPI**
-2. **参数必须使用 IN/OUT/IN OUT/OPTIONAL 修饰**
-3. **所有函数必须返回 EFI_STATUS**（除了 VOID 返回的函数）
-4. **禁止使用 C 标准库函数**（使用 EDK2 的 BaseLib/BaseMemoryLib 替代）
-5. **禁止使用浮点运算**（UEFI 环境不保证 FPU 可用）
-6. **禁止使用全局变量初始化**（除 CONST 变量外，因为 .data 段可能不可写）
-7. **Runtime Driver 必须正确处理虚拟地址转换**
-
-> **设计背景 — 为什么禁止全局变量初始化？** UEFI 模块从 Flash 加载执行，Flash 是只读的。非 CONST 的初始化全局变量存储在 `.data` 段，需要加载器将其复制到可写内存并应用重定位。但在固件环境中（尤其是 PEI 阶段），可能没有可写内存来存放 `.data` 段。因此，EDK2 编码规范要求全局变量要么是 `CONST`（放在 `.rodata`/`.rdata`），要么在运行时赋值。`STATIC` 变量如果不加 `CONST`，也必须在代码中显式初始化（通常初始化为 0，由 `.bss` 段处理）。
-
-### 8.3 禁止使用的 C 标准库函数及替代
-
-| 禁止 | 替代 |
-|------|------|
-| `memcpy` | `CopyMem` |
-| `memset` | `SetMem` / `ZeroMem` |
-| `memcmp` | `CompareMem` |
-| `strlen` | `StrLen` / `AsciiStrLen` |
-| `strcpy` | `StrCpyS` / `AsciiStrCpyS` |
-| `printf` | `Print` / `DEBUG` |
-| `malloc`/`free` | `gBS->AllocatePool`/`FreePool` |
-| `atoi`/`strtol` | `StrDecimalToUintn` / `StrHexToUintn` |
-
-> **设计背景 — 为什么禁止 C 标准库？** UEFI 环境没有 OS 提供的 C 运行时（CRT）。`malloc` 需要 OS 的堆管理器，`printf` 需要 OS 的文件描述符，`strlen` 在 UEFI 中有 UCS-2 版本（`StrLen`）和 ASCII 版本（`AsciiStrLen`）。EDK2 通过 BaseLib 和 BaseMemoryLib 提供了精简的替代实现，这些库直接操作硬件，不依赖任何 OS 服务。
+> 详见 [02-类型系统与编码规范](./02-type-system.md) 的编码规范章节。本文不再重复。
 
 ---
 
-**上一篇**：[02-build-system.md](02-build-system.md) — 构建系统深入
-**下一篇**：[04-riscv-platform.md](04-riscv-platform.md) — RISC-V 与平台移植
+**上一篇**：[04-构建系统深入](./04-build-system.md) — DSC/DEC/INF/FDF 与 AutoGen
+**下一篇**：[06-RISC-V 平台移植](./06-riscv-platform.md) — SBI、MMU、新 SoC 移植

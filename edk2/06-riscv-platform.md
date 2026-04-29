@@ -2,6 +2,25 @@
 
 > RISC-V 服务器需要 UEFI，就像汽车需要方向盘——不是唯一选择，但是工业标准的选择。这一篇是你在 RISC-V SoC 上移植 UEFI 的实战指南。
 
+### 关键术语
+
+| 缩写 | 全称 | 含义 |
+|------|------|------|
+| SBI | Supervisor Binary Interface | RISC-V 特权层二进制接口 |
+| OpenSBI | Open Supervisor Binary Interface | 开源 SBI 参考实现 |
+| FDT | Flattened Device Tree | 扁平化设备树 |
+| MMU | Memory Management Unit | 内存管理单元 |
+| SATP | Supervisor Address Translation and Protection | 监管者地址转换与保护寄存器 |
+| ACPI | Advanced Configuration and Power Interface | 高级配置与电源接口 |
+| RHCT | RISC-V Hart Capabilities Table | RISC-V Hart 能力表 |
+| MADT | Multiple APIC Description Table | 多 APIC 描述表 |
+| CSR | Control and Status Register | 控制和状态寄存器 |
+| Hart | Hardware Thread | RISC-V 硬件线程 |
+| PLIC | Platform-Level Interrupt Controller | 平台级中断控制器 |
+| APLIC | Advanced Platform-Level Interrupt Controller | 高级平台级中断控制器 |
+
+---
+
 ## 1. RISC-V 在 EDK2 中的架构
 
 ### 1.1 代码分布
@@ -47,37 +66,27 @@ DynamicTablesPkg (ACPI 层)
 ### 1.2 RISC-V 启动流程 vs x86
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {\
-    "primaryColor": "#EEEDFF",\
-    "primaryTextColor": "#333333",\
-    "primaryBorderColor": "#8B7EC8",\
-    "secondaryColor": "#FFF8E1",\
-    "secondaryTextColor": "#333333",\
-    "secondaryBorderColor": "#FFB300",\
-    "tertiaryColor": "#F5F5F5",\
-    "tertiaryTextColor": "#333333",\
-    "tertiaryBorderColor": "#9E9E9E",\
-    "lineColor": "#888888",\
-    "textColor": "#333333",\
-    "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
-flowchart TD
-    subgraph x86["x86 启动流程"]
-        X1["CPU 复位 (0xFFFFFFF0)"] --> X2["16位实模式"]
-        X2 --> X3["32位保护模式"]
-        X3 --> X4["64位长模式"]
-        X4 --> X5["SEC (C 代码)"]
-        X5 --> X6["PEI → DXE → BDS → OS"]
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#ECECFF", "primaryTextColor": "#333333", "primaryBorderColor": "#9370DB", "lineColor": "#666666", "secondaryColor": "#ffffde", "secondaryBorderColor": "#aaaa33", "tertiaryColor": "#f0f0f0", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
+flowchart LR
+    subgraph X86Boot["x86 启动流程"]
+        X86Reset(["CPU 复位 0xFFFFFFF0"]) --> X86Real["16位实模式"]
+        X86Real --> X86Protected["32位保护模式"]
+        X86Protected --> X86Long["64位长模式"]
+        X86Long --> X86Sec["SEC (C 代码)"]
+        X86Sec --> X86Later["PEI → DXE → BDS → OS"]
     end
 
-    subgraph RV["RISC-V 启动流程"]
-        R1["CPU 复位 (0x1000, QEMU virt)"] --> R2["M-mode (机器模式)"]
-        R2 --> R3["OpenSBI (M-mode 固件)<br/>初始化 M-mode · 设置 S-mode 入口<br/>通过 SBI ecall 服务"]
-        R3 --> R4["SEC (S-mode, UEFI 入口)<br/>接收 BootHartId 和 FdtPointer<br/>从 PCD 获取临时 RAM · 初始化"]
-        R4 --> R5["PEI → DXE → BDS → OS"]
+    subgraph RvBoot["RISC-V 启动流程"]
+        RvReset(["CPU 复位 0x1000"]) --> RvMmode["M-mode 机器模式"]
+        RvMmode --> RvOpensbi["OpenSBI (M-mode)<br/>初始化 · 设置 S-mode 入口"]
+        RvOpensbi --> RvSec["SEC (S-mode)<br/>接收 BootHartId · FdtPointer"]
+        RvSec --> RvLater["PEI → DXE → BDS → OS"]
     end
 
-    style x86 fill:#E3F2FD
-    style RV fill:#FFF8E1
+    classDef x86Style fill:#d1ecf1,stroke:#17a2b8,color:#0c5460,stroke-width:2px
+    classDef rvStyle fill:#fff3cd,stroke:#ffc107,color:#856404,stroke-width:2px
+    class X86Reset,X86Real,X86Protected,X86Long,X86Sec,X86Later x86Style
+    class RvReset,RvMmode,RvOpensbi,RvSec,RvLater rvStyle
 ```
 
 **关键差异**：
@@ -102,31 +111,22 @@ flowchart TD
 SBI (Supervisor Binary Interface) 是 RISC-V S-mode 软件与 M-mode 固件之间的标准接口，类似 ARM 的 SMCCC (Secure Monitor Call)。
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {\
-    "primaryColor": "#EEEDFF",\
-    "primaryTextColor": "#333333",\
-    "primaryBorderColor": "#8B7EC8",\
-    "secondaryColor": "#FFF8E1",\
-    "secondaryTextColor": "#333333",\
-    "secondaryBorderColor": "#FFB300",\
-    "tertiaryColor": "#F5F5F5",\
-    "tertiaryTextColor": "#333333",\
-    "tertiaryBorderColor": "#9E9E9E",\
-    "lineColor": "#888888",\
-    "textColor": "#333333",\
-    "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#ECECFF", "primaryTextColor": "#333333", "primaryBorderColor": "#9370DB", "lineColor": "#666666", "secondaryColor": "#ffffde", "secondaryBorderColor": "#aaaa33", "tertiaryColor": "#f0f0f0", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 flowchart TD
-    OS["S-mode (UEFI/OS)<br/>通过 ecall 调用 SBI"]
-    SBI["SBI 层 (M-mode 固件)<br/>OpenSBI 是最常用的实现<br/>处理 ecall → 执行 M-mode 操作 → 返回"]
-    HW["M-mode (硬件)<br/>CSR 寄存器 · 物理内存管理等"]
+    Smode["S-mode (UEFI/OS)<br/>通过 ecall 调用 SBI"]
+    SbiLayer["SBI 层 (M-mode 固件)<br/>OpenSBI 是最常用的实现"]
+    MmodeHw["M-mode (硬件)<br/>CSR 寄存器 · 物理内存管理"]
 
-    OS -->|ecall| SBI
-    SBI -->|CSR 指令/物理操作| HW
-    SBI -->|返回结果| OS
+    Smode -->|ecall| SbiLayer
+    SbiLayer -->|CSR 指令 · 物理操作| MmodeHw
+    SbiLayer -->|返回结果| Smode
 
-    style OS fill:#E3F2FD
-    style SBI fill:#FFF8E1
-    style HW fill:#FFEBEE
+    classDef smode fill:#d1ecf1,stroke:#17a2b8,color:#0c5460,stroke-width:2px
+    classDef sbilayer fill:#fff3cd,stroke:#ffc107,color:#856404,stroke-width:2px
+    classDef mmhw fill:#f8d7da,stroke:#dc3545,color:#721c24,stroke-width:2px
+    class Smode smode
+    class SbiLayer sbilayer
+    class MmodeHw mmhw
 ```
 
 > **设计背景 — SBI 的设计哲学**：RISC-V 特权架构规范故意将 M-mode 和 S-mode 分离——S-mode 软件不能直接访问 M-mode 的 CSR 寄存器或执行 M-mode 操作。SBI 是两个特权级之间的"合同"：S-mode 软件只需要知道 SBI 接口，不需要知道 M-mode 固件的具体实现。这使得 M-mode 固件可以独立更新（例如从 OpenSBI 切换到其他实现），而不影响 S-mode 软件。
@@ -204,38 +204,29 @@ RISC-V 支持三种虚拟内存模式：
 **页表结构**（以 Sv39 为例）：
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {\
-    "primaryColor": "#EEEDFF",\
-    "primaryTextColor": "#333333",\
-    "primaryBorderColor": "#8B7EC8",\
-    "secondaryColor": "#FFF8E1",\
-    "secondaryTextColor": "#333333",\
-    "secondaryBorderColor": "#FFB300",\
-    "tertiaryColor": "#F5F5F5",\
-    "tertiaryTextColor": "#333333",\
-    "tertiaryBorderColor": "#9E9E9E",\
-    "lineColor": "#888888",\
-    "textColor": "#333333",\
-    "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#ECECFF", "primaryTextColor": "#333333", "primaryBorderColor": "#9370DB", "lineColor": "#666666", "secondaryColor": "#ffffde", "secondaryBorderColor": "#aaaa33", "tertiaryColor": "#f0f0f0", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 flowchart TD
-    VA["虚拟地址 (39 位)"]
-    VA --> VPN2["VPN[2]<br/>9 bits"]
-    VA --> VPN1["VPN[1]<br/>9 bits"]
-    VA --> VPN0["VPN[0]<br/>9 bits"]
-    VA --> OFFSET["Page Offset<br/>12 bits"]
+    Va["虚拟地址 (39 位)"]
+    Va --> Vpn2["VPN[2] 9 bits"]
+    Va --> Vpn1["VPN[1] 9 bits"]
+    Va --> Vpn0["VPN[0] 9 bits"]
+    Va --> PageOffset["Page Offset 12 bits"]
 
-    SATP["SATP 寄存器<br/>→ Page Table L2 基址"] --> L2["Page Table L2<br/>512 项"]
-    VPN2 --> L2
-    L2 --> L1["Page Table L1<br/>512 项"]
-    VPN1 --> L1
-    L1 --> L0["Page Table L0<br/>512 项"]
-    VPN0 --> L0
-    L0 --> PAGE["Physical Page<br/>4KB"]
-    OFFSET --> PAGE
+    SatpReg["SATP 寄存器<br/>→ L2 页表基址"] --> L2Table["Page Table L2<br/>512 项"]
+    Vpn2 -->|索引| L2Table
+    L2Table --> L1Table["Page Table L1<br/>512 项"]
+    Vpn1 -->|索引| L1Table
+    L1Table --> L0Table["Page Table L0<br/>512 项"]
+    Vpn0 -->|索引| L0Table
+    L0Table --> PhysPage["Physical Page<br/>4KB"]
+    PageOffset -->|偏移| PhysPage
 
-    style VA fill:#E3F2FD
-    style SATP fill:#FFF8E1
-    style PAGE fill:#E8F5E9
+    classDef va fill:#d1ecf1,stroke:#17a2b8,color:#0c5460,stroke-width:2px
+    classDef table fill:#fff3cd,stroke:#ffc107,color:#856404,stroke-width:2px
+    classDef page fill:#d4edda,stroke:#28a745,color:#155724,stroke-width:2px
+    class Va,Vpn2,Vpn1,Vpn0,PageOffset va
+    class SatpReg,L2Table,L1Table,L0Table table
+    class PhysPage page
 ```
 
 > **设计背景 — Sv39/Sv48/Sv57 的渐进式设计**：RISC-V 的虚拟内存模式是渐进式的——Sv39 是必须支持的，Sv48 和 Sv57 是可选的。这种设计让简单的硬件实现只需要支持 Sv39（3 级页表，512KB 页表内存），而高性能实现可以支持 Sv48/Sv57 来获得更大的地址空间。UEFI 固件通常使用 Sv39 就足够了，因为固件阶段的地址空间需求不大。`PcdCpuRiscVMmuMaxSatpMode` PCD 允许平台选择使用哪种模式。
@@ -480,53 +471,45 @@ RISC-V MADT 包含以下中断控制器结构：
 为新的 RISC-V SoC 移植 UEFI，需要完成以下工作：
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {\
-    "primaryColor": "#EEEDFF",\
-    "primaryTextColor": "#333333",\
-    "primaryBorderColor": "#8B7EC8",\
-    "secondaryColor": "#FFF8E1",\
-    "secondaryTextColor": "#333333",\
-    "secondaryBorderColor": "#FFB300",\
-    "tertiaryColor": "#F5F5F5",\
-    "tertiaryTextColor": "#333333",\
-    "tertiaryBorderColor": "#9E9E9E",\
-    "lineColor": "#888888",\
-    "textColor": "#333333",\
-    "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
-flowchart TD
-    subgraph P1["Phase 1: 最小启动"]
-        T1["[1] 创建平台包目录结构"]
-        T2["[2] 实现 PlatformSecLib"]
-        T3["[3] 创建平台 DSC/FDF 文件"]
-        T4["[4] 实现 PlatformPei"]
-        T5["[5] 验证 DXE Core 启动"]
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#ECECFF", "primaryTextColor": "#333333", "primaryBorderColor": "#9370DB", "lineColor": "#666666", "secondaryColor": "#ffffde", "secondaryBorderColor": "#aaaa33", "tertiaryColor": "#f0f0f0", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
+flowchart LR
+    subgraph Phase1["Phase 1: 最小启动"]
+        T1["创建平台包目录结构"]
+        T2["实现 PlatformSecLib"]
+        T3["创建平台 DSC/FDF"]
+        T4["实现 PlatformPei"]
+        T5["验证 DXE Core 启动"]
         T1 --> T2 --> T3 --> T4 --> T5
     end
 
-    subgraph P2["Phase 2: 基本驱动"]
-        T6["[6] 实现串口驱动"]
-        T7["[7] 实现定时器驱动"]
-        T8["[8] 实现 ResetSystemLib"]
-        T9["[9] 实现文件系统驱动"]
-        T10["[10] 验证 UEFI Shell 启动"]
+    subgraph Phase2["Phase 2: 基本驱动"]
+        T6["实现串口驱动"]
+        T7["实现定时器驱动"]
+        T8["实现 ResetSystemLib"]
+        T9["实现文件系统驱动"]
+        T10["验证 UEFI Shell"]
         T6 --> T7 --> T8 --> T9 --> T10
     end
 
-    subgraph P3["Phase 3: 完整平台"]
-        T11["[11] 实现 PlatformBootManagerLib"]
-        T12["[12] 实现 NOR Flash 驱动"]
-        T13["[13] 实现网络驱动"]
-        T14["[14] 实现 ACPI 表生成"]
-        T15["[15] 实现 Secure Boot"]
-        T16["[16] 验证 OS 启动"]
+    subgraph Phase3["Phase 3: 完整平台"]
+        T11["实现 BootManagerLib"]
+        T12["实现 NOR Flash 驱动"]
+        T13["实现网络驱动"]
+        T14["实现 ACPI 表生成"]
+        T15["实现 Secure Boot"]
+        T16["验证 OS 启动"]
         T11 --> T12 --> T13 --> T14 --> T15 --> T16
     end
 
-    P1 --> P2 --> P3
+    Phase1 -->|最小系统运行后| Phase2
+    Phase2 -->|Shell 可用后| Phase3
 
-    style P1 fill:#E8F5E9
-    style P2 fill:#E3F2FD
-    style P3 fill:#FFF8E1
+    classDef phase1 fill:#d4edda,stroke:#28a745,color:#155724,stroke-width:2px
+    classDef phase2 fill:#d1ecf1,stroke:#17a2b8,color:#0c5460,stroke-width:2px
+    classDef phase3 fill:#fff3cd,stroke:#ffc107,color:#856404,stroke-width:2px
+    class Phase1,T1,T2,T3,T4,T5 phase1
+    class Phase2,T6,T7,T8,T9,T10 phase2
+    class Phase3,T11,T12,T13,T14,T15,T16 phase3
 ```
 
 ### 6.2 创建平台包
@@ -848,4 +831,4 @@ break CoreInstallProtocolInterface
 
 ---
 
-**上一篇**：[03-module-development.md](03-module-development.md) — 模块开发实战
+**上一篇**：[05-模块开发实战](./05-module-dev.md) — DXE 驱动、Protocol、PEIM

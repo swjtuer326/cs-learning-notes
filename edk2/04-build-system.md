@@ -2,53 +2,62 @@
 
 > 构建系统是固件开发中"最不有趣但最重要"的部分。理解它，你才能从"改别人的代码"进化到"创建自己的平台"。
 
+### 关键术语
+
+| 缩写 | 全称 | 含义 |
+|------|------|------|
+| DEC | Package Declaration | 包声明文件，定义包的公共接口 |
+| DSC | Platform Description | 平台描述文件，定义构建配置 |
+| INF | Information | 模块定义文件 |
+| FDF | Flash Description File | 固件描述文件，定义 Flash 布局 |
+| PCD | Platform Configuration Database | 平台配置数据库 |
+| FV | Firmware Volume | 固件卷 |
+| FFS | Firmware File System | 固件文件系统 |
+| FD | Firmware Device | 完整固件映像 |
+| AutoGen | Automatic Generation | 自动代码生成机制 |
+| DEPEX | Dependency Expression | 依赖表达式 |
+
+---
+
 ## 1. 构建系统全景
 
 EDK2 的构建系统是一个**双层架构**：先用 make 编译构建工具（BaseTools），再用构建工具编译固件。
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {\
-    "primaryColor": "#EEEDFF",\
-    "primaryTextColor": "#333333",\
-    "primaryBorderColor": "#8B7EC8",\
-    "secondaryColor": "#FFF8E1",\
-    "secondaryTextColor": "#333333",\
-    "secondaryBorderColor": "#FFB300",\
-    "tertiaryColor": "#F5F5F5",\
-    "tertiaryTextColor": "#333333",\
-    "tertiaryBorderColor": "#9E9E9E",\
-    "lineColor": "#888888",\
-    "textColor": "#333333",\
-    "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#ECECFF", "primaryTextColor": "#333333", "primaryBorderColor": "#9370DB", "lineColor": "#666666", "secondaryColor": "#ffffde", "secondaryBorderColor": "#aaaa33", "tertiaryColor": "#f0f0f0", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 flowchart TD
-    subgraph Step1["1. 环境初始化"]
-        A["source edksetup.sh"] --> B["设置 WORKSPACE, PYTHON_COMMAND"]
-        B --> C["source BaseTools/BuildEnv"]
-        C --> D["设置 EDK_TOOLS_PATH"]
-        D --> E["将 BaseTools/Bin 添加到 PATH"]
-        E --> F["复制 Conf/*.template → Conf/*.txt"]
-        F --> G["保存配置到 Conf/BuildEnv.sh"]
+    subgraph EnvInit["1. 环境初始化"]
+        SourceEdk["source edksetup.sh"] --> SetWorkspace["设置 WORKSPACE"]
+        SetWorkspace --> SourceBuildEnv["source BaseTools/BuildEnv"]
+        SourceBuildEnv --> SetToolsPath["设置 EDK_TOOLS_PATH"]
+        SetToolsPath --> AddPath["添加 BaseTools/Bin 到 PATH"]
+        AddPath --> CopyTemplates["复制 Conf/*.template → Conf/*.txt"]
+        CopyTemplates --> SaveConfig["保存配置到 BuildEnv.sh"]
     end
 
-    subgraph Step2["2. 编译 BaseTools（首次）"]
-        H["make -C BaseTools"] --> I["编译 C 工具<br/>GenFv, GenFfs, VfrCompile..."]
-        I --> J["输出到 BaseTools/Source/C/bin/"]
+    subgraph BuildTools["2. 编译 BaseTools（首次）"]
+        MakeBaseTools["make -C BaseTools"] --> CompileCTools["编译 C 工具"]
+        CompileCTools --> OutputBin["输出到 BaseTools/Source/C/bin/"]
     end
 
-    subgraph Step3["3. 执行构建"]
-        K["build -p DSC -a ARCH -b TARGET -t TOOL"] --> L["解析 Conf/target.txt, tools_def.txt"]
-        L --> M["解析 DSC/DEC/INF/FDF 元数据文件"]
-        M --> N["AutoGen: 自动生成 .c/.h/Makefile"]
-        N --> O["调用 make 执行编译"]
-        O --> P["GenFds: 生成固件映像 FD/FV/Capsule"]
-        P --> Q["生成构建报告"]
+    subgraph RunBuild["3. 执行构建"]
+        BuildCmd["build 命令"] --> ParseConf["解析 target.txt, tools_def.txt"]
+        ParseConf --> ParseMeta["解析 DSC/DEC/INF/FDF 元数据"]
+        ParseMeta --> AutoGenCode["AutoGen 生成 .c/.h/Makefile"]
+        AutoGenCode --> CallMake["调用 make 执行编译"]
+        CallMake --> GenFdsImg["GenFds 生成 FD/FV 映像"]
+        GenFdsImg --> GenReport["生成构建报告"]
     end
 
-    Step1 --> Step2 --> Step3
+    EnvInit -->|首次或环境变更| BuildTools
+    BuildTools --> RunBuild
 
-    style Step1 fill:#E8F5E9
-    style Step2 fill:#E3F2FD
-    style Step3 fill:#FFF8E1
+    classDef phase1 fill:#d4edda,stroke:#28a745,color:#155724,stroke-width:2px
+    classDef phase2 fill:#d1ecf1,stroke:#17a2b8,color:#0c5460,stroke-width:2px
+    classDef phase3 fill:#fff3cd,stroke:#ffc107,color:#856404,stroke-width:2px
+    class EnvInit phase1
+    class BuildTools phase2
+    class RunBuild phase3
 ```
 
 > **设计背景 — 为什么是双层架构？** BaseTools 中的 C 工具（如 GenFv、VfrCompile）需要先编译才能使用，而这些工具的编译使用标准的 make 构建系统。固件的编译则使用 BaseTools 提供的 Python 构建引擎。这种分离让 BaseTools 可以独立更新，也避免了"鸡生蛋"问题——构建工具本身不需要 EDK2 的构建系统来编译。
@@ -115,30 +124,22 @@ BaseTools/
 **工具链的数据流**：
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {\
-    "primaryColor": "#EEEDFF",\
-    "primaryTextColor": "#333333",\
-    "primaryBorderColor": "#8B7EC8",\
-    "secondaryColor": "#FFF8E1",\
-    "secondaryTextColor": "#333333",\
-    "secondaryBorderColor": "#FFB300",\
-    "tertiaryColor": "#F5F5F5",\
-    "tertiaryTextColor": "#333333",\
-    "tertiaryBorderColor": "#9E9E9E",\
-    "lineColor": "#888888",\
-    "textColor": "#333333",\
-    "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#ECECFF", "primaryTextColor": "#333333", "primaryBorderColor": "#9370DB", "lineColor": "#666666", "secondaryColor": "#ffffde", "secondaryBorderColor": "#aaaa33", "tertiaryColor": "#f0f0f0", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 flowchart LR
-    SRC["源码 .c/.h/.S"] --> OBJ["编译器 → .o 目标文件"]
-    OBJ --> DLL["链接器 → .dll/.so<br/>PE/COFF 或 ELF"]
-    DLL --> EFI["GenFw → .efi<br/>UEFI 可执行文件"]
-    EFI --> SEC["GenSec → .section<br/>封装为 Section · 可选压缩"]
-    SEC --> FFS["GenFfs → .ffs<br/>封装为 FFS 文件"]
-    FFS --> FV["GenFv → .fv<br/>组装为固件卷"]
-    FV --> FD["最终 → .fd<br/>完整固件映像"]
+    SourceCode[/"源码 .c/.h/.S"/] --> ObjectFile["编译器 → .o 目标文件"]
+    ObjectFile --> LinkedImage["链接器 → .dll/.so<br/>PE/COFF 或 ELF"]
+    LinkedImage --> EfiFile["GenFw → .efi<br/>UEFI 可执行文件"]
+    EfiFile --> SectionFile["GenSec → .section<br/>封装为 Section · 可选压缩"]
+    SectionFile --> FfsFile["GenFfs → .ffs<br/>封装为 FFS 文件"]
+    FfsFile --> FvImage["GenFv → .fv<br/>组装为固件卷"]
+    FvImage --> FdImage["最终 → .fd<br/>完整固件映像"]
 
-    style SRC fill:#E8F5E9
-    style FD fill:#FFEBEE
+    classDef input fill:#d1ecf1,stroke:#17a2b8,color:#0c5460,stroke-width:2px
+    classDef process fill:#cce5ff,stroke:#007bff,color:#004085,stroke-width:2px
+    classDef output fill:#f8d7da,stroke:#dc3545,color:#721c24,stroke-width:2px
+    class SourceCode input
+    class ObjectFile,LinkedImage,EfiFile,SectionFile,FfsFile,FvImage process
+    class FdImage output
 ```
 
 ### 2.3 Python 构建引擎
@@ -166,7 +167,7 @@ build.py (入口)
 
 | 生成文件 | 位置 | 用途 |
 |----------|------|------|
-| `AutoGen.h` | `Build/<Platform>/<Module>/DEBUG_GCC5/` | 模块级别的宏和类型定义 |
+| `AutoGen.h` | `Build/<Platform>/<Module>/DEBUG_GCC/` | 模块级别的宏和类型定义 |
 | `AutoGen.c` | 同上 | PCD 初始化代码、ModuleInfo |
 | `Makefile` | 同上 | 模块的编译规则 |
 | `<Module>.depex` | 同上 | 依赖表达式字节码 |
@@ -193,7 +194,7 @@ TARGET_ARCH           = RISCV64
 TOOL_CHAIN_CONF       = Conf/tools_def.txt
 
 # 使用的工具链标签
-TOOL_CHAIN_TAG        = GCC5
+TOOL_CHAIN_TAG        = GCC
 
 # 构建规则文件
 BUILD_RULE_CONF       = Conf/build_rule.txt
@@ -218,15 +219,15 @@ TARGET_TOOLCHAIN_ARCH_COMMANDTYPE_ATTRIBUTE = <value>
 
 例如：
 ```
-DEBUG_GCC5_RISCV64_CC_PATH = /usr/bin/riscv64-unknown-elf-gcc
-DEBUG_GCC5_RISCV64_CC_FLAGS = -g -Os -Wall -Werror ...
+DEBUG_GCC_RISCV64_CC_PATH = /usr/bin/riscv64-unknown-elf-gcc
+DEBUG_GCC_RISCV64_CC_FLAGS = -g -Os -Wall -Werror ...
 ```
 
 **支持的工具链**：
 
 | 工具链标签 | 编译器 | 平台 |
 |-----------|--------|------|
-| GCC5 | GCC (带 LTO) | Linux/macOS |
+| GCC | GCC | Linux/macOS |
 | GCCNOLTO | GCC (无 LTO) | Linux/macOS |
 | CLANGPDB | Clang (PDB 调试) | 全平台 |
 | CLANGDWARF | Clang (DWARF 调试) | 全平台 |
@@ -241,7 +242,7 @@ DEBUG_GCC5_RISCV64_CC_FLAGS = -g -Os -Wall -Werror ...
 sudo apt install gcc-riscv64-unknown-elf
 
 # 或使用自定义路径
-export GCC5_RISCV64_PREFIX=/opt/riscv/bin/riscv64-unknown-elf-
+export GCC_RISCV64_PREFIX=/opt/riscv/bin/riscv64-unknown-elf-
 ```
 
 ### 3.3 build_rule.txt — 构建规则
@@ -273,7 +274,7 @@ build [选项]
   -p, --platform=FILE     平台 DSC 文件
   -a, --arch=ARCH         目标架构 (IA32/X64/AARCH64/RISCV64/LOONGARCH64)
   -b, --buildtarget=TYPE  构建目标 (DEBUG/RELEASE/NOOPT)
-  -t, --tagname=TOOL      工具链标签 (GCC5/CLANGPDB/VS2022)
+  -t, --tagname=TOOL      工具链标签 (GCC/CLANGPDB/VS2022)
 
 可选参数：
   -m, --module=FILE       仅构建指定模块 INF
@@ -303,25 +304,25 @@ build [选项]
 build -p OvmfPkg/RiscVVirt/RiscVVirtQemu.dsc \
       -a RISCV64 \
       -b DEBUG \
-      -t GCC5 \
+      -t GCC \
       -n 8
 
 # 仅构建某个模块
 build -p OvmfPkg/RiscVVirt/RiscVVirtQemu.dsc \
       -a RISCV64 \
       -b DEBUG \
-      -t GCC5 \
+      -t GCC \
       -m MdeModulePkg/Universal/BdsDxe/BdsDxe.inf
 
 # 带宏定义的构建
 build -p OvmfPkg/RiscVVirt/RiscVVirtQemu.dsc \
-      -a RISCV64 -b DEBUG -t GCC5 \
+      -a RISCV64 -b DEBUG -t GCC \
       -D SECURE_BOOT_ENABLE \
       -D TPM2_ENABLE
 
 # 命令行设置 PCD
 build -p OvmfPkg/RiscVVirt/RiscVVirtQemu.dsc \
-      -a RISCV64 -b DEBUG -t GCC5 \
+      -a RISCV64 -b DEBUG -t GCC \
       --pcd "gUefiCpuPkgTokenSpaceGuid.PcdCpuRiscVMmuMaxSatpMode=9"
 ```
 
@@ -330,7 +331,7 @@ build -p OvmfPkg/RiscVVirt/RiscVVirtQemu.dsc \
 ```
 Build/
 └── RiscVVirtQemu/                    # 平台名
-    └── DEBUG_GCC5/                   # TARGET_TOOLCHAIN
+    └── DEBUG_GCC/                    # TARGET_TOOLCHAIN
         ├── FV/                       # 固件卷输出
         │   ├── RISCV_VIRT.fd         # ★ 完整固件映像
         │   ├── RISCV_VIRT_CODE.fd    # CODE FD
@@ -641,47 +642,52 @@ make -C BaseTools
 build -p OvmfPkg/RiscVVirt/RiscVVirtQemu.dsc \
       -a RISCV64 \
       -b DEBUG \
-      -t GCC5 \
+      -t GCC \
       -n $(nproc)
 
 # 4. 查看输出
-ls Build/RiscVVirtQemu/DEBUG_GCC5/FV/RISCV_VIRT.fd
+ls Build/RiscVVirtQemu/DEBUG_GCC/FV/RISCV_VIRT_CODE.fd
 ```
 
 ### 7.3 运行固件
 
 ```bash
+# 填充 Flash 映像到 32MB（QEMU virt 要求）
+truncate -s 32M Build/RiscVVirtQemu/DEBUG_GCC/FV/RISCV_VIRT_CODE.fd
+truncate -s 32M Build/RiscVVirtQemu/DEBUG_GCC/FV/RISCV_VIRT_VARS.fd
+
 # 使用 QEMU 运行（带 OpenSBI）
 qemu-system-riscv64 \
     -machine virt \
-    -m 2048 \
+    -m 256M \
     -bios default \
-    -pflash Build/RiscVVirtQemu/DEBUG_GCC5/FV/RISCV_VIRT_CODE.fd \
-    -pflash Build/RiscVVirtQemu/DEBUG_GCC5/FV/RISCV_VIRT_VARS.fd \
+    -drive if=pflash,format=raw,file=Build/RiscVVirtQemu/DEBUG_GCC/FV/RISCV_VIRT_CODE.fd,readonly=on \
+    -drive if=pflash,format=raw,file=Build/RiscVVirtQemu/DEBUG_GCC/FV/RISCV_VIRT_VARS.fd \
     -nographic
 
 # 不使用 OpenSBI（UEFI 直接作为 payload）
 qemu-system-riscv64 \
     -machine virt \
-    -m 2048 \
+    -m 256M \
     -bios none \
-    -pflash Build/RiscVVirtQemu/DEBUG_GCC5/FV/RISCV_VIRT_CODE.fd \
-    -pflash Build/RiscVVirtQemu/DEBUG_GCC5/FV/RISCV_VIRT_VARS.fd \
+    -drive if=pflash,format=raw,file=Build/RiscVVirtQemu/DEBUG_GCC/FV/RISCV_VIRT_CODE.fd,readonly=on \
+    -drive if=pflash,format=raw,file=Build/RiscVVirtQemu/DEBUG_GCC/FV/RISCV_VIRT_VARS.fd \
     -nographic
 ```
 
-> **设计背景 — `-bios default` vs `-bios none`**：QEMU 的 `-bios` 参数指定 M-mode 固件。`-bios default` 使用 QEMU 自带的 OpenSBI，它会初始化 M-mode 然后跳转到 `-pflash` 指定的 UEFI 固件。`-bios none` 则不加载任何 M-mode 固件，UEFI 需要自行处理 M-mode 初始化（通常不推荐，除非你有自定义的 M-mode 固件）。对于 RiscVVirt 平台，推荐使用 `-bios default`。
+> **设计背景 — `-bios default` vs `-bios none`**：QEMU 的 `-bios` 参数指定 M-mode 固件。`-bios default` 使用 QEMU 自带的 OpenSBI，它会初始化 M-mode 然后跳转到 pflash 指定的 UEFI 固件。`-bios none` 则不加载任何 M-mode 固件，UEFI 需要自行处理 M-mode 初始化（通常不推荐，除非你有自定义的 M-mode 固件）。对于 RiscVVirt 平台，推荐使用 `-bios default`。
 
 ### 7.4 调试固件
 
 ```bash
 # 使用 GDB 调试
-riscv64-unknown-elf-gdb Build/RiscVVirtQemu/DEBUG_GCC5/MdeModulePkg/Core/Dxe/DxeMain/DxeMain/DEBUG/DxeCore.dll
+riscv64-unknown-elf-gdb Build/RiscVVirtQemu/DEBUG_GCC/MdeModulePkg/Core/Dxe/DxeMain/DxeMain/DEBUG/DxeCore.dll
 
 # QEMU 端加 -s -S 参数（-s = GDB 端口 1234, -S = 启动时暂停）
-qemu-system-riscv64 -machine virt -m 2048 \
+qemu-system-riscv64 -machine virt -m 256M \
     -bios default \
-    -pflash ... \
+    -drive if=pflash,format=raw,file=Build/RiscVVirtQemu/DEBUG_GCC/FV/RISCV_VIRT_CODE.fd,readonly=on \
+    -drive if=pflash,format=raw,file=Build/RiscVVirtQemu/DEBUG_GCC/FV/RISCV_VIRT_VARS.fd \
     -nographic -s -S
 
 # GDB 端
@@ -731,5 +737,5 @@ stuart_ci_build -c .pytool/CISettings.py \
 
 ---
 
-**上一篇**：[01-architecture.md](01-architecture.md) — 架构与核心概念
-**下一篇**：[03-module-development.md](03-module-development.md) — 模块开发实战
+**上一篇**：[03-启动流程详解](./03-boot-flow.md) — SEC→PEI→DXE→BDS
+**下一篇**：[05-模块开发实战](./05-module-dev.md) — DXE 驱动、Protocol、PEIM
