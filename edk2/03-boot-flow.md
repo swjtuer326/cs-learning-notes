@@ -150,11 +150,17 @@ flowchart LR
 
 ### 4.2 PPI：临时 RAM 里的协作方式
 
-PEI 阶段有几十个 PEIM 需要互相协作。比如：内存初始化 PEIM 完成后，需要通知其他 PEIM "内存可用了"。
+PEI 阶段有几十个 PEIM 需要互相协作。典型场景：
 
-在 DXE 阶段，这种协作通过 Protocol 完成。但 Protocol 需要 Handle、引用计数等机制，太重了——CAR 只有几十 KB，装不下。
+| 协作场景 | 依赖方 | 提供方 | 通过 PPI 传递什么 |
+|----------|--------|--------|------------------|
+| 内存可用通知 | 需要分配内存的 PEIM | 内存初始化 PEIM | `MemoryDiscoveredPpi` |
+| 访问 Flash 存储 | 需要从 Flash 读取数据的 PEIM | Flash 驱动 PEIM | `FfsPpi`（固件文件系统接口） |
+| 延时等待 | 需要微秒级延时的 PEIM | 平台初始化 PEIM | `StallPpi` |
+| 报告状态码 | 需要输出调试信息的 PEIM | 串口初始化 PEIM | `ReportStatusCodePpi` |
+| 加载 DXE Core | PEI Core | 固件卷解析 PEIM | `FvPpi`（固件卷位置信息） |
 
-**PPI 是 Protocol 的极简版**：只有安装、查找、通知三个操作，没有 Handle、没有引用计数、没有打开/关闭语义。省下来的内存，是能跑起来和跑不起来的区别。
+比如内存初始化 PEIM 完成后，需要通知其他 PEIM "内存可用了"：
 
 ```c
 // 内存初始化 PEIM：安装 PPI，宣布"DDR 可用了"
@@ -167,8 +173,13 @@ PeiServices->InstallPpi(&mMemDiscoveredPpi);
 
 // 其他 PEIM：注册通知，当 DDR 可用时被回调
 PeiServices->NotifyPpi(&mNotifyDesc);
-// 回调函数里就可以用 PeiServices->AllocatePool() 分配 DDR 内存了
+// 回调函数里就可以用 PeiServices->AllocatePages() 分配 DDR 内存了
+// （PEI 阶段没有 AllocatePool，只有页分配的 AllocatePages）
 ```
+
+在 DXE 阶段，这种协作通过 Protocol 完成。但 Protocol 需要 Handle、引用计数等机制，太重了——CAR 只有几十 KB，装不下。
+
+**PPI 是 Protocol 的极简版**：只有安装、查找、通知三个操作，没有 Handle、没有引用计数、没有打开/关闭语义。省下来的内存，是能跑起来和跑不起来的区别。
 
 PPI 和 Protocol 的区别，本质是资源约束下的工程取舍：
 
@@ -316,7 +327,7 @@ Dispatcher 不停循环，每轮扫描所有未加载的驱动，检查它的依
 | `Start()` | "去接管这个设备" | 初始化硬件，安装上层 Protocol |
 | `Stop()` | "释放这个设备" | 反初始化，卸载 Protocol |
 
-当 Dispatcher 发现一个新的设备 Handle（比如有人安装了 `PciIoProtocol`），它会遍历所有 `DriverBindingProtocol`，逐个调用 `Supported()`。第一个返回 `EFI_SUCCESS` 的驱动获得设备所有权，Dispatcher 调用它的 `Start()`。
+当某个驱动安装了一个设备相关的 Protocol（比如 `PciIoProtocol`，表示"这是一个 PCI 设备"），Dispatcher 会遍历所有已注册的 `DriverBindingProtocol`，逐个调用 `Supported()`，询问"你能驱动这个设备吗？"第一个返回 `EFI_SUCCESS` 的驱动获得设备控制权，Dispatcher 调用它的 `Start()` 进行初始化。
 
 ### 5.5 EFI 系统表：驱动访问系统服务的入口
 
