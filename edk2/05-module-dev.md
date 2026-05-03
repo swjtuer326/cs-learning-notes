@@ -1,71 +1,52 @@
 # EDK2 模块开发实战
 
-> 写代码是工程师的本能，但在 EDK2 中写代码需要先理解它的"世界观"——模块、协议、库类、PCD 构成了一个精密的齿轮系统。
+> 前面学完了类型系统和构建流程。这一篇回到工程实践：写一个真正的 DXE 驱动，安装 Protocol，处理事件，以及理解 TPL 优先级系统。
 
 ### 关键术语
 
 | 缩写 | 全称 | 含义 |
 |------|------|------|
-| Protocol | EFI Protocol | DXE 阶段的驱动接口机制，通过 GUID 标识 |
-| PPI | PEIM-to-PEIM Interface | PEI 阶段模块间通信接口 |
-| HOB | Hand-Off Block | 阶段间数据传递结构 |
-| PCD | Platform Configuration Database | 平台配置数据库 |
-| DEPEX | Dependency Expression | 依赖表达式 |
-| TPL | Task Priority Level | 任务优先级级别 |
-| GUID | Globally Unique Identifier | 全局唯一标识符 |
-| INF | Information | 模块定义文件 |
-| DSC | Platform Description | 平台描述文件 |
-| FDF | Flash Description File | 固件描述文件 |
+| DEPEX | Dependency Expression | 依赖表达式，编译为字节码由 DXE Dispatcher 执行 |
+| TPL | Task Priority Level | 任务优先级级别，UEFI 的软件中断嵌套机制 |
+
+> Protocol、PPI、HOB、PCD、INF/DSC/FDF 等术语已在 [00-全景地图](./00-overview.md) 和 [02-类型系统](./02-type-system.md) 中定义。
 
 ---
 
-## 1. 模块开发基础
+## 1. 前置知识
 
-### 1.1 模块类型与入口点
+| 需要了解 | 参考文档 |
+|----------|----------|
+| EDK2 类型系统与编码规范 | [02-类型系统与编码规范](./02-type-system.md) |
+| 启动流程与各阶段职责 | [03-启动流程详解](./03-boot-flow.md) |
+| DSC/INF/FDF 元数据文件格式 | [04-构建系统深入](./04-build-system.md) |
 
-EDK2 中每个模块都有一个明确的类型和入口点：
+---
 
-```c
-// DXE Driver 入口点
-EFI_STATUS
-EFIAPI
-MyDriverEntryPoint (
-  IN EFI_HANDLE        ImageHandle,
-  IN EFI_SYSTEM_TABLE  *SystemTable
-  )
-{
-  // 初始化
-  // 安装 Protocol
-  // 注册事件回调
-  return EFI_SUCCESS;
-}
-```
+## 2. 模块开发的"世界观"
 
-**入口点宏映射**（在 INF 文件中声明 `ENTRY_POINT = XxxInitialize`）：
+在 EDK2 中写代码和写普通 C 程序有三点根本区别：
 
-| MODULE_TYPE | 入口点库 | 实际调用的函数 |
-|-------------|----------|---------------|
-| DXE_DRIVER | UefiDriverEntryPoint | `UefiDriverEntryPoint` → 你的函数 |
-| UEFI_APPLICATION | UefiApplicationEntryPoint | `UefiApplicationEntryPoint` → 你的函数 |
-| PEIM | PeimEntryPoint | `_ModuleEntryPoint` → 你的函数 |
-| DXE_RUNTIME_DRIVER | UefiDriverEntryPoint | 同 DXE_DRIVER |
+1. **没有 `main()`**——每种模块类型有不同的入口函数签名（`UefiMain`、`MyDriverEntryPoint` 等），由 INF 的 `MODULE_TYPE` 决定链接哪个入口点库。
+2. **不能调 C 标准库**——没有 `printf`/`malloc`/`memcpy`，用 `DEBUG`/`AllocatePool`/`CopyMem` 替代（详见 [02-类型系统](./02-type-system.md) §8.3）。
+3. **模块间通信通过 GUID 驱动**——Protocol 和 PPI 是唯一的信息交换机制，双方只通过 GUID 互相发现。
 
-**EFIAPI 的含义**：指定使用 UEFI 调用约定（x86 上是 `__cdecl`，ARM/RISC-V 上是默认 AAPCS/LP64）。这是跨架构兼容的关键。
+下面按"写一个驱动→安装 Protocol→订阅事件→写 PEIM→写 Library"这条线展开。
 
-> **设计背景 — 为什么需要 EFIAPI？** 不同编译器和架构有不同的默认调用约定。例如，x86 上 Microsoft 编译器默认使用 `__cdecl`，而 GCC 可能使用其他约定；ARM 使用 AAPCS；RISC-V 使用 LP64。UEFI 规范要求所有跨模块调用的函数使用统一的调用约定，`EFIAPI` 就是这个统一的标记。没有它，不同编译器编译的模块之间调用可能因参数传递方式不同而崩溃。
+---
 
-### 1.2 模块的最小文件集
+## 3. DXE 驱动开发
 
-创建一个 DXE 驱动模块，最少需要 3 个文件：
+### 3.1 最简驱动：Hello World
+
+一个 DXE 驱动最少 3 个文件：
 
 ```
 MyDriver/
 ├── MyDriver.c      # 源码
-├── MyDriver.h      # 头文件（可选但推荐）
+├── MyDriver.h      # 头文件（推荐）
 └── MyDriver.inf    # 模块定义
 ```
-
-### 1.3 第一个 DXE 驱动：Hello World
 
 **MyDriver.inf**：
 
@@ -112,31 +93,40 @@ MyDriverEntryPoint (
 }
 ```
 
-**将模块添加到平台 DSC**：
+> `UefiDriverEntryPoint` 库负责在 Dispatcher 加载驱动后调用你的 `MyDriverEntryPoint`。入口点库的完整映射表见 [04-构建系统](./04-build-system.md) §5.3。
 
-```ini
-[Components]
-  MyPkg/MyDriver/MyDriver.inf
+**注册到平台**：
+- DSC 的 `[Components]` 添加 `MyPkg/MyDriver/MyDriver.inf`
+- FDF 的 `[FV.*]` 添加 `INF MyPkg/MyDriver/MyDriver.inf`
+
+两者缺一不可——DSC 决定编译，FDF 决定打包进 Flash（[04-构建系统](./04-build-system.md) §5.4）。
+
+### 3.2 入口函数的两个参数
+
+入口函数拿到两个关键参数：
+
+| 参数 | 核心用途 |
+|------|----------|
+| `ImageHandle` | 当前驱动自己的 Handle。安装 Protocol 时通常用此处传入（也可建新的 Handle） |
+| `SystemTable` | 全局 `gST` 指针——包含 Boot Services (`gBS`)、Runtime Services、GUID 表 |
+
+全局宏（由 `UefiBootServicesTableLib` 库提供）：
+
+```c
+gST   // = SystemTable（由入口点库初始化）
+gBS   // = SystemTable->BootServices  (UefiBootServicesTableLib)
+gRT   // = SystemTable->RuntimeServices (UefiRuntimeServicesTableLib)
 ```
 
-**将模块添加到 FDF**（放入固件卷）：
+---
 
-```ini
-[FV.FvMain]
-  INF MyPkg/MyDriver/MyDriver.inf
-```
+## 4. Protocol 开发
 
-> **注意**：DSC 中的 `[Components]` 决定模块是否被编译，FDF 中的 `INF` 决定编译后的模块是否被打包进固件映像。两者缺一不可——只在 DSC 中添加而不在 FDF 中添加，模块会被编译但不会出现在最终的 `.fd` 文件中。
+Protocol 是 DXE 阶段的核心通信机制——生产者安装 Protocol，消费者通过 GUID 查找。双方零耦合。
 
-## 2. Protocol 开发
+### 4.1 定义自定义 Protocol
 
-Protocol 是 DXE 阶段的核心通信机制。理解 Protocol 的安装、查找和使用是模块开发的关键。
-
-> **设计背景 — Protocol 的设计模式**：Protocol 实现了一种"发布-订阅"的松耦合模式。生产者驱动安装 Protocol，消费者驱动通过 GUID 查找 Protocol。双方不需要知道对方的存在，也不需要知道对方的具体实现。这种设计让 UEFI 的驱动模型具有极高的可扩展性——添加新功能只需要安装新的 Protocol，不需要修改已有代码。
-
-### 2.1 定义自定义 Protocol
-
-**MyProtocol.h**：
+**MyProtocol.h**（定义 GUID + 方法签名）：
 
 ```c
 #ifndef __MY_PROTOCOL_H__
@@ -148,8 +138,8 @@ Protocol 是 DXE 阶段的核心通信机制。理解 Protocol 的安装、查�
 typedef struct _MY_PROTOCOL MY_PROTOCOL;
 
 struct _MY_PROTOCOL {
-  UINT64    Version;
-  EFI_STATUS (EFIAPI *GetData) (
+  UINT64    Version;                          // 1 = 可版本检查
+  EFI_STATUS (EFIAPI *GetData) (             // 2 = 方法签名，返回 EFI_STATUS + EFIAPI
     IN     MY_PROTOCOL  *This,
     IN     UINTN        Index,
     OUT    UINT32       *Value
@@ -162,23 +152,35 @@ struct _MY_PROTOCOL {
 };
 
 extern EFI_GUID gMyProtocolGuid;
-
-#endif
 ```
 
-**在 DEC 文件中声明 GUID**：
+在 DEC 文件中声明 GUID：
 
 ```ini
 [Protocols]
-  gMyProtocolGuid = { 0xABCD1234, 0x5678, 0x9ABC, { 0xDE, 0xF0, 0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC } }
+  gMyProtocolGuid = { 0xABCD1234, 0x5678, 0x9ABC, { ... }}
 ```
 
-> **Protocol 结构体的设计惯例**：第一个成员通常是 `This` 指针（类似 C++ 的 `this`），让成员函数可以回溯到 Protocol 实例。`Version` 字段允许消费者检查 Protocol 版本，实现向前兼容。所有成员函数都使用 `EFIAPI` 调用约定。
-
-### 2.2 安装 Protocol
+### 4.2 安装 Protocol
 
 ```c
-#include "MyProtocol.h"
+// ---- 回调实现 ----
+EFI_STATUS EFIAPI MyProtocolGetData (
+  IN     MY_PROTOCOL  *This, IN UINTN Index, OUT UINT32 *Value)
+{
+  *Value = mInternalData[Index];  // 从内部数组读数据
+  return EFI_SUCCESS;
+}
+
+EFI_STATUS EFIAPI MyProtocolSetData (
+  IN     MY_PROTOCOL  *This, IN UINTN Index, IN UINT32 Value)
+{
+  mInternalData[Index] = Value;
+  return EFI_SUCCESS;
+}
+
+// ---- 组装 Protocol 实例 ----
+STATIC UINT32       mInternalData[64];
 
 STATIC MY_PROTOCOL  mMyProtocol = {
   .Version  = 1,
@@ -186,217 +188,153 @@ STATIC MY_PROTOCOL  mMyProtocol = {
   .SetData  = MyProtocolSetData,
 };
 
-EFI_STATUS
-EFIAPI
-MyDriverEntryPoint (
-  IN EFI_HANDLE        ImageHandle,
-  IN EFI_SYSTEM_TABLE  *SystemTable
-  )
+// ---- 入口函数中安装 ----
+EFI_STATUS EFIAPI MyDriverEntryPoint (
+  IN EFI_HANDLE ImageHandle, IN EFI_SYSTEM_TABLE *SystemTable)
 {
-  EFI_STATUS  Status;
+  EFI_STATUS Status;
 
   Status = gBS->InstallProtocolInterface (
-                  &ImageHandle,
-                  &gMyProtocolGuid,
-                  EFI_NATIVE_INTERFACE,
-                  &mMyProtocol
+                  &ImageHandle,          // 安装到当前驱动的 Handle
+                  &gMyProtocolGuid,      // GUID
+                  EFI_NATIVE_INTERFACE,  // 接口类型
+                  &mMyProtocol           // 实例指针
                   );
   if (EFI_ERROR (Status)) {
-    DEBUG ((DEBUG_ERROR, "MyDriver: Failed to install protocol - %r\n", Status));
     return Status;
   }
-
   return EFI_SUCCESS;
 }
 ```
 
-### 2.3 使用 Protocol
+安装完成后，其他任何驱动都可以通过 GUID 找到这个 Protocol。
+
+### 4.3 查找和使用 Protocol
+
+按范围从大到小，有三种查找方式：
+
+| API | 查找范围 | 适用场景 |
+|-----|---------|---------|
+| `LocateProtocol(&Guid, NULL, &Ptr)` | 全局第一个匹配实例 | 单例 Protocol（如 CPU Arch Protocol） |
+| `LocateHandleBuffer(ByProtocol, &Guid, NULL, &Count, &Handles)` | 找到所有安装了此 Protocol 的 Handle 列表 | 多实例 Protocol（如每个磁盘安一个 BlockIo Protocol） |
+| `HandleProtocol(Handle, &Guid, &Ptr)` | 指定 Handle 上的实例 | 已知 Handle 时使用 |
+
+消费者示例：
 
 ```c
-EFI_STATUS
-SomeOtherFunction (VOID)
-{
-  EFI_STATUS    Status;
-  MY_PROTOCOL   *MyProto;
-
-  Status = gBS->LocateProtocol (
-                  &gMyProtocolGuid,
-                  NULL,
-                  (VOID **)&MyProto
-                  );
-  if (EFI_ERROR (Status)) {
-    DEBUG ((DEBUG_ERROR, "MyProtocol not found - %r\n", Status));
-    return Status;
-  }
-
-  UINT32 Value;
-  Status = MyProto->GetData (MyProto, 0, &Value);
-  return Status;
+MY_PROTOCOL  *MyProto;
+Status = gBS->LocateProtocol (&gMyProtocolGuid, NULL, (VOID**)&MyProto);
+if (!EFI_ERROR (Status)) {
+    UINT32 Value;
+    MyProto->GetData (MyProto, 0, &Value);
 }
 ```
 
-> **LocateProtocol vs HandleProtocol**：`LocateProtocol` 在全局范围内查找第一个匹配的 Protocol 实例，适用于"单例"Protocol。`HandleProtocol` 在指定 Handle 上查找 Protocol，适用于"多实例"Protocol（如多个磁盘设备各自安装 BlockIo Protocol）。如果你需要遍历所有安装了某个 Protocol 的 Handle，使用 `LocateHandle`。
+### 4.4 Protocol 通知回调
 
-### 2.4 Protocol 通知
-
-当某个 Protocol 安装时自动收到通知，这是驱动间解耦的关键机制：
+依赖驱动 A 可能先于 提供驱动 B 被加载。Protocol 通知回调解决了这个时序问题——在 Protocol 安装的瞬间触发回调。
 
 ```c
-STATIC EFI_EVENT  mProtocolRegistrationEvent;
-STATIC VOID       *mProtocolRegistration;
+// 模块级变量（在入口函数中初始化）
+STATIC VOID      *mRegistration;  // 用于后续 LocateProtocol 的注册句柄
+STATIC EFI_EVENT  mEvent;         // 事件对象，退注册用
 
-VOID
-EFIAPI
-MyProtocolCallback (
-  IN EFI_EVENT  Event,
-  IN VOID       *Context
-  )
-{
-  MY_PROTOCOL  *MyProto;
-  EFI_STATUS   Status;
+// 入口函数中注册通知
+EfiCreateProtocolNotifyEvent (
+  &gMyProtocolGuid,          // 等待的 GUID
+  TPL_CALLBACK,              // 回调时的 TPL
+  MyProtocolCallback,        // void EFIAPI (*)(Event, Context)
+  NULL,                      // Context
+  &mRegistration,            // → void*: 用于 LocateProtocol
+  &mEvent                    // → 退注册用
+);
 
-  Status = gBS->LocateProtocol (
-                  &gMyProtocolGuid,
-                  mProtocolRegistration,
-                  (VOID **)&MyProto
-                  );
-  if (!EFI_ERROR (Status)) {
-    DEBUG ((DEBUG_INFO, "MyProtocol installed, version=%lu\n", MyProto->Version));
-  }
-}
-
-EFI_STATUS
-EFIAPI
-MyDriverEntryPoint (
-  IN EFI_HANDLE        ImageHandle,
-  IN EFI_SYSTEM_TABLE  *SystemTable
-  )
-{
-  gBS->CreateEvent (
-         EVT_NOTIFY_SIGNAL,
-         TPL_CALLBACK,
-         MyProtocolCallback,
-         NULL,
-         &mProtocolRegistrationEvent
-         );
-
-  gBS->RegisterProtocolNotify (
-         &gMyProtocolGuid,
-         mProtocolRegistrationEvent,
-         &mProtocolRegistration
-         );
-
-  return EFI_SUCCESS;
+VOID EFIAPI MyProtocolCallback (IN EFI_EVENT Event, IN VOID *Context) {
+    MY_PROTOCOL *MyProto;
+    Status = gBS->LocateProtocol (&gMyProtocolGuid, mRegistration, (VOID**)&MyProto);
+    if (!EFI_ERROR (Status)) {
+        // MyProto 刚刚被安装，现在可用
+    }
 }
 ```
 
-> **设计背景 — Protocol 通知解决"先有鸡还是先有蛋"问题**：驱动 A 依赖驱动 B 安装的 Protocol，但 A 可能先于 B 被调度。DEPEX 可以确保 B 在 A 之前调度，但如果 A 需要在 B 的 Protocol 安装时立即执行某些操作（而非等到自己的入口点执行），Protocol 通知就是更好的选择。它让 A 可以在入口点注册回调，当 B 的 Protocol 安装时自动触发，实现真正的松耦合。
+---
 
-### 2.5 架构协议
+## 5. 事件与 TPL
 
-架构协议是 DXE Core 等待的关键 Protocol，只有所有架构协议就绪后才会调用 BDS：
+### 5.1 事件类型
 
-| 协议 | 提供者 | 用途 |
-|------|--------|------|
-| `EFI_SECURITY_ARCH_PROTOCOL` | SecurityPkg | 安全验证 |
-| `EFI_SECURITY2_ARCH_PROTOCOL` | SecurityPkg | 安全验证（文件路径版） |
-| `EFI_CPU_ARCH_PROTOCOL` | UefiCpuPkg | CPU 操作 |
-| `EFI_METRONOME_ARCH_PROTOCOL` | 平台 | 精确延时 |
-| `EFI_TIMER_ARCH_PROTOCOL` | 平台 | 定时器 |
-| `EFI_BDS_ARCH_PROTOCOL` | MdeModulePkg | 启动设备选择 |
-| `EFI_WATCHDOG_TIMER_ARCH_PROTOCOL` | 平台 | 看门狗 |
+事件是 UEFI 的通知机制——等待条件为真时执行回调：
 
-> **设计背景 — 为什么需要架构协议？** DXE Core 本身是架构无关的，它不知道如何操作 CPU、定时器或安全策略。架构协议是平台必须提供的"最低服务集"——DXE Core 通过 Protocol 接口使用这些服务，而不依赖具体实现。只有所有架构协议都安装后，DXE Core 才认为系统已经具备基本运行能力，可以进入 BDS 阶段。这是一种优雅的"依赖注入"模式。
+| 事件类型 | 触发条件 |
+|----------|----------|
+| `EVT_TIMER` | 定时器到期 |
+| `EVT_NOTIFY_SIGNAL` | 手动 `SignalEvent()` 或 Protocol 通知时 |
+| `EVT_NOTIFY_WAIT` | `WaitForEvent()` 返回时 |
+| `EVT_SIGNAL_EXIT_BOOT_SERVICES` | OS Loader 调用 `ExitBootServices()` 时 |
+| `EVT_SIGNAL_VIRTUAL_ADDRESS_CHANGE` | Runtime 驱动地址转换时 |
 
-## 3. 事件与定时器
+### 5.2 TPL（任务优先级）
 
-### 3.1 事件类型
+UEFI 的运行环境是单线程协作调度的，不像 Linux 有内核线程和中断。TPL 是 UEFI 版的"中断优先级"——高 TPL 可以抢占低 TPL。
 
-| 类型 | 触发方式 | 用途 |
-|------|----------|------|
-| `EVT_TIMER` | 定时器到期 | 周期性任务 |
-| `EVT_NOTIFY_SIGNAL` | 手动 SignalEvent | Protocol 通知 |
-| `EVT_NOTIFY_WAIT` | WaitForEvent 时触发 | 等待条件 |
-| `EVT_SIGNAL_EXIT_BOOT_SERVICES` | ExitBootServices 时 | 清理资源 |
-| `EVT_SIGNAL_VIRTUAL_ADDRESS_CHANGE` | SetVirtualAddressMap 时 | Runtime 地址转换 |
-
-### 3.2 TPL（任务优先级）
-
-TPL 是 UEFI 的事件优先级机制，类似中断优先级：
-
-| TPL | 名称 | 用途 |
-|-----|------|------|
-| 0 | TPL_APPLICATION | 应用程序级别 |
+| TPL | 名称 | 典型场景 |
+|------|------|----------|
+| 0 | TPL_APPLICATION | 普通代码执行 |
 | 4 | TPL_CALLBACK | 大多数驱动回调 |
-| 8 | TPL_NOTIFY | 高优先级通知（如定时器） |
-| 16 | TPL_HIGH_LEVEL | 最高优先级（不可抢占） |
+| 8 | TPL_NOTIFY | 定时器、高优先级通知 |
+| 16 | TPL_HIGH_LEVEL | 临界区（此时中断被完全禁用） |
 
-> **设计背景 — 为什么 UEFI 使用 TPL 而非传统中断？** UEFI 运行在单核、协作式调度环境中，没有传统 OS 的中断和线程概念。TPL 是一种"软件中断屏蔽"机制：当执行在 TPL_CALLBACK 时，只有 TPL_NOTIFY 和 TPL_HIGH_LEVEL 的事件可以抢占。这比硬件中断简单得多，但足以保证固件阶段的并发安全。注意：`RaiseTPL` 只能提升不能降低，且必须在同一函数内恢复。
+核心规则：**执行在 TPL = N 时，只有 TPL > N 的事件回调可以抢占你**。
 
-**规则**：
-- TPL_APPLICATION 可以被任何事件抢占
-- TPL_CALLBACK 适合大多数驱动操作
-- TPL_NOTIFY 用于时间敏感的操作
-- TPL_HIGH_LEVEL 用于临界区（此时中断被禁用）
+提升 TPL 来保护临界区：
 
 ```c
-// 提升和恢复 TPL
 EFI_TPL  OldTpl;
-
 OldTpl = gBS->RaiseTPL (TPL_HIGH_LEVEL);
-// 临界区操作
+// ↑ 临界区：任何 TPL ≤ 15 的事件都不会抢占此代码
 gBS->RestoreTPL (OldTpl);
 ```
 
-### 3.3 ExitBootServices 事件
+> TPL 只能提升不能降低，且必须在同一函数内恢复。`RaiseTPL` 不匹配 `RestoreTPL` 会导致事件处理永久阻塞。
 
-OS Loader 调用 `ExitBootServices()` 时，固件需要释放所有 Boot Services 资源。驱动应该注册此事件来清理：
+### 5.3 ExitBootServices 清理
+
+OS Loader 调用 `ExitBootServices()` 意味着固件向 OS 交接控制权。此后所有 Boot Services 失效。驱动需要在此事件中清理资源：
 
 ```c
-STATIC EFI_EVENT  mExitBootServicesEvent;
+STATIC EFI_EVENT  mEbsEvent;  // 模块级变量
 
-VOID
-EFIAPI
-OnExitBootServices (
-  IN EFI_EVENT  Event,
-  IN VOID       *Context
-  )
-{
-  // 停止 DMA
-  // 释放 Boot Services 内存
-  // 将设备置于 OS 可接管的已知状态
+// 入口函数中注册
+EfiCreateEventEx (EVT_NOTIFY_SIGNAL, TPL_NOTIFY,
+                  OnExitBootServices, NULL,
+                  &gEfiEventExitBootServicesGuid, &mEbsEvent);
+
+VOID EFIAPI OnExitBootServices (IN EFI_EVENT Event, IN VOID *Context) {
+    // 1. 停止所有正在进行的 DMA
+    // 2. 将设备置于 OS 可接收的已知状态
+    // 3. 释放 Boot Services 内存
 }
-
-// 在 EntryPoint 中注册
-gBS->CreateEventEx (
-       EVT_NOTIFY_SIGNAL,
-       TPL_NOTIFY,
-       OnExitBootServices,
-       NULL,
-       &gEfiEventExitBootServicesGuid,
-       &mExitBootServicesEvent
-       );
 ```
 
-> **设计背景 — ExitBootServices 清理的重要性**：OS 内核启动后，Boot Services 的内存和事件系统不再可用。如果驱动不清理资源（如正在进行的 DMA 传输、未释放的中断等），OS 可能会踩到这些"幽灵"资源导致崩溃。`EVT_SIGNAL_EXIT_BOOT_SERVICES` 事件是驱动向 OS 交接控制权的最后机会。一个常见的错误是忘记停止 DMA——OS 启动后 DMA 仍在写入已被 OS 使用的内存区域。
+DMA 忘记停止而 OS 启动后继续写入 OS 内存区域，是 UEFI 到 OS 交接阶段最隐蔽的崩溃原因。
 
-## 4. PEIM 开发
+---
 
-### 4.1 PEIM 的特点
+## 6. PEIM 开发
 
-PEIM 是 PEI 阶段的模块，与 DXE 驱动有显著区别：
+PEIM 运行在 PEI 阶段，与 DXE 驱动的核心区别：
 
-| 特性 | DXE Driver | PEIM |
-|------|------------|------|
-| 内存 | 充足的永久内存 | 早期只有临时 RAM |
-| 通信 | Protocol | PPI |
-| 调试 | DebugLib + ConOut | DebugLib + Serial |
-| 服务 | Boot Services | PEI Services |
-| 库绑定 | DSC [LibraryClasses.common.DXE_DRIVER] | DSC [LibraryClasses.common.PEIM] |
+| | DXE Driver | PEIM |
+|---|------------|------|
+| 内存 | 充足的 DDR（GB 级） | 早期只有 CAR/临时 RAM（KB 级） |
+| 模块间通信 | Protocol（GUID + 多实例 + 引用计数） | PPI（GUID + 单实例 + 无引用计数） |
+| 使用的调试输出 | DebugLib（任意后端） | DebugLib + 串口（SBI console 或 UART） |
+| 库绑定段 | `[LibraryClasses.common.DXE_DRIVER]` | `[LibraryClasses.common.PEIM]` |
 
-> **设计背景 — PEIM 的"极简主义"**：PEI 阶段的内存极其有限（可能只有 32-64KB 的 CAR/临时 RAM），PEIM 必须遵循"极简主义"原则：避免大数组、避免递归、避免动态内存分配（除非必要）。PEIM 的主要任务是初始化硬件和收集信息，真正的业务逻辑应该留到 DXE 阶段实现。
+PEIM 必须遵循"极简主义"——避免大数组、递归、不必要的动态分配。收集信息即可，业务逻辑留到 DXE 阶段。
 
-### 4.2 PEIM 示例
+### 6.1 示例 PEIM
 
 **MyPeim.inf**：
 
@@ -406,15 +344,10 @@ PEIM 是 PEI 阶段的模块，与 DXE 驱动有显著区别：
   BASE_NAME      = MyPeim
   FILE_GUID      = 22345678-1234-1234-1234-123456789ABC
   MODULE_TYPE    = PEIM
-  VERSION_STRING = 1.0
   ENTRY_POINT    = MyPeimEntryPoint
 
-[Sources]
-  MyPeim.c
-
-[Packages]
-  MdePkg/MdePkg.dec
-
+[Sources]   MyPeim.c
+[Packages]  MdePkg/MdePkg.dec
 [LibraryClasses]
   PeimEntryPoint
   PeiServicesLib
@@ -422,23 +355,25 @@ PEIM 是 PEI 阶段的模块，与 DXE 驱动有显著区别：
   HobLib
 
 [Ppis]
-  gEfiPeiMemoryDiscoveredPpiGuid  ## CONSUMES
+  gEfiPeiMemoryDiscoveredPpiGuid  ## CONSUMES   # 等内存可用
 
 [Depex]
-  gEfiPeiMemoryDiscoveredPpiGuid
+  gEfiPeiMemoryDiscoveredPpiGuid                 # 条件: 内存可用后才被调度
 ```
 
 **MyPeim.c**：
 
 ```c
 #include <PiPei.h>
-#include <Library/PeimEntryPoint.h>
-#include <Library/PeiServicesLib.h>
 #include <Library/DebugLib.h>
 #include <Library/HobLib.h>
 
-EFI_STATUS
-EFIAPI
+// 需要传递给 DXE 的数据（GUID 和结构体均已在 DEC 中声明）
+EFI_GUID  gMyGuid = { 0xAABBCCDD, ... };  // 在 DEC 的 [Guids] 段中定义
+
+STATIC struct { UINT32 Foo; UINT32 Bar; } MyData = { .Foo = 42, .Bar = 7 };
+
+EFI_STATUS EFIAPI
 MyPeimEntryPoint (
   IN       EFI_PEI_FILE_HANDLE  FileHandle,
   IN CONST EFI_PEI_SERVICES     **PeiServices
@@ -446,127 +381,83 @@ MyPeimEntryPoint (
 {
   DEBUG ((DEBUG_INFO, "MyPeim: Hello from PEI!\n"));
 
-  BuildGuidDataHob (
-    &gMyGuid,
-    &MyData,
-    sizeof (MyData)
-    );
+  // 构建 HOB——将 MyData 的副本传到 DXE 阶段
+  BuildGuidDataHob (&gMyGuid, &MyData, sizeof (MyData));
 
   return EFI_SUCCESS;
 }
 ```
 
-### 4.3 PPI 通知
+### 6.2 PPI 通知
 
-PEI 阶段也有通知机制，类似 DXE 的 Protocol 通知：
+PEI 阶段的 PPI 通知有两种模式：
+
+| 模式 | 触发时机 |
+|------|----------|
+| `NOTIFY_DISPATCH` | PEI Dispatcher 在每个 PEIM 调度间隙检查是否有新 PPI 就绪 |
+| `NOTIFY_SWAP` | PPI 被重新安装时触发（类似 DXE 的 ReInstallProtocol） |
 
 ```c
-STATIC EFI_PEI_NOTIFY_DESCRIPTOR  mMyPpiNotifyList[] = {
-  {
-    (EFI_PEI_PPI_DESCRIPTOR_NOTIFY_DISPATCH | EFI_PEI_PPI_DESCRIPTOR_TERMINATE_LIST),
-    &gEfiPeiMemoryDiscoveredPpiGuid,
-    MyPpiCallback
-  }
-};
-
-EFI_STATUS
-EFIAPI
-MyPpiCallback (
-  IN EFI_PEI_SERVICES           **PeiServices,
-  IN EFI_PEI_NOTIFY_DESCRIPTOR  *NotifyDescriptor,
-  IN VOID                       *Ppi
-  )
+// 回调函数：当 gEfiPeiMemoryDiscoveredPpiGuid 就绪时被 Dispatcher 调用
+STATIC EFI_STATUS EFIAPI MemoryDiscoveredCallback (
+  IN       EFI_PEI_SERVICES **PeiServices,
+  IN       EFI_PEI_NOTIFY_DESCRIPTOR *NotifyDescriptor,
+  IN       VOID *Ppi)
 {
-  DEBUG ((DEBUG_INFO, "Memory discovered!\n"));
+  DEBUG ((DEBUG_INFO, "MyPeim: 内存已就绪，可以创建 HOB 了\n"));
+  // 此时真正的 DDR 已经可用，可以构建资源描述 HOB 了
+  BuildResourceDescriptorHob (...);
   return EFI_SUCCESS;
 }
 
-// 在 EntryPoint 中注册
-PeiServicesNotifyPpi (mMyPpiNotifyList);
+// 通知列表
+STATIC EFI_PEI_NOTIFY_DESCRIPTOR mPpiNotifyList[] = {
+  { EFI_PEI_PPI_DESCRIPTOR_NOTIFY_DISPATCH | EFI_PEI_PPI_DESCRIPTOR_TERMINATE_LIST,
+    &gEfiPeiMemoryDiscoveredPpiGuid, MemoryDiscoveredCallback }
+};
+
+// 入口函数中注册
+PeiServicesNotifyPpi (mPpiNotifyList);
 ```
 
-> **PPI 通知的两种模式**：`EFI_PEI_PPI_DESCRIPTOR_NOTIFY_DISPATCH` 表示"调度通知"——PEI Dispatcher 在每个 PEIM 调度间隙检查是否有新的 PPI 通知需要触发。`EFI_PEI_PPI_DESCRIPTOR_NOTIFY_SWAP` 表示"交换通知"——在 PPI 被重新安装时触发（类似 DXE 的 `ReInstallProtocol`）。大多数场景使用 DISPATCH 模式。
+---
 
-## 5. Library 开发
+## 7. Library 开发
 
-### 5.1 设计 Library Class
+Library Class/Instance 的分离是 EDK2 多态机制的基础。理解"接口 vs 实现"这一点，才能理解为什么同一个驱动能在不同平台编译而不改代码。
 
-**第一步：在 DEC 文件中声明库类**
+### 7.1 定义 Library Class
+
+**第一步：在 DEC 中声明地址**
 
 ```ini
 [LibraryClasses]
   MyPlatformLib|Include/Library/MyPlatformLib.h
 ```
 
-**第二步：定义头文件**
+**第二步：接口头文件**
 
 ```c
 // Include/Library/MyPlatformLib.h
 #ifndef __MY_PLATFORM_LIB_H__
 #define __MY_PLATFORM_LIB_H__
 
-EFI_STATUS
-EFIAPI
-MyPlatformGetCpuFreq (
-  OUT UINT64  *Frequency
-  );
-
-UINTN
-EFIAPI
-MyPlatformGetCpuCount (VOID);
-
+EFI_STATUS EFIAPI MyPlatformGetCpuFreq (OUT UINT64 *Frequency);
+UINTN      EFIAPI MyPlatformGetCpuCount (VOID);
 #endif
 ```
 
-### 5.2 实现 Library Instance
-
-**MyPlatformLibDxe.inf**（DXE 版本）：
+### 7.2 实现 Library Instance
 
 ```ini
+# MyPlatformLibDxe.inf
 [Defines]
-  BASE_NAME       = MyPlatformLibDxe
-  MODULE_TYPE     = DXE_DRIVER
-  LIBRARY_CLASS   = MyPlatformLib|DXE_DRIVER DXE_RUNTIME_DRIVER UEFI_DRIVER
-
-[Sources]
-  MyPlatformLibDxe.c
-
-[Packages]
-  MdePkg/MdePkg.dec
-  MyPkg/MyPkg.dec
-
-[LibraryClasses]
-  UefiBootServicesTableLib
-  DebugLib
+  LIBRARY_CLASS = MyPlatformLib|DXE_DRIVER DXE_RUNTIME_DRIVER UEFI_DRIVER
 ```
 
-**MyPlatformLibDxe.c**：
+`LIBRARY_CLASS = 名字|可用模块类型列表`——竖线后限制了此实例可用于哪些 Module Type。例如 PEI 专用的实例写 `MyLib|PEIM`。如果写错了模块类型，构建系统在绑定阶段就会报错（而非到运行时崩溃）。
 
-```c
-#include <Base.h>
-#include <Library/MyPlatformLib.h>
-#include <Library/UefiBootServicesTableLib.h>
-#include <Library/DebugLib.h>
-
-EFI_STATUS
-EFIAPI
-MyPlatformGetCpuFreq (
-  OUT UINT64  *Frequency
-  )
-{
-  *Frequency = 1000000000ULL;
-  return EFI_SUCCESS;
-}
-
-UINTN
-EFIAPI
-MyPlatformGetCpuCount (VOID)
-{
-  return 4;
-}
-```
-
-### 5.3 在 DSC 中绑定
+### 7.3 在 DSC 中绑定
 
 ```ini
 [LibraryClasses.common.DXE_DRIVER]
@@ -576,152 +467,70 @@ MyPlatformGetCpuCount (VOID)
   MyPlatformLib|MyPkg/Library/MyPlatformLibPei/MyPlatformLibPei.inf
 ```
 
-**关键点**：`LIBRARY_CLASS = MyPlatformLib|DXE_DRIVER DXE_RUNTIME_DRIVER UEFI_DRIVER` 中的竖线后面声明了此库实例可用于哪些模块类型。
+---
 
-> **设计背景 — LIBRARY_CLASS 的模块类型限制**：为什么需要声明库实例可用于哪些模块类型？因为不同模块类型有不同的可用服务。例如，PEIM 不能使用 `gBS`（Boot Services），所以链接了 `UefiBootServicesTableLib` 的库实例不能用于 PEIM。`LIBRARY_CLASS` 的模块类型限制让构建系统在绑定时就能检测到不兼容的组合，而不是在运行时崩溃。
+## 8. UEFI 应用程序
 
-## 6. UEFI 应用程序开发
-
-UEFI 应用程序是最容易上手的模块类型，不需要安装 Protocol 就能运行。
-
-### 6.1 Hello World 应用
-
-**HelloWorld.inf**：
-
-```ini
-[Defines]
-  INF_VERSION    = 0x00010005
-  BASE_NAME      = HelloWorld
-  FILE_GUID      = 32345678-1234-1234-1234-123456789ABC
-  MODULE_TYPE    = UEFI_APPLICATION
-  VERSION_STRING = 1.0
-  ENTRY_POINT    = UefiMain
-
-[Sources]
-  HelloWorld.c
-
-[Packages]
-  MdePkg/MdePkg.dec
-
-[LibraryClasses]
-  UefiApplicationEntryPoint
-  UefiLib
-```
-
-**HelloWorld.c**：
+UEFI 应用是最简单的模块类型——不安装 Protocol，在 UEFI Shell 中直接被调用运行。
 
 ```c
 #include <Uefi.h>
 #include <Library/UefiLib.h>
 
-EFI_STATUS
-EFIAPI
-UefiMain (
-  IN EFI_HANDLE        ImageHandle,
-  IN EFI_SYSTEM_TABLE  *SystemTable
+EFI_STATUS EFIAPI UefiMain (
+  IN EFI_HANDLE ImageHandle,
+  IN EFI_SYSTEM_TABLE *SystemTable
   )
 {
   Print (L"Hello, UEFI World!\n");
   Print (L"Firmware Vendor: %s\n", gST->FirmwareVendor);
-  Print (L"Firmware Revision: 0x%x\n", gST->FirmwareRevision);
   return EFI_SUCCESS;
 }
 ```
 
-> **注意**：UEFI 的 `Print` 函数使用 UCS-2 宽字符串，字符串字面量必须加 `L` 前缀（如 `L"Hello"`）。`%s` 格式化说明符对应 UCS-2 字符串（`CHAR16*`），`%a` 对应 ASCII 字符串（`CHAR8*`）。这是初学者最常犯的错误之一。
-
-### 6.2 在 UEFI Shell 中运行
-
-```bash
-# 构建后，.efi 文件位于
-# Build/<Platform>/DEBUG_GCC/MdeModulePkg/Application/HelloWorld/HelloWorld/OUTPUT/HelloWorld.efi
-
-# 在 UEFI Shell 中
-fs0:
-HelloWorld.efi
-```
-
-## 7. 调试技巧
-
-### 7.1 DebugLib 使用
-
-```c
-// 调试级别（从低到高）
-DEBUG_INIT      0x00000001
-DEBUG_WARN      0x00000002
-DEBUG_LOAD      0x00000004
-DEBUG_FS        0x00000008
-DEBUG_POOL      0x00000010
-DEBUG_PAGE      0x00000020
-DEBUG_INFO      0x00000040   ← 最常用
-DEBUG_DISPATCH  0x00000080
-DEBUG_VARIABLE  0x00000100
-DEBUG_BM        0x00000400
-DEBUG_BLKIO     0x00001000
-DEBUG_NET       0x00004000
-DEBUG_VERBOSE   0x00400000
-DEBUG_ERROR     0x80000000   ← 错误信息
-
-// 使用
-DEBUG ((DEBUG_INFO, "MyDriver: Value = 0x%x\n", Value));
-DEBUG ((DEBUG_ERROR, "MyDriver: Failed to allocate memory!\n"));
-
-// 条件断言
-ASSERT (Value != NULL);
-ASSERT_EFI_ERROR (Status);
-```
-
-> **设计背景 — DEBUG 宏的编译时优化**：`DEBUG` 宏在 RELEASE 构建中会被编译器完全消除（零开销），在 DEBUG 构建中才输出日志。这是通过 `PcdDebugPrintErrorLevel` PCD 和编译器优化实现的——如果 `DEBUG_INFO` 不在 `PcdDebugPrintErrorLevel` 掩码中，编译器可以证明条件永远为假，从而消除整个 `DEBUG` 调用。`ASSERT` 在 RELEASE 构建中同样被消除。
-
-### 7.2 PCD 控制调试级别
-
-```ini
-# 在 DSC 文件中设置调试输出级别
-[PcdsFixedAtBuild]
-  gEfiMdePkgTokenSpaceGuid.PcdDebugPrintErrorLevel|0x80000047
-  # 0x80000047 = DEBUG_ERROR | DEBUG_WARN | DEBUG_LOAD | DEBUG_INFO | DEBUG_INIT
-```
-
-### 7.3 使用 GDB 调试
-
-```bash
-# 1. 构建 DEBUG 目标
-build -p <DSC> -a RISCV64 -b DEBUG -t GCC
-
-# 2. 启动 QEMU（带 GDB 等待）
-qemu-system-riscv64 -machine virt -m 2048 \
-    -bios default \
-    -pflash <CODE.fd> -pflash <VARS.fd> \
-    -nographic -s -S
-
-# 3. GDB 连接
-riscv64-unknown-elf-gdb
-(gdb) set architecture riscv:rv64
-(gdb) target remote :1234
-
-# 4. 设置断点
-(gdb) break DxeMain
-(gdb) break BdsEntry
-(gdb) continue
-```
-
-### 7.4 日志输出
-
-在 QEMU 中，`DEBUG` 宏的输出会通过串口输出：
-
-```bash
-# 将串口输出重定向到文件
-qemu-system-riscv64 ... -serial file:uefi.log
-
-# 或使用 stdio 模式
-qemu-system-riscv64 ... -nographic  # 串口输出到终端
-```
-
-## 8. 编码规范
-
-> 详见 [02-类型系统与编码规范](./02-type-system.md) 的编码规范章节。本文不再重复。
+> `%s` = UCS-2 字符串 (`CHAR16*`)，`%a` = ASCII 字符串 (`CHAR8*`)。这是 UEFI 应用开发最常见的问题。见 [02-类型系统](./02-type-system.md) §3。
 
 ---
 
-**上一篇**：[04-构建系统深入](./04-build-system.md) — DSC/DEC/INF/FDF 与 AutoGen
-**下一篇**：[06-RISC-V 平台移植](./06-riscv-platform.md) — SBI、MMU、新 SoC 移植
+## 9. 调试技巧
+
+### 9.1 DEBUG 宏
+
+`DEBUG`、`ASSERT` 与调试级别的定义详见 [02-类型系统](./02-type-system.md) §9。
+
+### 9.2 GDB 调试
+
+快速 GDB 启调用和关键断点见 [01-快速上手](./01-quick-start.md) §6 和 [06-RISC-V 平台移植](./06-riscv-platform.md) §8。
+
+### 9.3 日志输出
+
+QEMU 运行时，`DEBUG` 宏通过串口输出：
+
+```bash
+qemu-system-riscv64 ... -nographic          # 串口 → 终端
+qemu-system-riscv64 ... -serial file:uefi.log  # 串口 → 文件
+```
+
+---
+
+## 10. 要点回顾
+
+| 要点 | 说明 |
+|------|------|
+| 入口函数签名取决于 MODULE_TYPE | INF 的 `MODULE_TYPE` 决定链接哪个入口点库，不同入口点库提供不同的函数签名 |
+| Protocol = GUID + 方法签名 | 生产者安装，消费者通过 GUID 查找。三种查找方式：`LocateProtocol`（单例）、`LocateHandleBuffer`（多实例）、`HandleProtocol`（指定 Handle） |
+| Protocol 通知解决时序问题 | 依赖驱动通过回调获知 Protocol 安装，而不依赖 Dispatcher 的调度顺序 |
+| TPL 是 UEFI 的软件中断屏蔽机制 | 高 TPL 抢占低 TPL；`RaiseTPL` 要 restore；TPL_HIGH_LEVEL 禁用中断 |
+| PEIM 遵循极简主义 | CAR 只有几十 KB，避免大数组和递归。收集信息即可，业务在 DXE 做 |
+| Library = DEC 声明 + INF 实现 + DSC 绑定 | 同一 Library Class 仅在 DSC 中改一行就切到不同平台实现 |
+
+---
+
+## 11. 编码规范
+
+命名词典、IN/OUT 修饰符、EFIAPI、禁用 C 标准库等规范见 [02-类型系统](./02-type-system.md) §4~§8。写每个回调时参考即可。
+
+---
+
+**上一篇**：[04-构建系统深入](./04-build-system.md) — 元数据与 AutoGen
+**下一篇**：[06-RISC-V 平台移植](./06-riscv-platform.md) — SBI、MMU 与新 SoC 移植

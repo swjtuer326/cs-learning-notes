@@ -608,132 +608,38 @@ INF 文件中的 `[Depex]` 段被编译为字节码：
 
 DXE Dispatcher 使用栈式求值器执行这些字节码来决定驱动调度顺序。
 
-## 7. 实战：构建 RISC-V QEMU 固件
+## 7. 要点回顾
 
-### 7.1 环境准备
+| 要点 | 说明 |
+|------|------|
+| 双层构建 | 先用 `make` 编译 BaseTools 中的 C 工具，再用 BaseTools（Python 引擎）编译固件 |
+| 4 种元数据文件各自定位 | DEC（包接口）→ DSC（平台配置+bind）→ INF（模块描述）→ FDF（Flash 布局） |
+| AutoGen 自动生成代码 | 将 DEC/DSC/INF 中的声明翻译为 `AutoGen.h`（PCD 宏+includes）、`AutoGen.c`（PCD 值）、`Makefile`（编译规则） |
+| PCD 替代 #ifdef | 平台差异通过配置数据（PCD）表达，编译时展开为常量，运行时也可查询 |
+| Library Class 多态绑定 | 同一接口在 PEI/DXE 阶段用不同实现，DSC 按 `MODULE_TYPE` 决定绑定哪个 INF |
+| 构建命令核心参数 | `-p`（DSC）、`-a`（架构）、`-b`（DEBUG/RELEASE）、`-t`（工具链）、`-m`（单个模块） |
 
-```bash
-# 安装依赖
-sudo apt install build-essential uuid-dev iasl git \
-    python3 python3-venv \
-    qemu-system-misc
-
-# 安装 RISC-V 交叉编译工具链
-sudo apt install gcc-riscv64-unknown-elf
-
-# 克隆源码
-git clone https://github.com/tianocore/edk2.git
-cd edk2
-git submodule update --init
-```
-
-> **注意**：`python3-distutils` 在 Python 3.12+ 中已被移除。如果你使用 Python 3.12 或更高版本，EDK2 的最新版本已经不再依赖 `distutils`。如果遇到相关问题，请确保使用最新版本的 EDK2 源码。
-
-### 7.2 构建步骤
-
-```bash
-# 1. 初始化环境
-source edksetup.sh
-
-# 2. 编译 BaseTools（首次）
-make -C BaseTools
-
-# 3. 构建 RISC-V QEMU 固件
-build -p OvmfPkg/RiscVVirt/RiscVVirtQemu.dsc \
-      -a RISCV64 \
-      -b DEBUG \
-      -t GCC \
-      -n $(nproc)
-
-# 4. 查看输出
-ls Build/RiscVVirtQemu/DEBUG_GCC/FV/RISCV_VIRT_CODE.fd
-```
-
-### 7.3 运行固件
-
-```bash
-# 填充 Flash 映像到 32MB（QEMU virt 要求）
-truncate -s 32M Build/RiscVVirtQemu/DEBUG_GCC/FV/RISCV_VIRT_CODE.fd
-truncate -s 32M Build/RiscVVirtQemu/DEBUG_GCC/FV/RISCV_VIRT_VARS.fd
-
-# 使用 QEMU 运行（带 OpenSBI）
-qemu-system-riscv64 \
-    -machine virt \
-    -m 256M \
-    -bios default \
-    -drive if=pflash,format=raw,file=Build/RiscVVirtQemu/DEBUG_GCC/FV/RISCV_VIRT_CODE.fd,readonly=on \
-    -drive if=pflash,format=raw,file=Build/RiscVVirtQemu/DEBUG_GCC/FV/RISCV_VIRT_VARS.fd \
-    -nographic
-
-# 不使用 OpenSBI（UEFI 直接作为 payload）
-qemu-system-riscv64 \
-    -machine virt \
-    -m 256M \
-    -bios none \
-    -drive if=pflash,format=raw,file=Build/RiscVVirtQemu/DEBUG_GCC/FV/RISCV_VIRT_CODE.fd,readonly=on \
-    -drive if=pflash,format=raw,file=Build/RiscVVirtQemu/DEBUG_GCC/FV/RISCV_VIRT_VARS.fd \
-    -nographic
-```
-
-> **设计背景 — `-bios default` vs `-bios none`**：QEMU 的 `-bios` 参数指定 M-mode 固件。`-bios default` 使用 QEMU 自带的 OpenSBI，它会初始化 M-mode 然后跳转到 pflash 指定的 UEFI 固件。`-bios none` 则不加载任何 M-mode 固件，UEFI 需要自行处理 M-mode 初始化（通常不推荐，除非你有自定义的 M-mode 固件）。对于 RiscVVirt 平台，推荐使用 `-bios default`。
-
-### 7.4 调试固件
-
-```bash
-# 使用 GDB 调试
-riscv64-unknown-elf-gdb Build/RiscVVirtQemu/DEBUG_GCC/MdeModulePkg/Core/Dxe/DxeMain/DxeMain/DEBUG/DxeCore.dll
-
-# QEMU 端加 -s -S 参数（-s = GDB 端口 1234, -S = 启动时暂停）
-qemu-system-riscv64 -machine virt -m 256M \
-    -bios default \
-    -drive if=pflash,format=raw,file=Build/RiscVVirtQemu/DEBUG_GCC/FV/RISCV_VIRT_CODE.fd,readonly=on \
-    -drive if=pflash,format=raw,file=Build/RiscVVirtQemu/DEBUG_GCC/FV/RISCV_VIRT_VARS.fd \
-    -nographic -s -S
-
-# GDB 端
-(gdb) set architecture riscv:rv64
-(gdb) target remote :1234
-(gdb) break DxeMain
-(gdb) continue
-```
+---
 
 ## 8. CI 系统
 
-EDK2 使用基于 Stuart/PyTool 的 CI 系统，配置在 `.pytool/CISettings.py` 中。
-
-> **设计背景 — 为什么从传统 CI 迁移到 Stuart/PyTool？** EDK2 传统的 `build` 命令是单平台构建工具，而 CI 需要同时验证多个平台和架构的组合。Stuart/PyTool 是 TianoCore 开发的基于 Python 的构建/CI 框架，支持：多平台并行构建、依赖自动管理（nuget/pip）、细粒度的 CI 插件（编码规范、GUID 唯一性检查等）、以及与 Azure Pipelines/GitHub Actions 的集成。
-
-### 8.1 CI 执行流程
+EDK2 使用基于 Stuart/PyTool 的 CI 框架（`.pytool/CISettings.py`），支持多平台并行构建和细粒度检查：
 
 ```bash
-# 安装 PyTool
 pip install edk2-pytool-extensions edk2-pytool-library
-
-# 环境设置
 stuart_setup -c .pytool/CISettings.py
-
-# 依赖更新
 stuart_update -c .pytool/CISettings.py
-
-# CI 构建
-stuart_ci_build -c .pytool/CISettings.py \
-    -t DEBUG -a RISCV64 \
-    -p OvmfPkg/RiscVVirt
+stuart_ci_build -c .pytool/CISettings.py -t DEBUG -a RISCV64 -p OvmfPkg/RiscVVirt
 ```
 
-### 8.2 CI 插件
-
-| 插件 | 功能 |
-|------|------|
+| 插件 | 检查内容 |
+|------|----------|
 | CompilerPlugin | 编译测试 |
-| DscCompleteCheck | DSC 完整性检查 |
-| GuidCheck | GUID 唯一性检查 |
-| DependencyCheck | 跨包依赖检查 |
-| LibraryClassCheck | 库类声明检查 |
-| LicenseCheck | 许可证检查 |
-| SpellCheck | 拼写检查 |
-| EccCheck | 编码标准检查 |
-| UncrustifyCheck | 代码格式检查 |
+| GuidCheck | GUID 唯一性 |
+| DependencyCheck | 跨包依赖合法性 |
+| LibraryClassCheck | 库类声明有效 |
+| EccCheck / UncrustifyCheck | 编码格式 |
+| SpellCheck | 注释拼写 |
 
 ---
 

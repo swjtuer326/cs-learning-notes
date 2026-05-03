@@ -95,13 +95,22 @@ SEC 最大的难题是：**C 函数需要栈，但系统没有内存。**
 
 x86 的解法是 CAR（Cache-as-RAM）：把 CPU 的 L2 Cache 配置为"no-eviction"模式——数据写进去不回写到 DRAM（因为 DRAM 还不存在），就留在 Cache 里当 RAM 用。
 
-```c
-// EDK2 中 CAR 初始化的汇编代码（UefiCpuPkg/SecCore/ResetVector）
-// 将 Cache 设为 no-eviction 模式，充当临时 RAM
-mov     cr0, eax          ; 禁用 Cache 写回
-invd                       ; 清空 Cache 旧数据
-; 此刻 Cache 就是临时 RAM，可以设栈指针了
-mov     esp, CAR_BASE_ADDRESS
+```asm
+; x86 平台典型 SEC 汇编入口（极简示意）
+; 注意：不同 SoC 的 Cache-As-RAM 初始化逻辑差异巨大，
+; 实际代码涉及 MSR 读写 + 缓存行使能 + 多级检查，此处只展示核心思路
+
+    ; 1. 将 L2 缓存的某个 Way 配置为"不驱逐"的 SRAM 区域
+    mov   eax, cr0
+    or    eax, (1 << 30)     ; 设置 CD (Cache Disable) 位
+    mov   cr0, eax
+    invd                     ; 刷新并失效所有缓存
+
+    ; 2. 选择一片缓存行作为临时栈空间
+    mov   esp, CAR_BASE_ADDRESS + CAR_SIZE
+
+    ; 3. 跳转到 C 入口
+    call  SecCoreStartup
 ```
 
 RISC-V 没有 Cache-as-RAM 机制，通常使用片上 SRAM 充当临时内存。
@@ -181,6 +190,8 @@ PeiServices->NotifyPpi(&mNotifyDesc);
 
 **PPI 是 Protocol 的极简版**：只有安装、查找、通知三个操作，没有 Handle、没有引用计数、没有打开/关闭语义。省下来的内存，是能跑起来和跑不起来的区别。
 
+> PPI 和 Protocol 的代码编写示例，见 [05-模块开发实战](./05-module-dev.md) 的 PEIM 和 Protocol 开发章节。
+
 PPI 和 Protocol 的区别，本质是资源约束下的工程取舍：
 
 | | PPI | Protocol |
@@ -247,11 +258,49 @@ DXE 面临的问题不是"怎么操作硬件"——那是驱动的事。DXE 要�
 
 假设系统里有两个驱动：磁盘驱动和文件系统驱动。磁盘驱动知道怎么读写扇区，文件系统驱动知道怎么解析 FAT32。文件系统驱动需要磁盘驱动，但它们是独立编译的——文件系统驱动怎么找到磁盘驱动？
 
-**Protocol 就是答案**。磁盘驱动安装一个 `BlockIoProtocol`（附带 GUID），文件系统驱动通过这个 GUID 查找：
+**Protocol 就是答案**。磁盘驱动安装一个 `BlockIoProtocol`，文件系统驱动通过它的 GUID 查找。下面分别看两边的完整代码：
+
+**生产者：磁盘驱动**（`DiskDxe.inf` → MODULE_TYPE = DXE_DRIVER）
 
 ```c
-// 磁盘驱动：我提供 Block I/O 服务
-EFI_BLOCK_IO_PROTOCOL gBlockIo = {
+#include <Uefi.h>
+#include <Library/UefiBootServicesTableLib.h>
+#include <Library/DebugLib.h>
+#include <Protocol/BlockIo.h>
+
+// ---- 硬件操作的桩函数（初始化硬件后填入真正的 I/O 代码）----
+EFI_STATUS EFIAPI BlockIoReset (
+  IN EFI_BLOCK_IO_PROTOCOL *This, IN BOOLEAN ExtendedVerification)
+{ return EFI_SUCCESS; }
+
+EFI_STATUS EFIAPI BlockIoRead (
+  IN EFI_BLOCK_IO_PROTOCOL *This, IN UINT32 MediaId,
+  IN EFI_LBA Lba, IN UINTN BufferSize, OUT VOID *Buffer)
+{ /* 从物理磁盘读扇区 */  return EFI_SUCCESS; }
+
+EFI_STATUS EFIAPI BlockIoWrite (
+  IN EFI_BLOCK_IO_PROTOCOL *This, IN UINT32 MediaId,
+  IN EFI_LBA Lba, IN UINTN BufferSize, IN VOID *Buffer)
+{ /* 向物理磁盘写扇区 */  return EFI_SUCCESS; }
+
+EFI_STATUS EFIAPI BlockIoFlush (IN EFI_BLOCK_IO_PROTOCOL *This)
+{ /* 刷新缓存 */  return EFI_SUCCESS; }
+
+// ---- 媒体描述符（声明磁盘的几何信息）----
+STATIC EFI_BLOCK_IO_MEDIA gMedia = {
+  .MediaId          = 0,               // 介质 ID（更换介质时递增）
+  .RemovableMedia   = FALSE,           // 不可移除（内置硬盘）
+  .MediaPresent     = TRUE,            // 介质在位
+  .LogicalPartition = FALSE,           // 不是逻辑分区
+  .ReadOnly         = FALSE,           // 可读写
+  .WriteCaching     = FALSE,           // 写穿透
+  .BlockSize        = 512,             // 每块 512 字节
+  .IoAlign          = 0,               // 对齐要求
+  .LastBlock        = 0x100000 - 1     // 最后一块的 LBA（此处假设 32MB）
+};
+
+// ---- Protocol 实例（把上面的桩函数组装成一个 Block I/O 服务）----
+STATIC EFI_BLOCK_IO_PROTOCOL gBlockIo = {
   .Revision    = EFI_BLOCK_IO_PROTOCOL_REVISION2,
   .Media       = &gMedia,
   .Reset       = BlockIoReset,
@@ -259,29 +308,92 @@ EFI_BLOCK_IO_PROTOCOL gBlockIo = {
   .WriteBlocks = BlockIoWrite,
   .FlushBlocks = BlockIoFlush
 };
-gBS->InstallProtocolInterface(
-    &DiskHandle, &gEfiBlockIoProtocolGuid,
-    EFI_NATIVE_INTERFACE, &gBlockIo
-);
 
-// 文件系统驱动：我要找所有磁盘
-EFI_HANDLE *Handles;
-UINTN Count;
-gBS->LocateHandleBuffer(
-    ByProtocol, &gEfiBlockIoProtocolGuid,
-    NULL, &Count, &Handles
-);
-// 在每个磁盘上尝试挂载文件系统
-for (UINTN i = 0; i < Count; i++) {
-    EFI_BLOCK_IO_PROTOCOL *BlkIo;
-    gBS->HandleProtocol(Handles[i], &gEfiBlockIoProtocolGuid, (VOID**)&BlkIo);
-    // 读分区表，如果识别到 FAT32，安装 SimpleFileSystem Protocol
+// ---- 入口函数：创建 Handle，安装 Protocol，向系统宣布"我是一个磁盘"----
+EFI_STATUS EFIAPI DiskDriverEntryPoint (
+  IN EFI_HANDLE ImageHandle, IN EFI_SYSTEM_TABLE *SystemTable)
+{
+  EFI_HANDLE  DiskHandle;
+
+  // 1. 创建一个新的 Handle（不需要挂在已有的 Controller 上，磁盘是"根设备"）
+  DiskHandle = NULL;
+  EFI_STATUS Status = gBS->InstallProtocolInterface (
+                             &DiskHandle,                 // ← 新 Handle 由函数填充
+                             &gEfiBlockIoProtocolGuid,    // Guid
+                             EFI_NATIVE_INTERFACE,        // 接口类型
+                             &gBlockIo                    // 实例指针
+                             );
+  DEBUG ((DEBUG_INFO, "DiskDxe: installed BlockIo, Status=%r\n", Status));
+  return Status;
+}
+```
+
+要点：入口函数只做一件事——把 `gBlockIo` 这个 Protocol 实例安装到一个 Handle 上。从此，系统中任何模块都可以通过 `gEfiBlockIoProtocolGuid` 找到这个磁盘。
+
+**消费者：文件系统驱动**（`FatDxe.inf` → MODULE_TYPE = DXE_DRIVER）
+
+```c
+#include <Uefi.h>
+#include <Library/UefiBootServicesTableLib.h>
+#include <Library/DebugLib.h>
+#include <Protocol/BlockIo.h>
+#include <Protocol/SimpleFileSystem.h>
+
+EFI_STATUS EFIAPI FatDriverEntryPoint (
+  IN EFI_HANDLE ImageHandle, IN EFI_SYSTEM_TABLE *SystemTable)
+{
+  EFI_STATUS  Status;
+  EFI_HANDLE  *Handles;
+  UINTN       Count;
+
+  // 1. 查出所有安装了 BlockIoProtocol 的 Handle
+  Status = gBS->LocateHandleBuffer (
+                  ByProtocol,                    // 按 Protocol 查找
+                  &gEfiBlockIoProtocolGuid,      // 找这个 GUID
+                  NULL,                          // SearchKey（ByProtocol 时不用此参数）
+                  &Count,                        // → 找到几个
+                  &Handles                       // → Handle 数组
+                  );
+  if (EFI_ERROR (Status) || Count == 0) {
+    DEBUG ((DEBUG_INFO, "FatDxe: no disk found\n"));
+    return Status;
+  }
+
+  // 2. 遍历每个磁盘，尝试挂载 FAT 文件系统
+  for (UINTN i = 0; i < Count; i++) {
+    EFI_BLOCK_IO_PROTOCOL  *BlkIo;
+
+    Status = gBS->HandleProtocol (
+                    Handles[i],                   // 这个 Handle 上
+                    &gEfiBlockIoProtocolGuid,     // 拿 BlockIoProtocol
+                    (VOID **)&BlkIo               // → 得到实例指针
+                    );
+    if (EFI_ERROR (Status)) continue;
+
+    // 3. 用 BlkIo->ReadBlocks() 读第一个扇区，看是不是 FAT 引导扇区
+    UINT8  Sector[512];
+    Status = BlkIo->ReadBlocks (BlkIo, BlkIo->Media->MediaId,
+                                0, sizeof(Sector), Sector);
+    if (EFI_ERROR (Status)) continue;
+
+    // 判断 FAT 签名：偏移 0x36 处是 "FAT12   "、"FAT16   "、"FAT32   "
+    if (Sector[0x36] == 'F' && Sector[0x37] == 'A' && Sector[0x38] == 'T') {
+      DEBUG ((DEBUG_INFO, "FatDxe: found FAT volume on Handle[%d]\n", i));
+      // 在此磁盘上安装 SimpleFileSystem Protocol（上层可调用 Open/Read/WriteDir）
+      // ... 见 05-模块开发实战的 Protocol 开发章节
+    }
+  }
+
+  gBS->FreePool (Handles);  // 释放 LocateHandleBuffer 分配的数组
+  return EFI_SUCCESS;
 }
 ```
 
 关键点：磁盘驱动和文件系统驱动互不认识。它们只通过 GUID 找到对方。这就是"发布-订阅"——生产者安装 Protocol，消费者查找 Protocol，双方零耦合。
 
 这种设计带来的好处：你可以换一个磁盘驱动（比如从 NVMe 换成 SATA），文件系统驱动完全不用改——它只认 `BlockIoProtocol` 这个 GUID，不关心底层是谁提供的。
+
+> Protocol 的完整定义和使用示例（安装、查找、通知回调）见 [05-模块开发实战](./05-module-dev.md) 的 Protocol 开发章节。
 
 ### 5.3 Dispatcher：驱动按什么顺序加载
 
@@ -402,6 +514,8 @@ BDS 是用户能感知的阶段——它显示启动菜单、连接键盘和显�
 | SMM | 有 | 无（用 StandaloneMmPkg 替代） |
 | I/O 端口 | 有（`in`/`out` 指令） | 无（纯 MMIO） |
 | 设备描述 | ACPI 为主 | FDT + ACPI |
+
+> 从内核/驱动开发角度看 x86 和 RISC-V 在 UEFI 层面的更多差异（MMU 差异、ACPI 表差异、SBI 与 SMM/StandaloneMm 的关系等），见 [06-RISC-V 平台移植](./06-riscv-platform.md)。
 
 ---
 

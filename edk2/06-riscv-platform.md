@@ -1,508 +1,378 @@
 # EDK2 RISC-V 与平台移植
 
-> RISC-V 服务器需要 UEFI，就像汽车需要方向盘——不是唯一选择，但是工业标准的选择。这一篇是你在 RISC-V SoC 上移植 UEFI 的实战指南。
+> RISC-V 服务器需要 UEFI，就像汽车需要方向盘——不是唯一的选择，但是工业标准的选择。这一篇是你在 RISC-V SoC 上移植 UEFI 的实战指南。
 
 ### 关键术语
 
 | 缩写 | 全称 | 含义 |
 |------|------|------|
-| SBI | Supervisor Binary Interface | RISC-V 特权层二进制接口 |
+| SBI | Supervisor Binary Interface | RISC-V S-mode 调用 M-mode 服务的标准接口 |
 | OpenSBI | Open Supervisor Binary Interface | 开源 SBI 参考实现 |
-| FDT | Flattened Device Tree | 扁平化设备树 |
-| MMU | Memory Management Unit | 内存管理单元 |
-| SATP | Supervisor Address Translation and Protection | 监管者地址转换与保护寄存器 |
+| FDT | Flattened Device Tree | 扁平化设备树，描述硬件拓扑的二进制格式 |
+| SATP | Supervisor Address Translation and Protection | RISC-V 页表基址寄存器 |
 | ACPI | Advanced Configuration and Power Interface | 高级配置与电源接口 |
-| RHCT | RISC-V Hart Capabilities Table | RISC-V Hart 能力表 |
-| MADT | Multiple APIC Description Table | 多 APIC 描述表 |
-| CSR | Control and Status Register | 控制和状态寄存器 |
-| Hart | Hardware Thread | RISC-V 硬件线程 |
+| RHCT | RISC-V Hart Capabilities Table | RISC-V Hart 能力表（ACPI） |
+| CSR | Control and Status Register | RISC-V 控制和状态寄存器 |
+| Hart | Hardware Thread | RISC-V 硬件线程（一个核心可以有多个 Hart） |
 | PLIC | Platform-Level Interrupt Controller | 平台级中断控制器 |
-| APLIC | Advanced Platform-Level Interrupt Controller | 高级平台级中断控制器 |
 
 ---
 
-## 1. RISC-V 在 EDK2 中的架构
+## 1. 前置知识
 
-### 1.1 代码分布
+| 需要了解 | 参考文档 |
+|----------|----------|
+| EDK2 启动流程（SEC/PEI/DXE/BDS） | [03-启动流程详解](./03-boot-flow.md) |
+| Protocol 开发与 DXE 驱动编写 | [05-模块开发实战](./05-module-dev.md) |
+| DSC/INF/DEC/FDF 元数据格式 | [04-构建系统深入](./04-build-system.md) |
 
-EDK2 中**没有独立的 RiscVPkg**，RISC-V 支持分散在多个包中，通过 `[RISCV64]` 架构条件段区分：
+---
+
+## 2. RISC-V 在 EDK2 中的代码分布
+
+EDK2 中**没有独立的 RiscVPkg**。RISC-V 支持分散在多个包中，通过 `[RISCV64]` 架构条件段区分：
 
 ```
-RISC-V 支持分布图：
-
 MdePkg (基础层)
 ├── Include/RiscV64/ProcessorBind.h        ← 类型绑定
 ├── Include/Register/RiscV64/              ← CSR 寄存器定义
 ├── Include/Library/BaseRiscVSbiLib.h      ← SBI 库接口
-├── Library/BaseLib/RiscV64/               ← BaseLib RISC-V 实现
-├── Library/BaseRiscVSbiLib/               ← SBI 调用库
-├── Library/BaseSerialPortLibRiscVSbiLib/  ← SBI 串口库
-├── Library/BaseCpuLib/RiscV/              ← CPU 初始化
-├── Library/BaseRngLib/RiscV/              ← 随机数
-├── Library/BasePeCoffLib/RiscV/           ← PE/COFF 加载
-└── Library/PeiServicesTablePointerLibRiscV/ ← PEI 服务表指针
+├── Library/BaseRiscVSbiLib/               ← SBI ecall 封装
+├── Library/BaseSerialPortLibRiscVSbiLib/  ← SBI 串口（SEC/PEI 最早可用）
 
 UefiCpuPkg (CPU 层)
 ├── CpuDxeRiscV64/                         ← CPU DXE 驱动
-├── CpuTimerDxeRiscV64/                    ← CPU 定时器驱动
-├── Library/BaseRiscV64CpuTimerLib/        ← CPU 定时器库
-├── Library/BaseRiscVMmuLib/               ← MMU 操作库
+├── CpuTimerDxeRiscV64/                    ← 定时器驱动
+├── Library/BaseRiscVMmuLib/               ← MMU 页表操作
+├── Library/BaseRiscV64CpuTimerLib/        ← 定时器库
 └── Library/CpuExceptionHandlerLib/RiscV/  ← 异常处理
 
-OvmfPkg/RiscVVirt (平台层)
-├── RiscVVirtQemu.dsc / .fdf               ← QEMU 平台定义
-├── Library/PlatformSecLib/                ← SEC 平台库
-├── Library/PlatformBootManagerLib/        ← 启动管理器
-└── Library/ResetSystemLib/                ← 重启库
+OvmfPkg/RiscVVirt (QEMU 平台层)
+├── RiscVVirtQemu.dsc / .fdf               ← 平台定义
+├── Library/PlatformSecLib/                ← SEC 初始化
+├── Library/PlatformBootManagerLib/        ← BDS 启动管理
+└── Library/ResetSystemLib/                ← 系统重启
 
 DynamicTablesPkg (ACPI 层)
 ├── Library/Acpi/RiscV/AcpiRhctLibRiscV/   ← RHCT 表
-├── Library/Acpi/RiscV/AcpiMadtLibRiscV/   ← MADT 表
-└── Library/FdtHwInfoParserLib/RiscV/      ← FDT 解析
+└── Library/Acpi/RiscV/AcpiMadtLibRiscV/   ← MADT 表
 ```
 
-> **设计背景 — 为什么没有 RiscVPkg？** EDK2 的包组织原则是"按功能而非按架构"。RISC-V 的基础类型定义属于 MdePkg（所有架构共享），CPU 驱动属于 UefiCpuPkg（所有 CPU 架构共享），平台代码属于各自的平台包。这种组织方式避免了架构特定的包变成"大杂烩"，也让跨架构的代码复用更自然。
+EDK2 的包组织原则是"按功能而非按架构"——基础类型定义在 MdePkg、CPU 驱动在 UefiCpuPkg、平台代码在各自的平台包。这种组织避免了架构专属包膨胀，也让跨架构的代码复用更自然。
 
-### 1.2 RISC-V 启动流程 vs x86
+### 2.1 RISC-V 启动流程
 
 ```mermaid
 %%{init: {"theme": "base", "themeVariables": {"primaryColor": "#ECECFF", "primaryTextColor": "#333333", "primaryBorderColor": "#9370DB", "lineColor": "#666666", "secondaryColor": "#ffffde", "secondaryBorderColor": "#aaaa33", "tertiaryColor": "#f0f0f0", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 flowchart LR
-    subgraph X86Boot["x86 启动流程"]
-        X86Reset(["CPU 复位 0xFFFFFFF0"]) --> X86Real["16位实模式"]
+    subgraph X86Boot["x86 启动"]
+        X86Reset(["复位 0xFFFFFFF0"]) --> X86Real["16位实模式"]
         X86Real --> X86Protected["32位保护模式"]
         X86Protected --> X86Long["64位长模式"]
-        X86Long --> X86Sec["SEC (C 代码)"]
-        X86Sec --> X86Later["PEI → DXE → BDS → OS"]
+        X86Long --> X86Sec["SEC"]
     end
 
-    subgraph RvBoot["RISC-V 启动流程"]
-        RvReset(["CPU 复位 0x1000"]) --> RvMmode["M-mode 机器模式"]
-        RvMmode --> RvOpensbi["OpenSBI (M-mode)<br/>初始化 · 设置 S-mode 入口"]
-        RvOpensbi --> RvSec["SEC (S-mode)<br/>接收 BootHartId · FdtPointer"]
-        RvSec --> RvLater["PEI → DXE → BDS → OS"]
+    subgraph RvBoot["RISC-V 启动"]
+        RvReset(["复位 0x1000"]) --> RvMmode["M-mode"]
+        RvMmode --> RvOpensbi["OpenSBI (M-mode)"]
+        RvOpensbi --> RvSec["SEC (S-mode)"]
     end
 
     classDef x86Style fill:#d1ecf1,stroke:#17a2b8,color:#0c5460,stroke-width:2px
     classDef rvStyle fill:#fff3cd,stroke:#ffc107,color:#856404,stroke-width:2px
-    class X86Reset,X86Real,X86Protected,X86Long,X86Sec,X86Later x86Style
-    class RvReset,RvMmode,RvOpensbi,RvSec,RvLater rvStyle
+    class X86Reset,X86Real,X86Protected,X86Long,X86Sec x86Style
+    class RvReset,RvMmode,RvOpensbi,RvSec rvStyle
 ```
 
-**关键差异**：
+RISC-V 和 x86 在架构层面的详细对比（SMM vs SBI、I/O 机制、设备描述、调试方式等）见 [03-启动流程详解](./03-boot-flow.md) §6.2。这里聚焦 RISC-V 特有的关键技术。
 
-| 特性 | x86 | RISC-V |
-|------|-----|--------|
-| 复位向量 | 0xFFFFFFF0 | 平台特定（QEMU: 0x1000） |
-| 初始模式 | 16位实模式 | M-mode |
-| 模式切换 | 实模式→保护模式→长模式 | M-mode→S-mode（一次切换） |
-| SMM | 有（x86 特有） | 无（使用 StandaloneMmPkg 替代） |
-| I/O 端口 | 有（IN/OUT 指令） | 无（纯 MMIO） |
-| 固件服务 | 无 | SBI (Supervisor Binary Interface) |
-| 设备描述 | ACPI 为主 | FDT + ACPI |
-| 串口 | I/O 端口或 MMIO | MMIO + SBI console |
+---
 
-> **设计背景 — 为什么 RISC-V 需要 SBI？** x86 的 SMM 提供了 OS 不可见的高权限执行环境，但 RISC-V 没有类似机制。SBI（Supervisor Binary Interface）是 RISC-V 的解决方案：M-mode 固件（如 OpenSBI）运行在最高特权级，S-mode 软件（UEFI/OS）通过 `ecall` 指令请求 M-mode 服务。这种设计比 SMM 更简洁透明——SBI 调用是显式的、可审计的，不像 SMI 那样对 OS 完全不可见。
+## 3. SBI — RISC-V 的"内置操作系统"
 
-## 2. SBI — RISC-V 的固件服务层
+### 3.1 什么是 SBI
 
-### 2.1 SBI 概述
+把 SBI 想象成传统 PC 时代的 BIOS 中断服务（`INT 10h` 视频输出、`INT 13h` 磁盘读写），但有三个本质区别：
 
-SBI (Supervisor Binary Interface) 是 RISC-V S-mode 软件与 M-mode 固件之间的标准接口，类似 ARM 的 SMCCC (Secure Monitor Call)。
+| | 传统 BIOS 中断 | SBI |
+|---|---------------|-----|
+| 调用方式 | `INT` 软件中断指令 | `ecall` 指令 + 参数在 `a0-a7` 寄存器 |
+| 运行特权 | 16 位实模式 | M-mode（机器模式，最高特权级） |
+| 规范程度 | IBM PC 特定，无正式版本演进 | 由 RISC-V 基金会正式定义，有 v0.1 → v2.0 清晰版本 |
+| 可移植性 | 不可移植（汇编 + Intel 专属） | 跨所有 RISC-V SoC（M-mode 硬件细节不可见） |
+
+SBI 让 S-mode 的 UEFI 或 Linux 内核在不了解 M-mode 硬件细节的情况下，请求定时器、重启系统、输出调试信息等服务。这是 RISC-V 的"硬件抽象层"。
 
 ```mermaid
 %%{init: {"theme": "base", "themeVariables": {"primaryColor": "#ECECFF", "primaryTextColor": "#333333", "primaryBorderColor": "#9370DB", "lineColor": "#666666", "secondaryColor": "#ffffde", "secondaryBorderColor": "#aaaa33", "tertiaryColor": "#f0f0f0", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 flowchart TD
-    Smode["S-mode (UEFI/OS)<br/>通过 ecall 调用 SBI"]
-    SbiLayer["SBI 层 (M-mode 固件)<br/>OpenSBI 是最常用的实现"]
-    MmodeHw["M-mode (硬件)<br/>CSR 寄存器 · 物理内存管理"]
-
-    Smode -->|ecall| SbiLayer
-    SbiLayer -->|CSR 指令 · 物理操作| MmodeHw
-    SbiLayer -->|返回结果| Smode
+    Smode["S-mode (UEFI/OS)"] -->|"ecall"| Sbi["SBI (M-mode OpenSBI)"]
+    Sbi -->|"CSR 操作"| Hw["M-mode 硬件"]
+    Sbi -->|"返回"| Smode
 
     classDef smode fill:#d1ecf1,stroke:#17a2b8,color:#0c5460,stroke-width:2px
     classDef sbilayer fill:#fff3cd,stroke:#ffc107,color:#856404,stroke-width:2px
     classDef mmhw fill:#f8d7da,stroke:#dc3545,color:#721c24,stroke-width:2px
     class Smode smode
-    class SbiLayer sbilayer
-    class MmodeHw mmhw
+    class Sbi sbilayer
+    class Hw mmhw
 ```
 
-> **设计背景 — SBI 的设计哲学**：RISC-V 特权架构规范故意将 M-mode 和 S-mode 分离——S-mode 软件不能直接访问 M-mode 的 CSR 寄存器或执行 M-mode 操作。SBI 是两个特权级之间的"合同"：S-mode 软件只需要知道 SBI 接口，不需要知道 M-mode 固件的具体实现。这使得 M-mode 固件可以独立更新（例如从 OpenSBI 切换到其他实现），而不影响 S-mode 软件。
+### 3.2 SBI 在 EDK2 中的使用
 
-### 2.2 BaseRiscVSbiLib
+EDK2 通过 `BaseRiscVSbiLib`（`MdePkg/Library/BaseRiscVSbiLib/`）封装 `ecall` 指令。
 
-EDK2 封装了 SBI 调用，位于 `MdePkg/Library/BaseRiscVSbiLib/`：
+**SbiCall**（核心封装）：
 
 ```c
-// 核心 SBI ecall 封装（返回 SBI_RET 结构体）
-SBI_RET
-EFIAPI
-SbiCall (
+SBI_RET EFIAPI SbiCall (
   IN  UINTN ExtId,     // SBI 扩展 ID
   IN  UINTN FuncId,    // 函数 ID
   IN  UINTN NumArgs,   // 参数数量 (0-6)
   ...
   );
 
-// SBI_RET: Error = SBI 状态码, Value = 返回值
 typedef struct { UINTN Error; UINTN Value; } SBI_RET;
+```
 
-// 常用 SBI 函数
-VOID SbiSetTimer (UINT64 Time);                                    // 设置定时器
-EFI_STATUS SbiSystemReset (UINTN ResetType, UINTN ResetReason);    // 系统重启
+**常用功能**：
+
+```c
+VOID SbiSetTimer (UINT64 Time);                                  // 设置定时器
+EFI_STATUS SbiSystemReset (UINTN ResetType, UINTN ResetReason);  // 系统重启
 ```
 
 **SBI 扩展 ID**：
 
-| 扩展 | ID | 用途 |
+| 扩展 | ID | 作用 |
 |------|-----|------|
-| SBI_EXT_BASE | 0x10 | SBI 基础功能（版本探测等） |
-| SBI_EXT_TIME | 0x54494D45 | 定时器 |
-| SBI_EXT_SRST | 0x53525354 | 系统重启 |
-| SBI_EXT_HSM | 0x48534D | Hart 状态管理 |
-| SBI_EXT_DBCN | 0x4442434E | 调试控制台 |
-| SBI_EXT_0_1_CONSOLE_PUTCHAR | 0x1 | Legacy 字符输出（SBI 0.1 兼容） |
+| SBI_EXT_BASE | 0x10 | 版本探测、获取已注册扩展列表 |
+| SBI_EXT_TIME | 0x54494D45 ("TIME") | 读写系统定时器 |
+| SBI_EXT_SRST | 0x53525354 ("SRST") | 系统重启/关机 |
+| SBI_EXT_HSM | 0x48534D ("HSM") | Hart 启动/停止/挂起管理 |
+| SBI_EXT_DBCN | 0x4442434E ("DBCN") | 调试控制台 |
 
-> **SBI 扩展 ID 的编码**：有些扩展 ID 是数字（如 0x10），有些是 ASCII 编码（如 0x54494D45 = "TIME"，0x53525354 = "SRST"）。ASCII 编码的扩展 ID 是 SBI v1.0 规范引入的，用于区分标准扩展和厂商扩展。
+ASCII 编码的 ID（如 `0x54494D45`）是 SBI v1.0 开始使用的命名约定，用于区分标准扩展和厂商扩展。
 
-### 2.3 SBI 串口库
+### 3.3 SBI 串口：最早的调试输出
 
-`MdePkg/Library/BaseSerialPortLibRiscVSbiLib/` 通过 SBI 调试控制台扩展实现串口输出，是 RISC-V UEFI 最早可用的调试输出手段。该库有两个实现：
-- **BaseSerialPortLibRiscVSbiLib.inf** — SEC/PEI 用（XIP 环境，只写不支持读）
+`MdePkg/Library/BaseSerialPortLibRiscVSbiLib/` 通过 SBI 调试控制台实现串口。它有两个版本：
+- **BaseSerialPortLibRiscVSbiLib.inf** — SEC/PEI 用（XIP，只写不支持读）
 - **BaseSerialPortLibRiscVSbiLibRam.inf** — DXE 用（完整功能）
 
-```c
-// 写数据策略（Common.c）
-// 1. 优先使用 SBI DBCN 扩展 (SbiDbcnWrite)
-// 2. 回退到 SBI Legacy putchar (SbiLegacyPutchar)
-// 3. 两者都不可用则返回 0
+写数据策略（先尝试新技术，再回退）：
+1. 优先：`SBI_EXT_DBCN` 批量写
+2. 回退：SBI legacy `putchar`
+3. 都不可用：返回 0
 
-UINTN SbiDbcnWrite (IN UINT8 *Buffer, IN UINTN NumberOfBytes)
-{
-  SBI_RET Ret;
-  Ret = SbiCall(SBI_EXT_DBCN, SBI_EXT_DBCN_WRITE, 3, NumberOfBytes, (UINTN)Buffer, 0);
-  return Ret.Value;  // 返回实际写入字节数
-}
-```
+这是 SEC 阶段最早的调试输出手段——因为 SBI console 不需要 UART 驱动，真正的 UART 由 M-mode 的 OpenSBI 处理。即使在 UEFI 最早的几个指令周期里，也可以通过 `DEBUG` 宏输出日志。
 
-> **设计背景 — 为什么 SBI 串口是最早的调试手段？** 在 SEC 阶段，UEFI 还没有初始化任何硬件设备（如 UART 控制器）。但 SBI console 只需要一条 `ecall` 指令就能输出字符，因为实际的 UART 驱动由 M-mode 的 OpenSBI 处理。这意味着即使在 UEFI 最早期阶段，你也可以通过 `DEBUG` 宏输出调试信息。这在调试启动问题时极其宝贵。
+---
 
-## 3. RISC-V MMU
+## 4. RISC-V MMU 与页表
 
-### 3.1 RISC-V 虚拟内存模式
+### 4.1 虚拟内存模式
 
-RISC-V 支持三种虚拟内存模式：
+RISC-V 支持三种模式，UEFI 通常用最轻的 Sv39 就足够：
 
-| 模式 | 虚拟地址宽度 | 物理地址宽度 | SATP.Mode |
-|------|-------------|-------------|-----------|
-| Sv39 | 39 位 | 56 位 | 8 |
-| Sv48 | 48 位 | 56 位 | 9 |
-| Sv57 | 57 位 | 56 位 | 10 |
+| 模式 | 虚拟地址位数 | 物理地址位数 | 页表级数 | SATP.Mode |
+|------|:---:|:---:|:---:|:---:|
+| Sv39 | 39 | 56 | 3 | 8 |
+| Sv48 | 48 | 56 | 4 | 9 |
+| Sv57 | 57 | 56 | 5 | 10 |
 
-**页表结构**（以 Sv39 为例）：
+**页表结构（Sv39）**：39 位虚拟地址 = 3 段 VPN（9+9+9 位） + 12 位页内偏移。SATP 寄存器指向根页表（L2），每下一级由 VPN 索引。
 
 ```mermaid
 %%{init: {"theme": "base", "themeVariables": {"primaryColor": "#ECECFF", "primaryTextColor": "#333333", "primaryBorderColor": "#9370DB", "lineColor": "#666666", "secondaryColor": "#ffffde", "secondaryBorderColor": "#aaaa33", "tertiaryColor": "#f0f0f0", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 flowchart TD
-    Va["虚拟地址 (39 位)"]
-    Va --> Vpn2["VPN[2] 9 bits"]
+    Va["虚拟地址 39 位"] --> Vpn2["VPN[2] 9 bits"]
     Va --> Vpn1["VPN[1] 9 bits"]
     Va --> Vpn0["VPN[0] 9 bits"]
-    Va --> PageOffset["Page Offset 12 bits"]
+    Va --> Offset["Offset 12 bits"]
 
-    SatpReg["SATP 寄存器<br/>→ L2 页表基址"] --> L2Table["Page Table L2<br/>512 项"]
-    Vpn2 -->|索引| L2Table
-    L2Table --> L1Table["Page Table L1<br/>512 项"]
-    Vpn1 -->|索引| L1Table
-    L1Table --> L0Table["Page Table L0<br/>512 项"]
-    Vpn0 -->|索引| L0Table
-    L0Table --> PhysPage["Physical Page<br/>4KB"]
-    PageOffset -->|偏移| PhysPage
+    Satp["SATP → L2 基址"] --> L2["L2 页表 512 项"]
+    Vpn2 -->|索引| L2
+    L2 --> L1["L1 页表 512 项"]
+    Vpn1 -->|索引| L1
+    L1 --> L0["L0 页表 512 项"]
+    Vpn0 -->|索引| L0
+    L0 --> PhysPage["物理页 4KB"]
+    Offset -->|偏移| PhysPage
 
     classDef va fill:#d1ecf1,stroke:#17a2b8,color:#0c5460,stroke-width:2px
     classDef table fill:#fff3cd,stroke:#ffc107,color:#856404,stroke-width:2px
     classDef page fill:#d4edda,stroke:#28a745,color:#155724,stroke-width:2px
-    class Va,Vpn2,Vpn1,Vpn0,PageOffset va
-    class SatpReg,L2Table,L1Table,L0Table table
+    class Va,Vpn2,Vpn1,Vpn0,Offset va
+    class Satp,L2,L1,L0 table
     class PhysPage page
 ```
 
-> **设计背景 — Sv39/Sv48/Sv57 的渐进式设计**：RISC-V 的虚拟内存模式是渐进式的——Sv39 是必须支持的，Sv48 和 Sv57 是可选的。这种设计让简单的硬件实现只需要支持 Sv39（3 级页表，512KB 页表内存），而高性能实现可以支持 Sv48/Sv57 来获得更大的地址空间。UEFI 固件通常使用 Sv39 就足够了，因为固件阶段的地址空间需求不大。`PcdCpuRiscVMmuMaxSatpMode` PCD 允许平台选择使用哪种模式。
+### 4.2 BaseRiscVMmuLib
 
-### 3.2 BaseRiscVMmuLib
-
-`UefiCpuPkg/Library/BaseRiscVMmuLib/` 提供了 MMU 操作接口：
+`UefiCpuPkg/Library/BaseRiscVMmuLib/` 提供三个核心 API：
 
 ```c
-// 设置内存区域属性
-EFI_STATUS
-RiscVSetMemoryAttributes (
-  IN EFI_PHYSICAL_ADDRESS  BaseAddress,
-  IN UINT64                Length,
-  IN UINT64                Attributes     // EFI_MEMORY_XP, EFI_MEMORY_RO, etc.
+EFI_STATUS RiscVSetMemoryAttributes (
+  IN EFI_PHYSICAL_ADDRESS BaseAddress, IN UINT64 Length, IN UINT64 Attributes
+  );   // 设置区域属性：EFI_MEMORY_XP (不可执行), EFI_MEMORY_RO (只读)
+
+EFI_STATUS RiscVConfigureMmu (
+  IN UINT32 SatpMode     // 8=Sv39, 9=Sv48, 10=Sv57
   );
 
-// 配置 MMU 模式
-EFI_STATUS
-RiscVConfigureMmu (
-  IN UINT32  SatpMode     // 8=Sv39, 9=Sv48, 10=Sv57
-  );
-
-// 刷新 TLB
-VOID
-RiscVLocalFlushTlbAll (VOID);
-
-VOID
-RiscVLocalFlushTlbPage (IN UINT64 VirtualAddress);
+VOID RiscVLocalFlushTlbAll (VOID);                       // 刷新 TLB
+VOID RiscVLocalFlushTlbPage (IN UINT64 VirtualAddress);  // 刷新单页
 ```
 
-### 3.3 PCD 控制 MMU 模式
+**PCD 选择 MMU 模式**：
 
 ```ini
-# 在 DSC 中设置最大 SATP 模式
-# 8 = Sv39, 9 = Sv48, 10 = Sv57
+# DSC 中设置使用 Sv39, Sv48, 或 Sv57（8, 9, 10）
 [PcdsFixedAtBuild]
-  gUefiCpuPkgTokenSpaceGuid.PcdCpuRiscVMmuMaxSatpMode|10
+  gUefiCpuPkgTokenSpaceGuid.PcdCpuRiscVMmuMaxSatpMode|9    # Sv48
 ```
 
-## 4. OvmfPkg/RiscVVirt 架构分析
+---
 
-OvmfPkg/RiscVVirt 是 RISC-V UEFI 的参考平台实现，是学习平台移植的最佳起点。
+## 5. OvmfPkg/RiscVVirt — 参考平台分析
 
-### 4.1 目录结构
+这是移植 RISC-V UEFI 的最佳起点。分析它的结构有助于理解"一个新平台需要哪些东西"。
+
+### 5.1 目录结构
 
 ```
 OvmfPkg/RiscVVirt/
-├── RiscVVirtQemu.dsc               # 主平台 DSC
-├── RiscVVirtQemu.fdf               # 主平台 FDF
-├── RiscVVirt.dsc.inc               # 公共 DSC 包含
-├── RiscVVirt.fdf.inc               # 公共 FDF 包含
-├── RiscVVirtSystemFW.dsc.inc       # Capsule 更新配置
-├── VarStore.fdf.inc                # NV 变量存储布局
-├── PlatformPei/                    # PEI 平台初始化
+├── RiscVVirtQemu.dsc               # 平台 DSC
+├── RiscVVirtQemu.fdf               # 平台 FDF
+├── RiscVVirt.dsc.inc / .fdf.inc    # 公共配置（可 include）
+├── VarStore.fdf.inc                # UEFI 变量存储布局
+├── PlatformPei/
 │   └── PlatformPeim.c              # 解析 FDT，构建 HOB
 ├── Library/
-│   ├── PlatformSecLib/             # SEC 阶段
-│   │   ├── SecEntry.S              # 汇编入口
-│   │   ├── PlatformSecLib.c        # SEC 初始化
-│   │   ├── Cpu.c                   # CPU 初始化
-│   │   ├── Memory.c                # 内存检测
-│   │   └── Platform.c              # 平台初始化
-│   ├── PlatformBootManagerLib/     # BDS 启动管理
-│   │   ├── PlatformBm.c            # 启动设备枚举
-│   │   └── QemuKernel.c            # 直接启动 Linux 内核
-│   ├── ResetSystemLib/             # 系统重启
-│   └── VirtNorFlashPlatformLib/    # NOR Flash 操作
+│   ├── PlatformSecLib/
+│   │   ├── SecEntry.S              # 汇编入口（设栈指针）
+│   │   ├── PlatformSecLib.c        # C 入口（找 PEI Core 并跳转）
+│   │   └── Memory.c / Cpu.c / Platform.c
+│   ├── PlatformBootManagerLib/     # BDS 启动策略
+│   └── ResetSystemLib/             # 重启实现
 └── Feature/
-    ├── Capsule/                    # Capsule 固件更新
+    ├── Capsule/                    # 固件在线更新
     └── SecureBoot/                 # 安全启动
 ```
 
-### 4.2 SEC 阶段分析
+### 5.2 SEC 阶段
 
-RISC-V 的 SEC 阶段从 OpenSBI 转交控制权开始：
-
-**SecEntry.S**（汇编入口，基于实际源码简化）：
+**SecEntry.S**（汇编入口——基于实际源码简化）：
 
 ```asm
-#include "PlatformSecLib.h"
-
 ASM_FUNC (_ModuleEntryPoint)
-    li    s0, 0                     # 清零帧指针，防止栈回溯
-    li    a2, FixedPcdGet32(PcdOvmfSecPeiTempRamBase)   # 临时 RAM 基址
-    li    a3, FixedPcdGet32(PcdOvmfSecPeiTempRamSize)   # 临时 RAM 大小
-    li    a4, SEC_HANDOFF_DATA_RESERVE_SIZE              # 预留 handoff 数据区
+    li    s0, 0                     # fp = 0，防栈回溯
+    li    a2, FixedPcdGet32(PcdSecPeiTempRamBase)    # 临时 RAM 基址
+    li    a3, FixedPcdGet32(PcdSecPeiTempRamSize)    # 大小
+    li    a4, SEC_HANDOFF_DATA_RESERVE_SIZE
     sub   a3, a3, a4
-    add   sp, a2, a3                # 设置栈指针
-    call  SecStartupPlatform        # 跳转到 C 函数
+    add   sp, a2, a3                # sp = tmp_ram_base + size - handoff_reserve
+    call  SecStartupPlatform        # → C 函数
 ```
 
-> **注意**：实际源码中，SecEntry.S 不保存 a0/a1（BootHartId/FdtPointer）——这些参数由 C 函数 `SecStartupPlatform` 通过其他方式获取（如从 HOB 或全局变量）。临时 RAM 基址和大小通过 PCD 配置，而非硬编码。在 OpenSBI + UEFI 流程中，UEFI 运行在 S-mode，**不能**使用 `csrr mhartid` 等 M-mode CSR 指令，尝试访问会触发非法指令异常。
+> `FixedPcdGet32(NAME)` 在汇编中是 EDK2 的 AutoGen 宏。构建时 AutoGen 从 DSC 的 `[PcdsFixedAtBuild]` 中取出 PCD 值，替换为字面常数。例如若 DSC 中设 `PcdSecPeiTempRamBase=0x80200000`，则上述 `li a2, FixedPcdGet32(...)` 在编译前就被展开为 `li a2, 0x80200000`。
 
 **PlatformSecLib.c**（C 入口）：
 
 ```c
-VOID
-EFIAPI
-SecStartupPlatform (
-  IN  UINTN  BootHartId,
-  IN  VOID   *FdtPointer
-  )
+VOID EFIAPI SecStartupPlatform (IN UINTN BootHartId, IN VOID *FdtPointer)
 {
-  DEBUG ((DEBUG_INFO, "SEC: Entry on Hart %lu\n", BootHartId));
-
-  // 1. 初始化调试串口（通过 SBI DBCN/Legacy putchar）
   SerialPortInitialize ();
-
-  // 2. 构建 SEC Handoff 数据
-  // RISCV_SEC_HANDOFF_DATA: BootHartId (UINTN) + FdtPointer (VOID*)
-  RiscVSecHobData.FdtPointer = (VOID *)FdtPointer;
-
-  // 4. 定位 PEI Core 并跳转
-  PeiCore = FindPeiCore ();
+  mSecHandoffData.BootHartId = BootHartId;
+  mSecHandoffData.FdtPointer = FdtPointer;
+  SbiSetTimer (0xFFFFFFFFFFFFFFFF);
+  PeiCore = FindPeiCoreInFv ();
   PeiCore (&SecCoreData, NULL);
 }
 ```
 
-### 4.3 PEI 阶段分析
+> UEFI 运行在 S-mode，**不能**使用 `csrr mhartid` 等 M-mode CSR 指令。RISC-V 硬件设计中，本特权级无法直接访问更高特权级的 CSR；尝试读取会触发非法指令异常。这也是为什么 SBI 必须存在——S-mode 通过 SBI ecall 间接获取 M-mode 才能拿到的信息。
 
-PlatformPeim.c 负责 FDT 解析和 HOB 构建：
+### 5.3 PEI 阶段
 
-```c
-EFI_STATUS
-EFIAPI
-PlatformPeimInitialization (VOID)
-{
-  // 1. 从 HOB 获取 FDT 指针
-  FdtPointer = GetFdtPointerFromHob ();
+PlatformPeim.c 的核心职责：解析 FDT，构建 HOB 传输信息给 DXE。
 
-  // 2. 解析 FDT 获取内存信息
-  // 构建 Resource Descriptor HOB
-  BuildResourceDescriptorHob (...);
+RISC-V 使用"早期用 FDT，晚期用 ACPI"的模式：
+- **PEI 阶段**：FDT 轻量，二进制解析简单，不需要协议服务
+- **DXE 阶段**：DynamicTablesPkg 根据实际硬件配置动态生成 ACPI 表供 OS 使用
 
-  // 3. 解析 FDT 获取 CPU 信息
-  // 构建 CPU HOB
-
-  // 4. 安装 FDT PPI
-  // 供后续 PEIM 使用
-
-  return EFI_SUCCESS;
-}
-```
-
-> **设计背景 — 为什么 RISC-V 使用 FDT + ACPI 双重描述？** FDT（Flattened Device Tree）在 PEI 阶段使用，因为此时 UEFI 还没有建立完整的协议服务，FDT 的解析更轻量——只需要简单的二进制解析。ACPI 在 DXE 阶段由 DynamicTablesPkg 动态生成，供 OS 使用。这种"早期用 FDT，晚期用 ACPI"的模式是 RISC-V UEFI 的标准做法，也是 RISC-V 服务器规范的要求。
-
-### 4.4 DSC 文件关键配置
-
-**RiscVVirtQemu.dsc** 的关键部分：
+### 5.4 DSC 关键配置
 
 ```ini
-[Defines]
-  PLATFORM_NAME        = RiscVVirtQemu
-  SUPPORTED_ARCHITECTURES = RISCV64
-  FLASH_DEFINITION     = OvmfPkg/RiscVVirt/RiscVVirtQemu.fdf
-
-# RISC-V 特定的库绑定
 [LibraryClasses.RISCV64]
   BaseRiscVSbiLib|MdePkg/Library/BaseRiscVSbiLib/BaseRiscVSbiLib.inf
   RiscVMmuLib|UefiCpuPkg/Library/BaseRiscVMmuLib/BaseRiscVMmuLib.inf
 
-# SEC/PEI 阶段库绑定
 [LibraryClasses.common.SEC]
-  PcdLib|MdePkg/Library/PeiPcdLib/PeiPcdLib.inf
-  SerialPortLib|MdePkg/Library/BaseSerialPortLibRiscVSbiLib/BaseSerialPortLibRiscVSbiLib.inf
+  SerialPortLib|.../BaseSerialPortLibRiscVSbiLib.inf   # SBI 串口（XIP 版）
 
-# DXE 阶段库绑定
 [LibraryClasses.common.DXE_DRIVER]
-  PcdLib|MdePkg/Library/DxePcdLib/DxePcdLib.inf
-  SerialPortLib|MdePkg/Library/BaseSerialPortLibRiscVSbiLib/BaseSerialPortLibRiscVSbiLib.inf
+  SerialPortLib|.../BaseSerialPortLibRiscVSbiLibRam.inf  # SBI 串口（RAM 版）
 ```
 
-### 4.5 FDF 文件关键配置
-
-**RiscVVirt.fdf.inc** 定义了 Flash 布局常量：
+### 5.5 FDF Flash 布局
 
 ```ini
-DEFINE PFLASH0_BASE_ADDRESS  = 0x20000000
-DEFINE PFLASH1_BASE_ADDRESS  = 0x22000000
+DEFINE PFLASH0_BASE_ADDRESS  = 0x20000000    # CODE 区
+DEFINE PFLASH1_BASE_ADDRESS  = 0x22000000    # VARS 区
 DEFINE CODE_SIZE             = 0x00800000    # 8MB
 DEFINE VARS_SIZE             = 0x000C0000    # 768KB
-DEFINE VARS_FTW_WORKING_SIZE = 0x00040000    # 256KB
-DEFINE VARS_FTW_SPARE_SIZE   = 0x00040000    # 256KB
 ```
 
-## 5. RISC-V ACPI 表
+---
 
-RISC-V 服务器使用 ACPI 描述硬件，DynamicTablesPkg 提供了动态 ACPI 表生成框架。
+## 6. RISC-V ACPI 表
 
-> **设计背景 — 为什么使用动态 ACPI 表生成？** 传统的 ACPI 表是静态二进制文件，硬编码在固件中。但 RISC-V 系统的硬件配置是动态的——Hart 数量、ISA 扩展、中断控制器类型等都可能变化。DynamicTablesPkg 允许在运行时根据实际硬件配置动态生成 ACPI 表，避免了为每种配置维护单独的静态表。
+RISC-V 服务器用 ACPI 描述硬件，DynamicTablesPkg 运行时动态生成 ACPI 表，避免为每种硬件配置维护分离的静态二进制。
 
-### 5.1 RISC-V 特有 ACPI 表
+| ACPI 表 | 源码路径 | 内容 |
+|---------|----------|------|
+| RHCT | `DynamicTablesPkg/Library/Acpi/RiscV/AcpiRhctLibRiscV/` | 每 Hart 的 ISA 字符串 + CMO/MMU 能力 |
+| MADT | `DynamicTablesPkg/Library/Acpi/RiscV/AcpiMadtLibRiscV/` | 中断控制器 (RINTC, IMSIC, APLIC, PLIC) |
+| SRAT | `DynamicTablesPkg/Library/Acpi/Common/AcpiSratLib/RiscV/` | NUMA 拓扑 |
+| FADT | `DynamicTablesPkg/Library/Acpi/Common/AcpiFadtLib/RiscV/` | 平台功耗/硬件特性 |
 
-| ACPI 表 | 缩写 | 源码位置 | 用途 |
-|---------|------|----------|------|
-| RISC-V Hart Capabilities Table | RHCT | `DynamicTablesPkg/Library/Acpi/RiscV/AcpiRhctLibRiscV/` | 描述 Hart 的 ISA 字符串、CMO 和 MMU 能力 |
-| Multiple APIC Description Table | MADT | `DynamicTablesPkg/Library/Acpi/RiscV/AcpiMadtLibRiscV/` | 描述 RINTC (RISC-V INTC)、IMSIC、APLIC、PLIC |
-| System Resource Affinity Table | SRAT | `DynamicTablesPkg/Library/Acpi/Common/AcpiSratLib/RiscV/` | NUMA 亲和性描述 |
-| Fixed ACPI Description Table | FADT | `DynamicTablesPkg/Library/Acpi/Common/AcpiFadtLib/RiscV/` | 固定硬件描述 |
-| Debug Port Table 2 | DBG2 | `DynamicTablesPkg/Library/Acpi/Common/AcpiDbg2Lib/RiscV/` | 调试端口描述 |
+其中 RHCT 最值得关注——它将每个 Hart 的 ISA 字符串（如 `rv64imafdcvh_zba_zbb`）暴露给 OS。x86 通过 `CPUID` 指令运行时探测能力，ARM 通过 ID 寄存器。RISC-V 的哲学是"ISA 字符串就是能力清单"，OS 解析字符串即可知道支持哪些扩展。
 
-### 5.2 RHCT 表
+---
 
-RHCT 是 RISC-V 特有的 ACPI 表，描述 Hart 的能力：
+## 7. 平台移植实战
 
-```c
-typedef struct {
-  EFI_ACPI_DESCRIPTION_HEADER  Header;
-  UINT64                       TimeBaseFrequency;
-  UINT32                       NumHartInfo;
-  UINT8                        IsaStringOffset[];  // ISA 字符串偏移
-  // 后跟 Hart Info 节点和 ISA String 数组
-} EFI_ACPI_RHCT_TABLE;
-
-// Hart Info 节点
-typedef struct {
-  UINT16  Type;           // 0 = Hart Info
-  UINT16  Length;
-  UINT64  AcpiProcessorUid;
-  // 后跟 CMO 节点、MMU 节点等
-} RHCT_HART_INFO_NODE;
-```
-
-> **设计背景 — RHCT 的意义**：在 x86/ARM 世界中，CPU 能力通过 CPUID/ID 寄存器在运行时探测。但 RISC-V 的设计哲学是"软件通过 ISA 字符串发现 CPU 能力"——每个 Hart 支持哪些扩展由 ISA 字符串描述（如 `rv64imafdcvh_zba_zbb_sstc`）。RHCT 将这些 ISA 字符串暴露给 OS，让 OS 可以在启动时就知道每个 Hart 的能力，而不需要编写 M-mode 代码去读 CSR 寄存器。
-
-### 5.3 MADT 表（RISC-V 版本）
-
-RISC-V MADT 包含以下中断控制器结构：
-
-| 类型 | 名称 | 描述 |
-|------|------|------|
-| 0x18 | RINTC | RISC-V Interrupt Controller（每个 Hart 一个） |
-| 0x19 | IMSIC | Incoming Message Signaled Interrupt Controller |
-| 0x1A | APLIC | Advanced Platform-Level Interrupt Controller |
-| 0x1B | PLIC | Platform-Level Interrupt Controller |
-
-## 6. 平台移植实战
-
-### 6.1 移植检查清单
-
-为新的 RISC-V SoC 移植 UEFI，需要完成以下工作：
+### 7.1 移植路线图
 
 ```mermaid
 %%{init: {"theme": "base", "themeVariables": {"primaryColor": "#ECECFF", "primaryTextColor": "#333333", "primaryBorderColor": "#9370DB", "lineColor": "#666666", "secondaryColor": "#ffffde", "secondaryBorderColor": "#aaaa33", "tertiaryColor": "#f0f0f0", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 flowchart LR
     subgraph Phase1["Phase 1: 最小启动"]
-        T1["创建平台包目录结构"]
-        T2["实现 PlatformSecLib"]
-        T3["创建平台 DSC/FDF"]
-        T4["实现 PlatformPei"]
-        T5["验证 DXE Core 启动"]
-        T1 --> T2 --> T3 --> T4 --> T5
+        T1["创建包目录"] --> T2["实现 PlatformSecLib"]
+        T2 --> T3["创建 DSC/FDF"]
+        T3 --> T4["实现 PlatformPei"]
+        T4 --> T5["验证 DXE Core"]
     end
 
     subgraph Phase2["Phase 2: 基本驱动"]
-        T6["实现串口驱动"]
-        T7["实现定时器驱动"]
-        T8["实现 ResetSystemLib"]
-        T9["实现文件系统驱动"]
-        T10["验证 UEFI Shell"]
-        T6 --> T7 --> T8 --> T9 --> T10
+        T6["串口驱动"] --> T7["定时器驱动"]
+        T7 --> T8["ResetSystemLib"]
+        T8 --> T9["文件系统"]
+        T9 --> T10["验证 Shell"]
     end
 
     subgraph Phase3["Phase 3: 完整平台"]
-        T11["实现 BootManagerLib"]
-        T12["实现 NOR Flash 驱动"]
-        T13["实现网络驱动"]
-        T14["实现 ACPI 表生成"]
-        T15["实现 Secure Boot"]
-        T16["验证 OS 启动"]
-        T11 --> T12 --> T13 --> T14 --> T15 --> T16
+        T11["BootManagerLib"] --> T12["NOR Flash 驱动"]
+        T12 --> T13["网络驱动"]
+        T13 --> T14["ACPI 表生成"]
+        T14 --> T15["Secure Boot"]
+        T15 --> T16["验证 OS"]
     end
 
-    Phase1 -->|最小系统运行后| Phase2
-    Phase2 -->|Shell 可用后| Phase3
+    Phase1 -->|"DXE Core 启动后"| Phase2
+    Phase2 -->|"Shell 可用后"| Phase3
 
     classDef phase1 fill:#d4edda,stroke:#28a745,color:#155724,stroke-width:2px
     classDef phase2 fill:#d1ecf1,stroke:#17a2b8,color:#0c5460,stroke-width:2px
@@ -512,318 +382,126 @@ flowchart LR
     class Phase3,T11,T12,T13,T14,T15,T16 phase3
 ```
 
-### 6.2 创建平台包
+### 7.2 平台包模板
 
 ```
 MyRiscVPlatformPkg/
-├── MyRiscVPlatformPkg.dec          # 包声明
-├── MyRiscVPlatformPkg.dsc          # 平台 DSC
-├── MyRiscVPlatformPkg.fdf          # 平台 FDF
+├── MyRiscVPlatformPkg.dec          # 包声明 (GUID + PCD)
+├── MyRiscVPlatformPkg.dsc          # 平台 DSC (库绑定 + Components)
+├── MyRiscVPlatformPkg.fdf          # 平台 FDF (Flash 布局)
 ├── Include/
-│   ├── Guid/
-│   │   └── MyPlatformGuid.h
-│   └── Library/
-│       └── MyPlatformLib.h
+│   ├── Guid/MyPlatformGuid.h
+│   └── Library/MyPlatformLib.h
 ├── Library/
-│   ├── PlatformSecLib/
-│   │   ├── PlatformSecLib.c
-│   │   ├── PlatformSecLib.inf
-│   │   └── SecEntry.S
-│   ├── PlatformBootManagerLib/
-│   │   ├── PlatformBm.c
-│   │   └── PlatformBootManagerLib.inf
-│   └── ResetSystemLib/
-│       ├── ResetSystemLib.c
-│       └── ResetSystemLib.inf
+│   ├── PlatformSecLib/{.c, .inf, SecEntry.S}
+│   ├── PlatformBootManagerLib/{PlatformBm.c, .inf}
+│   └── ResetSystemLib/{.c, .inf}
 ├── PlatformPei/
-│   ├── PlatformPeim.c
+│   ├── PlatformPeim.c              # 解析 FDT → HOB
 │   └── PlatformPei.inf
 └── Drivers/
-    └── MyHardwareDxe/
-        ├── MyHardware.c
-        └── MyHardwareDxe.inf
+    └── MyHardwareDxe/{.c, .inf}    # SoC 设备驱动
 ```
 
-### 6.3 DEC 文件模板
+### 7.3 DEC 文件
 
 ```ini
 [Defines]
-  DEC_SPECIFICATION   = 0x00010005
-  PACKAGE_NAME        = MyRiscVPlatformPkg
-  PACKAGE_GUID        = XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX
-  PACKAGE_VERSION     = 1.0
+  PACKAGE_NAME  = MyRiscVPlatformPkg
+  PACKAGE_GUID  = XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX
 
 [Includes]
   Include
 
-[Includes.RISCV64]
-  Include/RiscV64
-
 [LibraryClasses.RISCV64]
   MyPlatformLib|Include/Library/MyPlatformLib.h
 
-[Guids]
-  gMyPlatformGuid = { XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX }
-
 [PcdsFixedAtBuild]
-  gMyPlatformTokenSpaceGuid.PcdMyPlatformMemoryBase|0x80000000|UINT64|0x00000001
-  gMyPlatformTokenSpaceGuid.PcdMyPlatformMemorySize|0x40000000|UINT64|0x00000002
+  gMyPlatformPkgTokenSpaceGuid.PcdMemoryBase|0x80000000|UINT64|0x00000001
+  gMyPlatformPkgTokenSpaceGuid.PcdMemorySize|0x40000000|UINT64|0x00000002
 ```
 
-### 6.4 DSC 文件模板
+### 7.4 DSC 文件
 
 ```ini
 [Defines]
-  DSC_SPECIFICATION    = 0x00010005
-  PLATFORM_NAME        = MyRiscVPlatform
+  PLATFORM_NAME  = MyRiscVPlatform
   SUPPORTED_ARCHITECTURES = RISCV64
-  BUILD_TARGETS        = DEBUG|RELEASE|NOOPT
-  SKUID_IDENTIFIER     = DEFAULT
-  FLASH_DEFINITION     = MyRiscVPlatformPkg/MyRiscVPlatformPkg.fdf
-
-[LibraryClasses]
-  BaseLib|MdePkg/Library/BaseLib/BaseLib.inf
-  BaseMemoryLib|MdePkg/Library/BaseMemoryLibRepStr/BaseMemoryLibRepStr.inf
-  DebugLib|MdePkg/Library/UefiDebugLibConOut/UefiDebugLibConOut.inf
-  PcdLib|MdePkg/Library/BasePcdLibNull/BasePcdLibNull.inf
-  PrintLib|MdePkg/Library/BasePrintLib/BasePrintLib.inf
-  IoLib|MdePkg/Library/BaseIoLibIntrinsic/BaseIoLibIntrinsic.inf
+  FLASH_DEFINITION = MyRiscVPlatformPkg/MyRiscVPlatformPkg.fdf
 
 [LibraryClasses.RISCV64]
   BaseRiscVSbiLib|MdePkg/Library/BaseRiscVSbiLib/BaseRiscVSbiLib.inf
   RiscVMmuLib|UefiCpuPkg/Library/BaseRiscVMmuLib/BaseRiscVMmuLib.inf
 
 [LibraryClasses.common.SEC]
-  PcdLib|MdePkg/Library/PeiPcdLib/PeiPcdLib.inf
-  HobLib|MdePkg/Library/PeiHobLib/PeiHobLib.inf
-  MemoryAllocationLib|MdePkg/Library/PeiMemoryAllocationLib/PeiMemoryAllocationLib.inf
-  SerialPortLib|MdePkg/Library/BaseSerialPortLibRiscVSbiLib/BaseSerialPortLibRiscVSbiLib.inf
-
-[LibraryClasses.common.PEIM]
-  PcdLib|MdePkg/Library/PeiPcdLib/PeiPcdLib.inf
-  HobLib|MdePkg/Library/PeiHobLib/PeiHobLib.inf
-  MemoryAllocationLib|MdePkg/Library/PeiMemoryAllocationLib/PeiMemoryAllocationLib.inf
-
-[LibraryClasses.common.DXE_DRIVER]
-  PcdLib|MdePkg/Library/DxePcdLib/DxePcdLib.inf
-  HobLib|MdePkg/Library/DxeHobLib/DxeHobLib.inf
-  MemoryAllocationLib|MdePkg/Library/UefiMemoryAllocationLib/UefiMemoryAllocationLib.inf
-  UefiBootServicesTableLib|MdePkg/Library/UefiBootServicesTableLib/UefiBootServicesTableLib.inf
+  SerialPortLib|MdePkg/Library/BaseSerialPortLibRiscVSbiLib/Base...Lib.inf
 
 [Components]
   MdeModulePkg/Core/Pei/PeiCore.inf
   MdeModulePkg/Core/Dxe/DxeMain.inf
-  MdeModulePkg/Universal/BdsDxe/BdsDxe.inf
   UefiCpuPkg/CpuDxeRiscV64/CpuDxeRiscV64.inf
-  UefiCpuPkg/CpuTimerDxeRiscV64/CpuTimerDxeRiscV64.inf
   MyRiscVPlatformPkg/PlatformPei/PlatformPei.inf
-  MyRiscVPlatformPkg/Library/ResetSystemLib/ResetSystemLib.inf
 ```
 
-### 6.5 SEC 入口实现
-
-**SecEntry.S**（参考 RiscVVirt 实际实现）：
-
-```asm
-#include <AsmMacroLibRiscV64.h>
-
-ASM_FUNC (_ModuleEntryPoint)
-    li    s0, 0                     # 清零帧指针，防止栈回溯
-    li    a2, FixedPcdGet32(PcdSecPeiTempRamBase)   # 临时 RAM 基址
-    li    a3, FixedPcdGet32(PcdSecPeiTempRamSize)   # 临时 RAM 大小
-    li    a4, SEC_HANDOFF_DATA_RESERVE_SIZE
-    sub   a3, a3, a4
-    add   sp, a2, a3                # 设置栈指针
-    call  SecStartupPlatform        # 跳转到 C 函数
-```
-
-> **注意**：实际 RiscVVirt 的 SecEntry.S 不在汇编中保存 BootHartId/FdtPointer，也不做 Boot Hart 判断——这些逻辑由 C 函数 `SecStartupPlatform` 处理。Boot Hart 判断通常通过 OpenSBI 的 HSM 扩展完成。关键是：**在 S-mode 下不能使用 M-mode CSR（如 `mhartid`、`mstatus` 等）**，否则会触发非法指令异常。
-
-**PlatformSecLib.c**：
-
-```c
-#include <PiPei.h>
-#include <Library/BaseLib.h>
-#include <Library/DebugLib.h>
-#include <Library/BaseRiscVSbiLib.h>
-#include <Library/PcdLib.h>
-
-STATIC RISCV_SEC_HANDOFF_DATA  mSecHandoffData;
-
-VOID
-EFIAPI
-SecStartupPlatform (
-  IN  UINTN  BootHartId,
-  IN  VOID   *FdtPointer
-  )
-{
-  DEBUG ((DEBUG_INFO, "SEC: Entry on Hart %lu\n", BootHartId));
-
-  mSecHandoffData.BootHartId = BootHartId;
-  mSecHandoffData.FdtPointer = FdtPointer;
-
-  SbiSetTimer (0xFFFFFFFFFFFFFFFF);
-
-  PeiCore = FindPeiCoreInFv ();
-  if (PeiCore == NULL) {
-    DEBUG ((DEBUG_ERROR, "SEC: Failed to find PEI Core\n"));
-    CpuDeadLoop ();
-  }
-
-  SecCoreData.BootFirmwareVolume = GetBfvBase ();
-  SecCoreData.TemporaryRamBase   = (VOID *)PcdGet64 (PcdMyPlatformMemoryBase);
-  SecCoreData.TemporaryRamSize   = SIZE_128KB;
-
-  PeiCore (&SecCoreData, NULL);
-}
-```
-
-### 6.6 PlatformPei 实现
-
-```c
-#include <PiPei.h>
-#include <Library/PeiServicesLib.h>
-#include <Library/HobLib.h>
-#include <Library/DebugLib.h>
-#include <Library/FdtLib.h>
-#include <Guid/RiscVSecHobData.h>
-
-EFI_STATUS
-EFIAPI
-PlatformPeimInitialization (VOID)
-{
-  VOID   *FdtPointer;
-  UINT64 MemoryBase;
-  UINT64 MemorySize;
-
-  FdtPointer = GetFdtPointerFromHob ();
-  if (FdtPointer == NULL) {
-    DEBUG ((DEBUG_ERROR, "PlatformPei: No FDT found\n"));
-    return EFI_NOT_FOUND;
-  }
-
-  if (ParseFdtMemoryInfo (FdtPointer, &MemoryBase, &MemorySize)) {
-    BuildResourceDescriptorHob (
-      EFI_RESOURCE_SYSTEM_MEMORY,
-      EFI_RESOURCE_ATTRIBUTE_PRESENT |
-      EFI_RESOURCE_ATTRIBUTE_INITIALIZED |
-      EFI_RESOURCE_ATTRIBUTE_TESTED |
-      EFI_RESOURCE_ATTRIBUTE_UNCACHEABLE |
-      EFI_RESOURCE_ATTRIBUTE_WRITE_COMBINEABLE |
-      EFI_RESOURCE_ATTRIBUTE_WRITE_THROUGH_CACHEABLE |
-      EFI_RESOURCE_ATTRIBUTE_WRITE_BACK_CACHEABLE,
-      MemoryBase,
-      MemorySize
-      );
-    DEBUG ((DEBUG_INFO, "PlatformPei: Memory 0x%lx + 0x%lx\n", MemoryBase, MemorySize));
-  }
-
-  BuildCpuHob (40, 39);
-
-  return EFI_SUCCESS;
-}
-```
-
-> **BuildCpuHob(40, 39) 的含义**：第一个参数是物理地址位数（40 = 1TB 地址空间），第二个参数是虚拟地址位数（39 = Sv39）。这些值告诉 DXE Core 系统的地址空间大小，影响内存分配和映射策略。你需要根据你的 SoC 实际支持的地址宽度来设置这些值。
-
-## 7. RISC-V 特有协议
-
-### 7.1 RISCV_EFI_BOOT_PROTOCOL
-
-这是 RISC-V UEFI 平台必须实现的协议，提供获取启动 Hart ID 的方法：
-
-```c
-// UefiCpuPkg/Include/Protocol/RiscVBootProtocol.h
-typedef struct _RISCV_EFI_BOOT_PROTOCOL {
-  UINT64  Revision;
-  EFI_STATUS (EFIAPI *GetBootHartId) (
-    IN RISCV_EFI_BOOT_PROTOCOL  *This,
-    OUT UINTN                    *BootHartId
-    );
-} RISCV_EFI_BOOT_PROTOCOL;
-
-#define RISCV_EFI_BOOT_PROTOCOL_REVISION  0x00010000
-#define RISCV_EFI_BOOT_PROTOCOL_GUID \
-  { 0xccd15fec, 0x6f73, 0x4eec, { 0x83, 0x95, 0x3e, 0x69, 0xe4, 0xb9, 0x40, 0xbf } }
-```
-
-此协议由 `UefiCpuPkg/CpuDxeRiscV64/` 安装。
-
-> **设计背景 — 为什么需要这个协议？** RISC-V UEFI 规范要求 OS 能够获取 Boot Hart ID，以便在 SMP 启动时知道哪个 Hart 是主 Hart。在 x86 上，BSP（Bootstrap Processor）的识别由硬件保证；在 RISC-V 上，Boot Hart 由 M-mode 固件（OpenSBI）决定，需要通过协议传递给 OS。这是 RISC-V UEFI 规范特有的要求。
+---
 
 ## 8. 调试与验证
 
-### 8.1 QEMU 调试环境
+### 8.1 QEMU + GDB 调试
 
 ```bash
-# 启动 QEMU 并等待 GDB 连接
-qemu-system-riscv64 \
-    -machine virt \
-    -m 8G \
-    -smp 4 \
-    -bios default \
-    -pflash /path/to/CODE.fd \
-    -pflash /path/to/VARS.fd \
-    -drive file=disk.img,format=raw \
-    -netdev user,id=net0 \
-    -device virtio-net-pci,netdev=net0 \
-    -nographic \
-    -s -S
+# QEMU 端：-s = GDB port 1234, -S = 启动时暂停
+qemu-system-riscv64 -machine virt -m 8G -smp 4 \
+    -bios default -pflash CODE.fd -pflash VARS.fd \
+    -nographic -s -S
 
-# GDB 连接
+# GDB 端
 riscv64-unknown-elf-gdb
 (gdb) set architecture riscv:rv64
 (gdb) target remote :1234
-(gdb) break DxeMain
-(gdb) continue
+```
+
+关键断点：
+
+```gdb
+break SecEntry         # SEC 入口
+break PeiCore          # PEI Core 启动
+break DxeMain          # DXE Core 启动
+break BdsEntry         # BDS 开始枚举设备
+break RiscVSetMemoryAttributes  # 每个 MMU 属性修改
 ```
 
 ### 8.2 常见问题排查
 
-| 问题 | 可能原因 | 解决方法 |
-|------|----------|----------|
-| 无串口输出 | SBI console 未启用 | 检查 BaseSerialPortLibRiscVSbiLib 绑定 |
-| DXE Core 崩溃 | 内存 HOB 不正确 | 检查 PlatformPei 中的内存描述 |
-| 驱动调度失败 | DEPEX 不满足 | 检查依赖的 Protocol 是否安装 |
-| MMU fault | 页表配置错误 | 检查 BaseRiscVMmuLib 配置和 PCD |
-| BDS 卡住 | 无启动设备 | 检查 BlockIo 协议和文件系统驱动 |
-| 变量服务失败 | NOR Flash 驱动缺失 | 检查 VirtNorFlashPlatformLib |
-| 非法指令异常 | S-mode 访问了 M-mode CSR | 检查代码中是否使用了 `mhartid` 等 M-mode CSR |
-
-### 8.3 关键调试断点
-
-```gdb
-# 启动关键断点
-break SecEntry
-break PeiCore
-break DxeMain
-break BdsEntry
-
-# RISC-V 特定
-break RiscVSetMemoryAttributes
-break CpuDxeRiscV64Entry
-
-# 协议安装断点
-break CoreInstallProtocolInterface
-```
-
-## 9. RISC-V 服务器 UEFI 生态
-
-### 9.1 规范与标准
-
-| 规范 | 状态 | 说明 |
+| 现象 | 原因 | 检查 |
 |------|------|------|
-| RISC-V UEFI | 已发布 | RISC-V UEFI 协议规范 |
-| RISC-V ACPI | 已发布 | RHCT、MADT 等 RISC-V ACPI 表定义 |
-| RISC-V SBI | v2.0 | Supervisor Binary Interface |
-| RISC-V IOMMU | 规范中 | IO 内存映射规范 |
-| RISC-V AIA | 已发布 | Advanced Interrupt Architecture |
+| 无串口输出 | SBI console 未链接 | DSC 中 SerialPortLib 绑定是 SBI 版本？ |
+| DXE Core 崩溃 | 内存 HOB 错误 | PlatformPei 构建的内存描述与实际物理地址匹配？ |
+| 非法指令异常 | S-mode 访问 M-mode CSR | 检查 `mhartid`/`mstatus` 等 M-mode CSR 被意外使用 |
+| BDS 卡住 | 无启动设备 | Block I/O Protocol 有没有被磁盘驱动安装？ |
+| 变量服务失败 | NOR Flash 驱动缺失 | VirtNorFlashPlatformLib 实例匹配平台？ |
 
-### 9.2 关键资源
+---
+
+## 9. 要点回顾
+
+| 要点 | 说明 |
+|------|------|
+| RISC-V 无独立包 | RISC-V 代码分散在 MdePkg/UefiCpuPkg/OvmfPkg 中，通过 `[RISCV64]` 段区分 |
+| SBI = RISC-V 的"BIOS 服务" | S-mode 通过固件调用 M-mode 服务，替代 x86 的 SMM。EDK2 有 `BaseRiscVSbiLib` 封装 |
+| 不同 MMU 模式可切换 | Sv39/Sv48/Sv57。UEFI 用 Sv39 已足够。`PcdCpuRiscVMmuMaxSatpMode` 选模式 |
+| FDT + ACPI = 早期/晚期双描述 | PEI 用 FDT（轻量），DXE 用 DynamicTablesPkg 生成 ACPI（供 OS） |
+| 移植三阶段 | SEC → DXE Core 启动 → UEFI Shell → OS |
+| S-mode 不能访问 M-mode CSR | `mhartid`/`mstatus` 会触发非法指令异常。通过 SBI ecall 间接获取 |
+| RHCT 暴露 ISA 字符串 | 替代 x86 CPUID。OS 直接解析 `rv64imafdcvh_zba_zbb` 了解 Hart 能力 |
+
+---
+
+## 10. 生态资源
 
 | 资源 | 链接 |
 |------|------|
-| EDK2 RISC-V 源码 | https://github.com/tianocore/edk2 |
+| EDK2 RISC-V | https://github.com/tianocore/edk2 |
 | OpenSBI | https://github.com/riscv-software-src/opensbi |
 | RISC-V UEFI 规范 | https://github.com/riscv-non-isa/riscv-uefi |
 | RISC-V ACPI 规范 | https://github.com/riscv-non-isa/riscv-acpi |
@@ -831,4 +509,4 @@ break CoreInstallProtocolInterface
 
 ---
 
-**上一篇**：[05-模块开发实战](./05-module-dev.md) — DXE 驱动、Protocol、PEIM
+**上一篇**：[05-模块开发实战](./05-module-dev.md) — 写一个真正的 DXE 驱动

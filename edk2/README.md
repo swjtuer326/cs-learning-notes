@@ -14,6 +14,8 @@
 
 ## 学习路线
 
+每篇文档围绕一个核心问题展开：
+
 ```mermaid
 %%{init: {"theme": "base", "themeVariables": {"primaryColor": "#ECECFF", "primaryTextColor": "#333333", "primaryBorderColor": "#9370DB", "lineColor": "#666666", "secondaryColor": "#ffffde", "secondaryBorderColor": "#aaaa33", "tertiaryColor": "#f0f0f0", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 flowchart LR
@@ -41,15 +43,15 @@ flowchart LR
 
 ## 文档索引
 
-| 序号 | 文档 | 概要 | 建议学时 |
-|------|------|------|----------|
-| 00 | [EDK2 全景地图](./00-overview.md) | BIOS vs UEFI、规范体系、EDK2 的定位 | 0.5h |
-| 01 | [快速上手：构建与运行](./01-quick-start.md) | 环境搭建、首次构建、QEMU 运行固件 | 1h |
-| 02 | [类型系统与编码规范](./02-type-system.md) | UINTN/EFI_STATUS/GUID、命名约定、编码规则 | 1h |
-| 03 | [启动流程详解](./03-boot-flow.md) | SEC→PEI→DXE→BDS 各阶段职责与通信机制 | 2h |
-| 04 | [构建系统深入](./04-build-system.md) | DSC/DEC/INF/FDF 元数据、AutoGen、build 命令 | 2h |
-| 05 | [模块开发实战](./05-module-dev.md) | DXE 驱动、Protocol、事件、PEIM、Library | 3h |
-| 06 | [RISC-V 平台移植](./06-riscv-platform.md) | SBI、MMU、OvmfPkg 分析、新 SoC 移植 | 3h |
+| 序号 | 文档 | 核心问题 | 概要 | 建议学时 |
+|------|------|----------|------|----------|
+| 00 | [EDK2 全景地图](./00-overview.md) | 为什么要学 EDK2？ | BIOS vs UEFI、规范体系、EDK2 的核心设计哲学 | 0.5h |
+| 01 | [快速上手：构建与运行](./01-quick-start.md) | 怎么让固件跑起来？ | 环境搭建、首次构建、QEMU 运行固件 | 1h |
+| 02 | [类型系统与编码规范](./02-type-system.md) | 同一份源码怎么跨架构编译？ | UINTN/EFI_STATUS/GUID、命名约定、编码规则 | 1h |
+| 03 | [启动流程详解](./03-boot-flow.md) | 没有内存怎么跑 C 代码？ | SEC→PEI→DXE→BDS 各阶段职责与通信机制 | 2h |
+| 04 | [构建系统深入](./04-build-system.md) | 为什么 EDK2 不能直接用 Makefile？ | DSC/DEC/INF/FDF 元数据、AutoGen、build 命令 | 2h |
+| 05 | [模块开发实战](./05-module-dev.md) | 怎么写出一个能用的 DXE 驱动？ | Protocol、事件、PEIM、Library 开发 | 3h |
+| 06 | [RISC-V 平台移植](./06-riscv-platform.md) | RISC-V SoC 怎么适配 UEFI？ | SBI、MMU、ACPI 表、新平台移植 | 3h |
 
 ---
 
