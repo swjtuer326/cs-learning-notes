@@ -108,15 +108,19 @@ MyDriverEntryPoint (
 | 参数 | 核心用途 |
 |------|----------|
 | `ImageHandle` | 当前驱动自己的 Handle。安装 Protocol 时通常用此处传入（也可建新的 Handle） |
-| `SystemTable` | 全局 `gST` 指针——包含 Boot Services (`gBS`)、Runtime Services、GUID 表 |
+| `SystemTable` | 全局系统表指针，包含 Boot Services、Runtime Services、GUID 表等固件核心服务 |
 
-全局宏（由 `UefiBootServicesTableLib` 库提供）：
+这两个参数通过**全局快捷宏**暴露给整个模块，让你在任何函数里都能访问系统服务，而不需要一层层传参数：
 
 ```c
-gST   // = SystemTable（由入口点库初始化）
-gBS   // = SystemTable->BootServices  (UefiBootServicesTableLib)
-gRT   // = SystemTable->RuntimeServices (UefiRuntimeServicesTableLib)
+gST   // = SystemTable                           （入口点库初始化）
+gBS   // = SystemTable->BootServices             （UefiBootServicesTableLib）
+gRT   // = SystemTable->RuntimeServices          （UefiRuntimeServicesTableLib）
 ```
+
+> **这些宏不是自动就有**——必须在 INF 的 `[LibraryClasses]` 中声明对应库（`UefiBootServicesTableLib` / `UefiRuntimeServicesTableLib`），并在源码中 `#include` 对应的库头文件。入口点库（如 `UefiDriverEntryPoint`）在调用你的入口函数前已把 `SystemTable` 存入 `gST`，其他宏的初始化由各库的构造函数自动完成。详见 [04-构建系统](./04-build-system.md) §5.3。
+
+`gBS` 是最常用的——代码里几乎每行都会调；`gRT` 只在需要读写 UEFI 变量或运行时服务时用；`gST` 偶尔用来访问 `FirmwareVendor`、`ConfigurationTable` 等系统级信息。
 
 ---
 
@@ -248,6 +252,11 @@ EfiCreateProtocolNotifyEvent (
   &mRegistration,            // → void*: 用于 LocateProtocol
   &mEvent                    // → 退注册用
 );
+```
+
+> `EfiCreateProtocolNotifyEvent` 来自 `UefiLib`（不是 Boot Service 本身），内部封装了 `gBS->CreateEvent(EVT_NOTIFY_SIGNAL, ...)` + `gBS->RegisterProtocolNotify(...)` 两个调用。你需要 INF 的 `[LibraryClasses]` 中有 `UefiLib`。
+
+```c
 
 VOID EFIAPI MyProtocolCallback (IN EFI_EVENT Event, IN VOID *Context) {
     MY_PROTOCOL *MyProto;

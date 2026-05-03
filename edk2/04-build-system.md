@@ -142,6 +142,8 @@ flowchart LR
     class FdImage output
 ```
 
+> **PE/COFF vs ELF**：UEFI 固件使用 PE/COFF（Portable Executable / Common Object File Format）作为可执行文件格式，与 Windows 的 `.exe`/`.dll` 格式相同。这与 Linux 常用的 ELF 不同。GCC 编译出的 `.o` 是 ELF 格式，经链接器生成 ELF 动态库（`.so`），再由 **GenFw** 转换为 PE/COFF 格式的 `.efi` 文件。这也是为什么同一个源码用 `-t GCC`（Linux）和 `-t VS2022`（Windows）都能编译——工具链不同，目标格式一致。
+
 ### 2.3 Python 构建引擎
 
 Python 构建引擎是整个构建系统的"大脑"，核心模块：

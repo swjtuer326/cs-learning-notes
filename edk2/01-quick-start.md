@@ -9,6 +9,7 @@
 | QEMU | Quick Emulator | 开源硬件模拟器，用于固件开发调试 |
 | OVMF | Open Virtual Machine Firmware | QEMU 虚拟机的 UEFI 固件实现 |
 | RiscVVirt | RISC-V Virtual Platform | QEMU 的 RISC-V 虚拟机平台 |
+| PCD | Platform Configuration Database | 平台配置数据库。替代 `#ifdef`，在 DSC 中声明值，编译时展开为常量或在运行时查询（详见 [02-类型系统](./02-type-system.md) §9.2、[04-构建系统](./04-build-system.md) §5.1）。 |
 
 ---
 
@@ -109,7 +110,7 @@ ls Build/RiscVVirtQemu/DEBUG_GCC/FV/
 
 ### 4.1 填充 Flash 映像
 
-QEMU virt 机器要求每个 pflash 分区至少 32MB，但构建产物只有 8MB：
+QEMU virt 机器要求每个 **pflash**（Parallel Flash，并行 NOR Flash，QEMU 模拟的固件存储设备）分区至少 32MB，但构建产物只有 8MB：
 
 ```bash
 truncate -s 32M Build/RiscVVirtQemu/DEBUG_GCC/FV/RISCV_VIRT_CODE.fd
@@ -117,6 +118,8 @@ truncate -s 32M Build/RiscVVirtQemu/DEBUG_GCC/FV/RISCV_VIRT_VARS.fd
 ```
 
 `truncate -s` 不会真正写 32MB 数据——它只是扩展文件的逻辑大小，稀疏区域不占磁盘空间。
+
+> 构建产物里的 `.fd` 是 **FD（Firmware Device，固件映像）**，由构建系统根据 FDF 文件的 Flash 布局定义生成。CODE 区存固件代码（只读），VARS 区存 UEFI 变量（可读写）。详见 [04-构建系统深入](./04-build-system.md) §5.4。
 
 ### 4.2 启动 QEMU
 
@@ -161,19 +164,21 @@ Shell>
 ### 4.4 在 Shell 中探索
 
 ```
-# 查看系统信息
+# 查看系统信息（Handle Database：列出所有 Handle 及其挂载的 Protocol）
 Shell> dh
 
-# 查看已加载的驱动和协议
+# 查看已加载的驱动列表
 Shell> drivers
 
-# 查看设备映射
+# 查看设备映射（存储设备到文件系统路径的映射）
 Shell> map
 
 # 浏览文件系统
 Shell> fs0:
 fs0:\> ls
 ```
+
+> `dh` 和 `drivers` 是理解固件状态最直接的窗口——你能看到哪些 Protocol 已被安装、哪些驱动已加载。与传统 Linux 的 `/proc` 或 `lsmod` 类似，不过是固件级别的视图。
 
 ### 4.5 退出 QEMU
 

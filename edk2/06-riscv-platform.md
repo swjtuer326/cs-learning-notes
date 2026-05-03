@@ -157,7 +157,7 @@ ASCII 编码的 ID（如 `0x54494D45`）是 SBI v1.0 开始使用的命名约定
 ### 3.3 SBI 串口：最早的调试输出
 
 `MdePkg/Library/BaseSerialPortLibRiscVSbiLib/` 通过 SBI 调试控制台实现串口。它有两个版本：
-- **BaseSerialPortLibRiscVSbiLib.inf** — SEC/PEI 用（XIP，只写不支持读）
+- **BaseSerialPortLibRiscVSbiLib.inf** — SEC/PEI 用（**XIP**：eXecute In Place，代码直接在 Flash 中执行而不先拷贝到 RAM。PEI 阶段 DDR 尚未初始化，必须用 XIP 版本）
 - **BaseSerialPortLibRiscVSbiLibRam.inf** — DXE 用（完整功能）
 
 写数据策略（先尝试新技术，再回退）：

@@ -15,6 +15,10 @@
 | Protocol | EFI Protocol | DXE 阶段的驱动接口机制 |
 | PEIM | PEI Module | PEI 阶段的可加载模块 |
 | CAR | Cache-as-RAM | 缓存作为临时内存的技术 |
+| FV | Firmware Volume | 固件卷，Flash 上的模块存储格式 |
+| FFS | Firmware File System | 固件文件系统，FV 内部的文件组织方式 |
+| DEPEX | Dependency Expression | 依赖表达式，驱动声明自己依赖哪些 Protocol |
+| NVRAM | Non-Volatile RAM | 非易失性 RAM，存储 UEFI 变量 |
 
 ---
 
@@ -122,6 +126,43 @@ RISC-V 没有 Cache-as-RAM 机制，通常使用片上 SRAM 充当临时内存�
 | 代价 | Cache 不能再做 Cache 用 | 占用芯片面积 |
 
 **SEC 完成后，系统状态**：有了几十 KB 临时内存，可以跑 C 代码了。但 DDR 还没初始化，这点内存远远不够。SEC 把临时 RAM 的位置和 PEI Core 的入口地址告诉下一个阶段，然后跳转。
+
+### 3.3 固件卷：固件模块怎么存放
+
+系统固件不是一个大块二进制——它由几十甚至上百个独立编译的模块（`.efi` 文件）组成：内存初始化 PEIM、PCI 总线驱动、FAT 文件系统驱动……这些模块需要一个组织方式，让 Dispatcher 能在 Flash 上找到它们、验证完整性、按依赖顺序加载。
+
+**固件卷（FV）就是这个组织方式**。它是 Flash 上的一种轻量级文件系统，内部结构：
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#ECECFF", "primaryTextColor": "#333333", "primaryBorderColor": "#9370DB", "lineColor": "#666666", "secondaryColor": "#ffffde", "secondaryBorderColor": "#aaaa33", "tertiaryColor": "#f0f0f0", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
+flowchart LR
+    subgraph FV["固件卷 (FV)"]
+        direction LR
+        Header["FV Header<br/>· GUID · 卷大小"] --> File1["FFS 文件 1<br/>· PeiCore.efi"]
+        File1 --> File2["FFS 文件 2<br/>· MemoryInit.efi"]
+        File2 --> File3["FFS 文件 3<br/>· PciBus.efi"]
+        File3 --> FileN["..."]
+    end
+    Flash["Flash 存储器"] --> FV
+    classDef clsContainer fill:#d1ecf1,stroke:#17a2b8,color:#0c5460,stroke-width:2px
+    classDef clsItem fill:#cce5ff,stroke:#007bff,color:#004085,stroke-width:2px
+    classDef clsHeader fill:#ECECFF,stroke:#9370DB,stroke-width:2px
+    class Flash clsHeader
+    class FV clsContainer
+    class Header clsHeader
+    class File1,File2,File3,FileN clsItem
+```
+
+- **FV Header** 记录这个卷的 GUID 和大小，让代码能识别"这是什么卷"
+- **FFS 文件**是嵌套的一层——每个 `.efi` 模块被封装成一个 FFS 文件，包含文件头（GUID、类型）和负载
+- 一个 Flash 上可以有多个 FV（比如一个放 SEC/PEI，另一个放 DXE 驱动）
+
+**为什么要搞这么复杂？** 因为固件需要：
+1. **模块化更新**：换一个驱动只需替换一个 FFS 文件，不用重烧整个 Flash
+2. **完整性校验**：FV Header 里可以带校验和，发现 Flash bit rot
+3. **压缩**：FV 支持压缩，节省昂贵的 Flash 空间
+
+SEC 阶段要找的 PEI Core，就是通过扫描 FV Header 找到的——从 Flash 起始地址往后搜，直到找到格式正确的 FV，再在里面定位 PEI Core 对应的 FFS 文件。
 
 ---
 
@@ -260,6 +301,8 @@ DXE 面临的问题不是"怎么操作硬件"——那是驱动的事。DXE 要�
 
 **Protocol 就是答案**。磁盘驱动安装一个 `BlockIoProtocol`，文件系统驱动通过它的 GUID 查找。下面分别看两边的完整代码：
 
+> **`.inf` 和 `MODULE_TYPE` 是什么？** `.inf` 是 EDK2 模块的元信息文件，声明这个模块叫什么、是什么类型（`DXE_DRIVER` / `PEIM` / `DXE_RUNTIME_DRIVER` 等）、依赖哪些库、用了哪些 Protocol GUID。`MODULE_TYPE` 决定了模块的加载阶段和可用服务——比如 `DXE_DRIVER` 能访问 Boot Services，`DXE_RUNTIME_DRIVER` 能访问 Runtime Services。详见 [05-模块开发实战](./05-module-dev.md)。
+
 **生产者：磁盘驱动**（`DiskDxe.inf` → MODULE_TYPE = DXE_DRIVER）
 
 ```c
@@ -328,7 +371,11 @@ EFI_STATUS EFIAPI DiskDriverEntryPoint (
 }
 ```
 
+> **`DEBUG ((...))` 的双括号？** 这是 EDK2 的调试输出宏（详见 [02-类型系统与编码规范](./02-type-system.md) 的 DEBUG 宏章节）。双括号语法让宏可以接受可变参数。RELEASE 构建时这些语句会被编译器完全消除，不占运行时开销。
+
 要点：入口函数只做一件事——把 `gBlockIo` 这个 Protocol 实例安装到一个 Handle 上。从此，系统中任何模块都可以通过 `gEfiBlockIoProtocolGuid` 找到这个磁盘。
+
+> **`gBS` 从哪来？** 代码里到处出现的 `gBS` 是全局 Boot Services 指针，等价于 `SystemTable->BootServices`。每个 DXE 驱动只需在 .inf 里声明 `UefiBootServicesTableLib` 依赖，入口函数里调用 `UefiBootServicesTableLibConstructor()`（通常由 `ProcessLibraryConstructorList` 自动完成），`gBS` 就初始化好了。详见 [5.5 节](#55-efi-系统表驱动访问系统服务的入口)。
 
 **消费者：文件系统驱动**（`FatDxe.inf` → MODULE_TYPE = DXE_DRIVER）
 
@@ -407,7 +454,7 @@ flowchart TD
     A["DxeMain(HobStart)"] --> B["从 HOB 读取内存信息<br/>初始化内存服务"]
     B --> C["进入 Dispatcher 循环"]
     C --> D["扫描固件卷<br/>找到未加载的 .efi 驱动"]
-    D --> E{"它的依赖<br/>Protocol 都有了吗？"}
+    D --> E{"DEPEX 依赖表达式<br/>满足了吗？"}
     E -->|否| C
     E -->|是| F["加载并调用入口点"]
     F --> G["驱动注册 DriverBinding<br/>安装 Protocol"]
@@ -427,11 +474,15 @@ flowchart TD
 
 Dispatcher 不停循环，每轮扫描所有未加载的驱动，检查它的依赖是否已满足。如果驱动 A 依赖 Protocol X，而 Protocol X 还没人安装，A 就先跳过。等驱动 B 加载后安装了 Protocol X，下一轮循环 A 的依赖就满足了。
 
+**Dispatcher 怎么知道一个驱动依赖什么？** 不是靠猜，而是每个 `.efi` 文件里嵌了一个 **DEPEX**（Dependency Expression）节。DEPEX 是用操作码写的布尔表达式，类似 `AND {gDiskIoProtocolGuid} {gFatProtocolGuid}`。Dispatcher 解析 DEPEX，对照当前已安装的 Protocol 数据库求值——结果为 TRUE 就加载，FALSE 就等下一轮。
+
+> 这就是为什么 Dispatcher 不需要任何驱动"注册信息"——驱动把自己的依赖清单随身带着，Dispatcher 只看这份清单。
+
 这就是为什么 DXE 启动比 PEI 慢——Dispatcher 可能要循环很多轮才能把所有驱动加载完。
 
 ### 5.4 DriverBinding：驱动怎么认领设备
 
-一个驱动被加载后，它不会立刻去操作硬件。它注册一个 `DriverBindingProtocol`，里面有三个回调：
+一个驱动被 Dispatcher 加载后，它通常还不会去操作硬件——因为此时硬件可能还没被发现（驱动加载顺序不等于硬件枚举顺序）。驱动只是在自己的入口点把 `DriverBindingProtocol` 安装到 ImageHandle 上，里面塞三个回调：
 
 | 回调 | 作用 | 返回值 |
 |------|------|--------|
@@ -439,7 +490,13 @@ Dispatcher 不停循环，每轮扫描所有未加载的驱动，检查它的依
 | `Start()` | "去接管这个设备" | 初始化硬件，安装上层 Protocol |
 | `Stop()` | "释放这个设备" | 反初始化，卸载 Protocol |
 
-当某个驱动安装了一个设备相关的 Protocol（比如 `PciIoProtocol`，表示"这是一个 PCI 设备"），Dispatcher 会遍历所有已注册的 `DriverBindingProtocol`，逐个调用 `Supported()`，询问"你能驱动这个设备吗？"第一个返回 `EFI_SUCCESS` 的驱动获得设备控制权，Dispatcher 调用它的 `Start()` 进行初始化。
+`DriverBindingProtocol` 是设备驱动的"求职简历"——"我能驱动某类设备，有合适的设备叫我来面试"。
+
+那设备从哪来？**总线驱动**（Bus Driver，也是 DXE 驱动的一种）负责扫描硬件总线。比如 PCI 总线驱动扫描 PCI 总线后，为每个发现的 PCI 设备创建一个新的 Handle，并在 Handle 上安装 `PciIoProtocol`（通过这个 Protocol，上层可以读写 PCI 设备的配置空间和 MMIO 区域）。这个 Handle 就是设备在固件中的"身份证"。
+
+当总线驱动在 Handle 上安装了新 Protocol，Dispatcher 检测到之后，遍历所有已注册的 `DriverBindingProtocol`，把设备 Handle 传给各自的 `Supported()`："你能驱动这个设备吗？"`Supported()` 内部通常调用 `LocateProtocol` 检查这个 Handle 上有没有自己需要的 Protocol——比如 USB 键盘驱动的 `Supported()` 会检查 Handle 上是否有 `UsbIoProtocol`。第一个返回 `EFI_SUCCESS` 的驱动获得控制权，Dispatcher 接着调用它的 `Start()` 做实际初始化。
+
+**一句话**：总线驱动生产设备 Handle，设备驱动通过 `DriverBindingProtocol` 认领设备 Handle，`Supported()` 是匹配条件，`Start()` 是初始化动作。
 
 ### 5.5 EFI 系统表：驱动访问系统服务的入口
 
@@ -452,9 +509,19 @@ EFI_STATUS EFIAPI MyDriverEntryPoint(
 )
 ```
 
-`SystemTable` 里的 `BootServices` 指针是驱动最常用的——分配内存、安装 Protocol、创建事件，全靠它：
+两个参数里，`SystemTable` 的 `BootServices` 是驱动最常用的（见下文），这里先解释容易漏掉的 `ImageHandle`。
+
+`ImageHandle` 是**当前驱动自身的 Handle**——Dispatcher 把 .efi 文件加载进内存时创建的，上面挂着 `LoadedImageProtocol`（记录驱动的加载地址、占用大小、来源固件卷等元信息）。驱动在入口点通常通过 `ImageHandle` 做两件事：
+
+1. 在自己身上安装 Protocol，比如前面说的 `DriverBindingProtocol`，向系统宣告"我可以驱动某类设备"
+2. 被卸载时，用 `ImageHandle` 找到并清理自己安装过的所有 Protocol
+
+> **Handle 到底是什么？** Handle 是 DXE 阶段一切资源（设备、驱动镜像、服务实例）的统一容器。可以理解成一个以 GUID 为 key 的字典：一个 Handle 上可以挂多个 Protocol，每个 Protocol 用 GUID 标识。`InstallProtocolInterface` 就是往 Handle 上挂 Protocol，`LocateProtocol` 是按 GUID 查 Protocol。设备有设备的 Handle，驱动镜像有驱动镜像的 Handle（即 `ImageHandle`），它们用同一套 Handle 数据库管理。
+
+回到入口函数的两个参数。`SystemTable->BootServices` 是驱动最常用的——分配内存、安装 Protocol、创建事件，全靠它。**我们前面代码里用的 `gBS`，就是 `SystemTable->BootServices` 的全局快捷方式**，由 `UefiBootServicesTableLib` 库提供：
 
 ```c
+// 等价于：gBS = SystemTable->BootServices;
 gBS->AllocatePool(EfiBootServicesData, Size, &Buffer);
 gBS->InstallProtocolInterface(&Handle, &Guid, EFI_NATIVE_INTERFACE, &Interface);
 gBS->LocateProtocol(&Guid, NULL, (VOID**)&Interface);
@@ -503,6 +570,19 @@ BDS 是用户能感知的阶段——它显示启动菜单、连接键盘和显�
 5. 调用 `LoadImage()` 加载 OS Loader，`StartImage()` 执行
 
 如果所有启动项都失败，BDS 会进入 UEFI Shell 或显示错误信息。
+
+> **UEFI 变量是什么？** 不同于 C 语言的栈/堆变量，UEFI 变量是存储在 **NVRAM**（非易失性 RAM，通常是 Flash 的一个分区）中的键值对，断电不丢。每个变量由 `{GUID, Name}` 唯一标识，通过 Runtime Services 的 `GetVariable()` / `SetVariable()` 读写。
+>
+> UEFI 变量解决了一个实际问题：用户在固件设置界面改了启动顺序，下次开机怎么还记得？普通 RAM 断电就没了，所以必须存在非易失存储里。
+>
+> 常见的 UEFI 变量：
+>
+> | 变量名 | 内容 | 谁写 | 谁读 |
+> |--------|------|------|------|
+> | `BootOrder` | 启动项 GUID 的有序列表 | 固件设置 / OS | BDS |
+> | `Boot0000` 等 | 单个启动项的详情（设备路径、描述） | 固件 / OS 安装器 | BDS |
+> | `Lang` | 界面语言 | 固件设置 | 固件 |
+> | `Setup` | BIOS 设置界面配置 | 固件设置 | 固件 |
 
 ### 6.2 x86 与 RISC-V 的关键差异
 
@@ -559,12 +639,16 @@ flowchart LR
 |------|------|
 | 每个阶段的存在因为前一个阶段留下了它解决不了的问题 | SEC 留下"内存不够"，PEI 留下"没有服务框架"，DXE 留下"不知道从哪启动" |
 | CAR 是 SEC 的核心把戏 | 用 CPU Cache 冒充 RAM，让 C 代码在没有内存时也能跑 |
+| 固件卷 (FV) 是固件模块的打包格式 | Flash 上的轻量级文件系统，负责组织 .efi 模块的存储、校验、压缩 |
 | PEI 两阶段运行 | 先在 CAR 里初始化 DDR，再迁移到 DDR 继续 |
 | PPI 是 Protocol 的极简版 | 因为 CAR 只有几十 KB，装不下 Protocol 的复杂语义 |
 | HOB 是 PEI 写给 DXE 的便条 | 只追加不修改，保证迁移过程中数据一致性 |
 | Protocol 是驱动间的松耦合协议 | 双方只通过 GUID 互相发现，换驱动不用改消费者 |
-| Dispatcher 按依赖顺序加载驱动 | 循环扫描，依赖满足才加载，可能需要多轮 |
+| Handle 是 DXE 资源的统一容器 | 设备、驱动镜像、服务实例都通过 Handle + Protocol 管理 |
+| Dispatcher 通过 DEPEX 按依赖加载驱动 | 每个 .efi 自带依赖表达式，Dispatcher 解析求值，循环扫描直到全部加载 |
+| gBS = SystemTable→BootServices 的快捷方式 | 由 UefiBootServicesTableLib 提供，驱动在入口函数获得 |
 | Boot Services 在 OS 启动前失效 | 固件和 OS 不能同时管理内存 |
+| UEFI 变量存在 NVRAM 里，断电不丢 | BootOrder、Setup 等配置存于非易失存储，OS 和固件都能访问 |
 
 ---
 
