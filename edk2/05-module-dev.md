@@ -28,7 +28,15 @@
 在 EDK2 中写代码和写普通 C 程序有三点根本区别：
 
 1. **没有 `main()`**——每种模块类型有不同的入口函数签名（`UefiMain`、`MyDriverEntryPoint` 等），由 INF 的 `MODULE_TYPE` 决定链接哪个入口点库。
-2. **不能调 C 标准库**——没有 `printf`/`malloc`/`memcpy`，用 `DEBUG`/`AllocatePool`/`CopyMem` 替代（详见 [02-类型系统](./02-type-system.md) §8.3）。
+2. **不能调 C 标准库**——没有 `printf`/`malloc`/`memcpy`，用 `DEBUG`/`AllocatePool`/`CopyMem` 替代（详见 [02-类型系统](./02-type-system.md) §8.3）。最常用的几条对应关系：
+
+| 标准 C | EDK2 替代 | 来源库 |
+|--------|----------|--------|
+| `memcpy` | `CopyMem` | BaseMemoryLib |
+| `memset` | `SetMem` / `ZeroMem` | BaseMemoryLib |
+| `printf` | `DEBUG ((...))` | DebugLib |
+| `malloc` | `gBS->AllocatePool` | Boot Services |
+| `free` | `gBS->FreePool` | Boot Services |
 3. **模块间通信通过 GUID 驱动**——Protocol 和 PPI 是唯一的信息交换机制，双方只通过 GUID 互相发现。
 
 下面按"写一个驱动→安装 Protocol→订阅事件→写 PEIM→写 Library"这条线展开。
@@ -74,6 +82,8 @@ MyDriver/
   TRUE
 ```
 
+`[Depex] TRUE` 表示这个驱动**没有依赖条件**——Dispatcher 随时可以调用它的入口点。如果你需要等待某个 Protocol 被安装后才运行，把 `TRUE` 替换为 GUID 表达式即可（如 `gEfiPciRootBridgeIoProtocolGuid`）。DEPEX 的完整语法见 [04-构建系统](./04-build-system.md) §6.3。
+
 **MyDriver.c**：
 
 ```c
@@ -93,7 +103,7 @@ MyDriverEntryPoint (
 }
 ```
 
-> `UefiDriverEntryPoint` 库负责在 Dispatcher 加载驱动后调用你的 `MyDriverEntryPoint`。入口点库的完整映射表见 [04-构建系统](./04-build-system.md) §5.3。
+> `UefiDriverEntryPoint` 库负责在 Dispatcher 加载驱动后调用你的 `MyDriverEntryPoint`。它的内部逻辑是：Dispatcher 调用库的 `_ModuleEntryPoint()` → 库函数初始化 `gST`、调用构造函数列表 → 最后调用你在 INF 中 `ENTRY_POINT` 指定的函数（此处是 `MyDriverEntryPoint`）。入口点库的完整映射表见 [04-构建系统](./04-build-system.md) §5.3。
 
 **注册到平台**：
 - DSC 的 `[Components]` 添加 `MyPkg/MyDriver/MyDriver.inf`
@@ -226,12 +236,28 @@ EFI_STATUS EFIAPI MyDriverEntryPoint (
 消费者示例：
 
 ```c
+// 方式一：全局单例查找（适用于只有一个实例的 Protocol）
 MY_PROTOCOL  *MyProto;
 Status = gBS->LocateProtocol (&gMyProtocolGuid, NULL, (VOID**)&MyProto);
 if (!EFI_ERROR (Status)) {
     UINT32 Value;
     MyProto->GetData (MyProto, 0, &Value);
 }
+
+// 方式二：多实例枚举（适用于每个设备都安装一份的 Protocol，如 BlockIo）
+EFI_HANDLE  *Handles;
+UINTN        Count;
+Status = gBS->LocateHandleBuffer (
+                ByProtocol, &gMyProtocolGuid, NULL, &Count, &Handles);
+for (UINTN i = 0; i < Count; i++) {
+    MY_PROTOCOL  *Proto;
+    Status = gBS->HandleProtocol (Handles[i], &gMyProtocolGuid, (VOID**)&Proto);
+    if (!EFI_ERROR (Status)) {
+        UINT32 Value;
+        Proto->GetData (Proto, 0, &Value);
+    }
+}
+gBS->FreePool (Handles);
 ```
 
 ### 4.4 Protocol 通知回调
@@ -273,7 +299,26 @@ VOID EFIAPI MyProtocolCallback (IN EFI_EVENT Event, IN VOID *Context) {
 
 ### 5.1 事件类型
 
-事件是 UEFI 的通知机制——等待条件为真时执行回调：
+事件是 UEFI 的通知机制——等待条件为真时执行回调。
+
+事件通过 `gBS->CreateEvent()` 创建，调用者指定事件类型、回调 TPL、回调函数：
+
+```c
+EFI_EVENT  mTimerEvent;
+
+// 创建一个 1 秒定时器事件
+Status = gBS->CreateEvent (
+            EVT_TIMER,                              // 事件类型
+            TPL_CALLBACK,                           // 回调时的 TPL
+            TimerCallback,                          // void EFIAPI (*)(Event, Context)
+            NULL,                                   // Context（传给回调的额外参数）
+            &mTimerEvent                            // → 事件对象
+            );
+if (!EFI_ERROR (Status)) {
+    // 设置定时器：100 ns 为单位，10000000 = 1 秒
+    gBS->SetTimer (mTimerEvent, TimerPeriodic, 10000000);
+}
+```
 
 | 事件类型 | 触发条件 |
 |----------|----------|
@@ -287,6 +332,24 @@ VOID EFIAPI MyProtocolCallback (IN EFI_EVENT Event, IN VOID *Context) {
 
 UEFI 的运行环境是单线程协作调度的，不像 Linux 有内核线程和中断。TPL 是 UEFI 版的"中断优先级"——高 TPL 可以抢占低 TPL。
 
+**心智模型**：UEFI 有一条 TPL 轴（0~31），任何时候 CPU 运行在某个 TPL 级别。事件回调、定时器回调在特定 TPL 上执行——如果它的 TPL 高于当前正在执行的代码，它就"抢占"当前代码；否则必须排队等待当前代码主动 `RestoreTPL` 降低 TPL 后才能执行：
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#ECECFF", "primaryTextColor": "#333333", "primaryBorderColor": "#9370DB", "lineColor": "#666666", "secondaryColor": "#ffffde", "secondaryBorderColor": "#aaaa33", "tertiaryColor": "#f0f0f0", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
+flowchart TD
+    Normal["普通代码运行<br/>TPL_APPLICATION (4)"] --> Callback["定时器事件触发<br/>TPL_CALLBACK (8)<br/>抢占！"]
+    Callback --> Resume["定时器处理完毕<br/>恢复到 TPL_APPLICATION"]
+    Resume --> Critical1["访问共享数据前<br/>RaiseTPL → TPL_HIGH_LEVEL (16)<br/>阻止一切事件回调"]
+    Critical1 --> Critical2["临界区：安全地修改共享数据"]
+    Critical2 --> Restored["RestoreTPL → TPL_APPLICATION<br/>恢复事件处理"]
+    classDef clsNormal fill:#d4edda,stroke:#28a745,color:#155724,stroke-width:2px
+    classDef clsPreempt fill:#fff3cd,stroke:#ffc107,color:#856404,stroke-width:2px
+    classDef clsCritical fill:#f8d7da,stroke:#dc3545,color:#721c24,stroke-width:2px
+    class Normal,Resume clsNormal
+    class Callback clsPreempt
+    class Critical1,Critical2,Restored clsCritical
+```
+
 | TPL | 名称 | 典型场景 |
 |------|------|----------|
 | 0 | TPL_APPLICATION | 普通代码执行 |
@@ -296,7 +359,7 @@ UEFI 的运行环境是单线程协作调度的，不像 Linux 有内核线程�
 
 核心规则：**执行在 TPL = N 时，只有 TPL > N 的事件回调可以抢占你**。
 
-提升 TPL 来保护临界区：
+**什么时候需要手动 RaiseTPL？** 典型场景：你的驱动在普通 TPL 下维护一份共享数据（如链表、计数器），而定时器或 Protocol 通知回调也可能修改同一份数据。如果不做保护，回调会在你的修改进行到一半时突然抢占执行，导致数据错乱。提升 TPL 到高于回调的级别，就能阻止回调在此期间被调度：
 
 ```c
 EFI_TPL  OldTpl;
@@ -399,6 +462,8 @@ MyPeimEntryPoint (
 
 ### 6.2 PPI 通知
 
+上面这个 PEIM 是"数据生产者"——它不需要等别人，直接构建 HOB。但很多 PEIM 是"数据消费者"——必须等另一个 PEIM 完成初始化后才能工作。比如你要分配 DDR 内存，必须先等内存初始化 PEIM 安装 `gEfiPeiMemoryDiscoveredPpiGuid`。
+
 PEI 阶段的 PPI 通知有两种模式：
 
 | 模式 | 触发时机 |
@@ -458,6 +523,8 @@ UINTN      EFIAPI MyPlatformGetCpuCount (VOID);
 
 ### 7.2 实现 Library Instance
 
+一个 Library Class 可以有多个 Instance——每个 Instance 是一个独立的 INF，通过 `MODULE_TYPE` 指定可用于哪些模块类型（如 PEI 阶段和 DXE 阶段通常用不同的实现，因为可用的 Boot Services 不同）。以 DXE 阶段为例：
+
 ```ini
 # MyPlatformLibDxe.inf
 [Defines]
@@ -505,7 +572,29 @@ EFI_STATUS EFIAPI UefiMain (
 
 ### 9.1 DEBUG 宏
 
-`DEBUG`、`ASSERT` 与调试级别的定义详见 [02-类型系统](./02-type-system.md) §9。
+`DEBUG`、`ASSERT` 与调试级别的定义详见 [02-类型系统](./02-type-system.md) §9。这里补充两个模块开发中的实战用法：
+
+```c
+// 1. 打印入口点和退出——快速定位"驱动到底有没有被加载"
+EFI_STATUS EFIAPI MyDriverEntryPoint (
+  IN EFI_HANDLE ImageHandle, IN EFI_SYSTEM_TABLE *SystemTable)
+{
+  DEBUG ((DEBUG_INFO, "MyDriver: Entry\n"));
+
+  // ... 初始化逻辑 ...
+
+  DEBUG ((DEBUG_INFO, "MyDriver: Exit, Status=%r\n", Status));
+  return Status;
+}
+
+// 2. 打印 Protocol 安装状态——确认 GUID 匹配正确
+Status = gBS->InstallProtocolInterface (&Handle, &gMyProtocolGuid,
+               EFI_NATIVE_INTERFACE, &mMyProtocol);
+DEBUG ((DEBUG_INFO, "MyDriver: InstallProtocol Status=%r, Handle=%p\n",
+        Status, Handle));
+```
+
+调试级别用 `PcdDebugPrintErrorLevel` 在位掩码控制（详见 [02-类型系统](./02-type-system.md) §9.1）。如果要排查某个特定级别的日志，在 DSC 中调整掩码即可，不需要重新加 `DEBUG` 语句。
 
 ### 9.2 GDB 调试
 
@@ -516,9 +605,19 @@ EFI_STATUS EFIAPI UefiMain (
 QEMU 运行时，`DEBUG` 宏通过串口输出：
 
 ```bash
-qemu-system-riscv64 ... -nographic          # 串口 → 终端
-qemu-system-riscv64 ... -serial file:uefi.log  # 串口 → 文件
+qemu-system-riscv64 ... -nographic               # 串口 → 终端
+qemu-system-riscv64 ... -serial file:uefi.log     # 串口 → 文件
 ```
+
+### 9.4 常见调试流程
+
+当你写完一个新的 DXE 驱动却看不到预期行为时，按以下顺序排查：
+
+1. **确认驱动被编译了**：检查 `Build/<Platform>/.../<Module>/OUTPUT/` 下有没有 `.efi` 文件
+2. **确认驱动被加载了**：在入口点打印 `DEBUG_INFO` 日志，配合 `-serial file:` 抓日志搜索
+3. **确认 DEPEX 没有阻塞**：如果入口点的 `DEBUG` 没有输出，检查 `[Depex]` 是否依赖了尚未就绪的 Protocol
+4. **确认 Protocol 安装成功**：在 `InstallProtocolInterface` 后打印 Status 和 Handle
+5. **确认 GUID 匹配**：生产者和消费者用的 `.dec` 中的 GUID 必须完全一致——位序都不能错
 
 ---
 

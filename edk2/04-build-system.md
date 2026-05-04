@@ -62,7 +62,19 @@ flowchart TD
 
 > **设计背景 — 为什么是双层架构？** BaseTools 中的 C 工具（如 GenFv、VfrCompile）需要先编译才能使用，而这些工具的编译使用标准的 make 构建系统。固件的编译则使用 BaseTools 提供的 Python 构建引擎。这种分离让 BaseTools 可以独立更新，也避免了"鸡生蛋"问题——构建工具本身不需要 EDK2 的构建系统来编译。
 
+读完本篇，你将理解 EDK2 构建系统的三个层次：
+
+| 层次 | 内容 | 回答的问题 |
+|------|------|-----------|
+| **配置文件**（§3） | target.txt, tools_def.txt, build_rule.txt | 用什么编译器？编译参数是什么？ |
+| **元数据文件**（§5） | DEC/DSC/INF/FDF | 构建什么模块？库怎么绑定？Flash 怎么布局？ |
+| **AutoGen**（§6） | 代码生成引擎 | 元数据怎么变成可编译的 C 代码和 Makefile？ |
+
+这三层构成"声明→翻译→编译"的完整流水线。下面先看流水线的第一站：BaseTools。
+
 ## 2. BaseTools 详解
+
+BaseTools 是构建系统的"工具箱"——包含所有编译、链接、打包固件的底层工具。下面这些目录，就是你敲 `build` 时在背后运转的代码。
 
 ### 2.1 目录结构
 
@@ -121,6 +133,8 @@ BaseTools/
 | **BrotliCompress** | 任意文件 | .brotli | Brotli 压缩 |
 | **TianoCompress** | 任意文件 | .tiano | Tiano 自定义压缩 |
 
+这些 C 工具在编译流程中各司其职，构成一条"源码→固件映像"的加工流水线。理解这条流水线，你才能理解为什么构建报错时错误信息里会出现 "GenFw" "GenFfs" 这些名字——它们就是流水线上的工位：
+
 **工具链的数据流**：
 
 ```mermaid
@@ -146,7 +160,11 @@ flowchart LR
 
 ### 2.3 Python 构建引擎
 
-Python 构建引擎是整个构建系统的"大脑"，核心模块：
+如果说 C 工具是流水线上的工位，那 Python 构建引擎就是**调度这些工位的"大脑"**——它解析元数据、调用 AutoGen、驱动 make。在理解它的结构之前，先回答一个关键问题：
+
+> **设计背景 — 为什么需要 AutoGen？** EDK2 的元数据文件（DSC/DEC/INF）声明了模块的依赖、PCD 值、库绑定等信息，但 C 编译器不理解这些声明式格式。AutoGen 将元数据转换为 C 代码和 Makefile：`AutoGen.h` 包含 PCD 宏定义和库头文件包含；`AutoGen.c` 包含 PCD 初始值和模块信息字符串；`Makefile` 定义编译规则。这种"声明式元数据 + 自动代码生成"的模式让开发者只需关注"要构建什么"，而不需要手动编写样板代码。
+
+Python 构建引擎的核心模块：
 
 ```
 build.py (入口)
@@ -174,9 +192,9 @@ build.py (入口)
 | `Makefile` | 同上 | 模块的编译规则 |
 | `<Module>.depex` | 同上 | 依赖表达式字节码 |
 
-> **设计背景 — 为什么需要 AutoGen？** EDK2 的元数据文件（DSC/DEC/INF）声明了模块的依赖、PCD 值、库绑定等信息，但 C 编译器不理解这些声明式格式。AutoGen 将元数据转换为 C 代码和 Makefile：`AutoGen.h` 包含 PCD 宏定义和库头文件包含；`AutoGen.c` 包含 PCD 初始值和模块信息字符串；`Makefile` 定义编译规则。这种"声明式元数据 + 自动代码生成"的模式让开发者只需关注"要构建什么"，而不需要手动编写样板代码。
-
 ## 3. 配置文件详解
+
+上一节介绍了构建系统的"工具箱"（BaseTools）。但 BaseTools 只是工具——你还需要告诉它**用哪个编译器、编译哪个平台、平台里有哪些模块**。这些信息就由本节要讲的三个配置文件提供。
 
 ### 3.1 target.txt — 构建目标配置
 
@@ -204,14 +222,24 @@ BUILD_RULE_CONF       = Conf/build_rule.txt
 # 并发线程数
 MAX_CONCURRENT_THREAD_NUMBER = 8
 ```
-
 **优先级**：命令行参数 > target.txt > DSC 文件
+
+各字段的含义：
+
+| 字段 | 含义 | 为什么需要它 |
+|------|------|-------------|
+| `ACTIVE_PLATFORM` | 指向平台的 DSC 文件 | 告诉构建系统"为哪个平台编译"，一个仓库里有几十个平台 |
+| `TARGET` | `DEBUG` / `RELEASE` / `NOOPT` | DEBUG 含调试信息和日志输出；RELEASE 开启优化且 DEBUG 宏被消除；NOOPT 不开优化但保留调试宏 |
+| `TARGET_ARCH` | 目标 CPU 架构 | EDK2 支持跨架构编译，必须指定 |
+| `TOOL_CHAIN_TAG` | 编译器工具链标签 | 对应 tools_def.txt 中的工具链定义（GCC, CLANGDWARF 等） |
+| `TOOL_CHAIN_CONF` | 工具链定义文件路径 | 告诉构建系统去哪个文件找编译器的路径和参数 |
+| `MAX_CONCURRENT_THREAD_NUMBER` | 并行编译线程数 | EDK2 有上百个模块，并行编译大幅缩短构建时间 |
 
 ### 3.2 tools_def.txt — 工具链定义
 
 文件位置：`Conf/tools_def.txt`（由 `BaseTools/Conf/tools_def.template` 生成）
 
-这是 EDK2 构建系统中最庞大的配置文件，定义了所有支持的编译器工具链。
+这是 EDK2 构建系统中最庞大的配置文件。EDK2 需要支持 x86、ARM、RISC-V 等多种架构，每种架构又有多种编译器（GCC、Clang、MSVC）——这些编译器的路径、参数格式各不相同。tools_def.txt 把所有这些差异统一成一套命名规则，让构建系统只需知道"用 GCC 编译 RISCV64"，就能自动找到正确的编译器和参数。
 
 **配置格式**：
 
@@ -251,7 +279,7 @@ export GCC_RISCV64_PREFIX=/opt/riscv/bin/riscv64-unknown-elf-
 
 文件位置：`Conf/build_rule.txt`（由 `BaseTools/Conf/build_rule.template` 生成）
 
-定义了如何将各种源文件编译为目标文件：
+tools_def.txt 定义了编译器路径，但没定义"`.c` 文件怎么变成 `.o` 文件"这类规则。build_rule.txt 填补了这个空缺——它定义了每种源文件类型的编译命令模板。
 
 ```ini
 [C-Code-File]
@@ -266,6 +294,16 @@ export GCC_RISCV64_PREFIX=/opt/riscv/bin/riscv64-unknown-elf-
 支持的文件类型：C-Code-File, Assembly-Code-File, Vfr-Code-File, Unicode-Text-File 等。
 
 ## 4. build 命令详解
+
+你已经配好了 target.txt、tools_def.txt、build_rule.txt——现在可以真正动手构建了。但在看参数之前，先理解敲下 `build` 后发生了什么（回顾 §1 的 RunBuild 阶段）：
+
+1. **解析配置**：读取 target.txt/tools_def.txt，确定"为哪个平台、用什么编译器"
+2. **解析元数据**：读取 DSC/DEC/INF/FDF，建立模块依赖图和 PCD 数据库
+3. **AutoGen**：为每个模块生成 `AutoGen.h`、`AutoGen.c` 和 `Makefile`
+4. **编译**：调用 make 逐模块编译
+5. **打包**：调用 GenFds 将编译产物组装为 `.fd` 固件映像
+
+下面按这条流水线看 `build` 命令的参数：
 
 ### 4.1 常用参数
 
@@ -352,6 +390,17 @@ Build/
 ```
 
 ## 5. 元数据文件格式
+
+配置文件（§3）决定"怎么编译"，元数据文件决定"编译什么"。EDK2 使用四种元数据文件，每种解决不同层次的问题：
+
+| 文件 | 作用域 | 核心问题 |
+|------|--------|----------|
+| **DEC** | 包级（Package） | 这个包对外暴露什么接口？（GUID、Library Class、PCD） |
+| **DSC** | 平台级（Platform） | 这个平台用哪些 Library Instance？PCD 值是多少？包含哪些模块？ |
+| **INF** | 模块级（Module） | 这个模块的源码在哪？需要哪些 Library Class？依赖哪些 Protocol？ |
+| **FDF** | 固件级（Firmware） | Flash 怎么分区？哪个模块放进哪个固件卷？ |
+
+四种文件的关系是层层收窄：DEC 声明"有什么可用"→ DSC 选择"用哪个实现"→ INF 描述"一个模块用到了什么"→ FDF 指定"这些东西在 Flash 上的物理位置"。下面逐个详解。
 
 ### 5.1 DEC 文件（包声明）
 
@@ -497,20 +546,24 @@ INF 文件描述一个模块的所有信息。
 
 **MODULE_TYPE 取值**：
 
-| 类型 | 阶段 | 入口点宏 |
-|------|------|----------|
+`MODULE_TYPE` 决定了链接哪个**入口点库**。入口点库负责在 Dispatcher 加载你的模块后调用你的入口函数——不同的 `MODULE_TYPE` 链接不同的入口点库，提供不同的入口函数签名：
+
+| 类型 | 阶段 | 入口点库提供的函数签名 |
+|------|------|----------------------|
 | SEC | SEC | 无（汇编入口） |
-| PEIM | PEI | `_ModuleEntryPoint` |
-| PEI_CORE | PEI | `_ModuleEntryPoint` |
-| DXE_DRIVER | DXE | `_ModuleEntryPoint` |
-| DXE_CORE | DXE | `_ModuleEntryPoint` |
-| DXE_RUNTIME_DRIVER | DXE/RT | `_ModuleEntryPoint` |
-| DXE_SAL_DRIVER | DXE/RT (IA64) | `_ModuleEntryPoint` |
-| DXE_SMM_DRIVER | SMM | `_ModuleEntryPoint` |
-| UEFI_DRIVER | DXE | `_ModuleEntryPoint` |
-| UEFI_APPLICATION | DXE | `_ModuleEntryPoint` |
-| MM_STANDALONE | MM | `_ModuleEntryPoint` |
-| MM_CORE_STANDALONE | MM | `_ModuleEntryPoint` |
+| PEIM | PEI | `(FileHandle, **PeiServices) → EFI_STATUS` |
+| PEI_CORE | PEI | 同上（PEI Core 自己就是 Dispatcher） |
+| DXE_DRIVER | DXE | `(ImageHandle, *SystemTable) → EFI_STATUS` |
+| DXE_CORE | DXE | 同上（DXE Core 自己是 Dispatcher） |
+| DXE_RUNTIME_DRIVER | DXE/RT | `(ImageHandle, *SystemTable) → EFI_STATUS` |
+| DXE_SAL_DRIVER | DXE/RT (IA64) | 同上 |
+| DXE_SMM_DRIVER | SMM | `(ImageHandle, *SystemTable) → EFI_STATUS` |
+| UEFI_DRIVER | DXE | `(ImageHandle, *SystemTable) → EFI_STATUS` |
+| UEFI_APPLICATION | DXE | `(ImageHandle, *SystemTable) → EFI_STATUS` |
+| MM_STANDALONE | MM | `(ImageHandle, *MmSystemTable) → EFI_STATUS` |
+| MM_CORE_STANDALONE | MM | 同上 |
+
+> `DXE_DRIVER`、`UEFI_DRIVER`、`DXE_RUNTIME_DRIVER` 三者的入口函数签名相同，区别在于：**可用的 Library Class 绑定不同**（DSC 中 `[LibraryClasses.common.DXE_DRIVER]` vs `[LibraryClasses.common.DXE_RUNTIME_DRIVER]`）以及 DXE Runtime Driver 在 `ExitBootServices()` 后仍可运行。
 
 ### 5.4 FDF 文件（固件描述）
 
@@ -565,7 +618,23 @@ FDF 文件定义 Flash 布局和固件卷内容。
 
 ## 6. AutoGen 机制
 
-AutoGen 是 EDK2 构建系统最精巧的设计——根据元数据文件自动生成代码。
+AutoGen 是 EDK2 构建系统最精巧的设计——根据元数据文件自动生成代码。下面用一个具体的 INF 片段与 AutoGen 产物的对照，展示"声明→代码"的映射过程。
+
+以 §5.3 中 BdsDxe.inf 为例，它的关键声明：
+
+```
+[Defines]
+  BASE_NAME   = BdsDxe                        → 模块名
+  FILE_GUID   = 634337E7-5E5B-4E7A-8B70-939C1C67ECD0
+
+[LibraryClasses]
+  UefiBootServicesTableLib                    → 依赖的库
+
+[Pcd]
+  gEfiMdePkgTokenSpaceGuid.PcdPlatformBootTimeOut  → 使用的 PCD
+```
+
+AutoGen 从上述元数据中生成以下文件：
 
 ### 6.1 AutoGen.h
 
@@ -608,7 +677,7 @@ INF 文件中的 `[Depex]` 段被编译为字节码：
 字节码: PUSH <GUID1> PUSH <GUID2> AND END
 ```
 
-DXE Dispatcher 使用栈式求值器执行这些字节码来决定驱动调度顺序。
+DXE Dispatcher 使用栈式求值器执行这些字节码来决定驱动调度顺序。DEPEX 字节码嵌入在 `.efi` 文件的 DEPEX Section 中，Dispatcher 加载驱动前先解析它——表达式的 GUID 对应的 Protocol 全已安装 → 加载驱动，否则跳过等下一轮循环。详见 [03-启动流程](./03-boot-flow.md) §5.3。
 
 ## 7. 要点回顾
 
@@ -625,12 +694,21 @@ DXE Dispatcher 使用栈式求值器执行这些字节码来决定驱动调度�
 
 ## 8. CI 系统
 
-EDK2 使用基于 Stuart/PyTool 的 CI 框架（`.pytool/CISettings.py`），支持多平台并行构建和细粒度检查：
+学会了手动 `build` 命令之后，在真实工程中你还需要知道：EDK2 社区如何保证每次代码提交不破坏现有平台？答案是 CI 框架。
+
+EDK2 使用基于 **Stuart**（一套 Python CI 构建工具，来自 edk2-pytool-extensions 包）的 CI 框架。Stuart 做的事情和 `build` 命令本质一样——编译固件——但它额外提供了多平台并行构建、依赖缓存、细粒度检查（GUID 唯一性、库声明合法性、编码格式、拼写）等工程化能力。它的配置文件位于 `.pytool/CISettings.py`：
 
 ```bash
+# 安装 CI 工具链（需要 Python 3）
 pip install edk2-pytool-extensions edk2-pytool-library
+
+# 初始化构建环境（编译 BaseTools、下载依赖）
 stuart_setup -c .pytool/CISettings.py
+
+# 更新子模块和依赖
 stuart_update -c .pytool/CISettings.py
+
+# 执行 CI 构建（等价于 build + 多平台 + 额外检查）
 stuart_ci_build -c .pytool/CISettings.py -t DEBUG -a RISCV64 -p OvmfPkg/RiscVVirt
 ```
 
