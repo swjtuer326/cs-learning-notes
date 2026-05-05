@@ -2,6 +2,18 @@
 
 > 这篇不是"玩具 Protocol"教程。从最简 HelloWorld 开始，到写一个真正的 **NS16550 UART 硬件驱动**——包含 DriverBinding 三个回调、MMIO 寄存器读写、PCI 设备枚举。学完你能写出操作真实硬件的驱动。
 
+### 关键术语
+| 缩写 | 全称 | 含义 |
+|------|------|------|
+| DXE | Driver Execution Environment | 驱动执行环境，本文驱动的运行载体 |
+| MMIO | Memory-Mapped I/O | 内存映射 I/O，通过 volatile 指针访问硬件寄存器 |
+| BAR | Base Address Register | PCI 配置空间中的基址寄存器，描述 MMIO/PIO 地址 |
+| UART | Universal Asynchronous Receiver/Transmitter | 通用异步收发器，本文以 NS16550 兼容 UART 为例 |
+| PCI | Peripheral Component Interconnect | 外设互连总线，通过 VendorId/DeviceId/Class Code 发现设备 |
+| Depex | Dependency Expression | 依赖表达式，在 INF 中指定驱动加载顺序条件 |
+
+---
+
 ## 1. Hello World（热身：15 行代码）
 
 三个文件，验证"我写的驱动能被 Dispatcher 加载"：
@@ -55,6 +67,8 @@ EFI_STATUS EFIAPI ProducerEntryPoint (EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *
 ```
 
 **消费者**（通过 GUID 找到 Protocol，调用方法）：
+
+> ⚠️ 这种直接的 `LocateProtocol` 方式有**时序风险**：如果 ProducerDxe 还没被 Dispatcher 加载，查找返回 `EFI_NOT_FOUND`，消费者永远初始化失败。生产代码中应使用 [06 §2](06-events-tpl-depex.md) 介绍的 Protocol 通知回调——"你要的 Protocol 到了就叫你"。这里先用直接方式建立"通过 GUID 找 Protocol"的基础认知。
 
 ```c
 // MyPkg/Drivers/ConsumerDxe/ConsumerDxe.c
