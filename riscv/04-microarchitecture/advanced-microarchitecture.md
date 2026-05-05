@@ -4,6 +4,13 @@
 >
 > **工程师视角**：超标量和乱序执行对系统软件是"透明的"，但缓存一致性不是。当你写多核驱动或实现 RCU 锁时，必须清楚理解 Store Buffer、Cache Coherency Protocol 和 Memory Barrier 的交互。一个放错位置的 `fence`，可能导致其他核心看到 stale 数据——这种 bug 极难复现。
 
+### 前置知识
+
+| 需要了解 | 参考文档 |
+|----------|----------|
+| 经典 5 级流水线与流水线冒险 | [流水线基础](./pipeline-basics.md) |
+| 数据冒险 / 控制冒险 / 结构冒险的解决 | [流水线基础](./pipeline-basics.md) |
+
 ---
 
 ## 1. 从 5 级流水线到高性能：性能提升路线图
@@ -356,5 +363,15 @@ struct {
 | 缓存一致性 | 多核数据一致性 | MESI/MOESI 协议开销 | 避免伪共享、合理数据布局 |
 | 多核 | 挖掘 TLP | 互连、一致性流量 | 并行编程、NUMA 感知 |
 | SMT | 提高单核利用率 | 资源竞争、安全侧信道 | 线程亲和性、隔离关键线程 |
+
+---
+
+## 参考资料
+
+- [Hennessy & Patterson — *Computer Architecture: A Quantitative Approach* 6th Ed, Ch3-5](https://www.elsevier.com/books/computer-architecture/hennessy/978-0-12-811905-1) — 乱序执行、SMT、Cache 预取等经典分析
+- [RISC-V BOOM Documentation](https://docs.boom-core.org/) — BOOM 乱序核的微架构设计文档
+- [gem5 Documentation — O3CPU](https://www.gem5.org/documentation/general_docs/cpu_models/O3CPU/) — gem5 中乱序 CPU 模型的实现细节
+
+---
 
 → 下一节：[开源 RISC-V 核心](./opensource-cores.md)

@@ -4,6 +4,13 @@
 >
 > **工程师视角**：启动流程不是"固定的顺序"，而是可配置的管道。在服务器 SoC 中，你可能需要从 SPI Flash 加载 Boot ROM → DDR 训练 → 加载 OpenSBI → 加载 U-Boot → 加载 Linux，任何一个环节出错都意味着"黑屏"。掌握每个阶段的调试技巧（如 JTAG 断点、串口早期输出）是 bring-up 工程师的核心竞争力。
 
+### 前置知识
+
+| 需要了解 | 参考文档 |
+|----------|----------|
+| RISC-V 特权模式 M/S/U 划分与 CSR | [特权模式与 CSR](./privileged-modes-and-csr.md) |
+| 页表建立与 MMU 使能（satp 配置） | [内存管理](./memory-management.md) |
+
 ---
 
 ## 1. 启动阶段总览
@@ -528,5 +535,17 @@ qemu-system-riscv64 \
 | **UEFI + ACPI** | 服务器标准启动模式，与 x86 一致 |
 | **ACPI 表** | 标准化硬件发现、电源管理、热插拔 |
 
+---
+
+## 参考资料
+
+- [SBI Specification v3.0](https://github.com/riscv-non-isa/riscv-sbi-doc/releases/tag/v3.0) — SBI 扩展定义（HSM/legacy/system reset 等）
+- [OpenSBI Documentation](https://github.com/riscv-software-src/opensbi/tree/master/docs) — OpenSBI 使用与移植指南
+- [U-Boot RISC-V Port](https://docs.u-boot.org/en/latest/board/riscv/) — U-Boot RISC-V 移植文档
+- [Linux RISC-V Boot Requirements](https://www.kernel.org/doc/html/latest/arch/riscv/boot-image-header.html) — Linux 内核对 RISC-V 启动的要求
+
+---
+
 → 下一节：[流水线基础](../04-microarchitecture/pipeline-basics.md)
 → 虚拟化专题：[虚拟化：H 扩展与 KVM](./virtualization.md)
+→ 实验：[Lab 2 — 最小 SBI 实现](../08-labs/lab02-minimal-sbi.md)

@@ -4,6 +4,13 @@
 >
 > **工程师视角**：SoC 设计决定了固件的上限。一个设计良好的中断控制器（如 AIA）可以让 Linux 驱动简洁高效；一个设计糟糕的总线交叉开关可能导致不可预测的延迟抖动。作为系统软件工程师，你虽然不改 RTL，但你需要能读懂设备树和地址映射，能在仿真环境中验证软件行为，能在 bring-up 阶段定位"是硬件问题还是软件问题"。
 
+### 前置知识
+
+| 需要了解 | 参考文档 |
+|----------|----------|
+| RISC-V 特权模式与中断控制器 | [中断与异常](../03-privileged/interrupts-and-exceptions.md) |
+| 开源核心架构差异 (Rocket/BOOM/CVA6) | [Open-Source 核心](./opensource-cores.md) |
+
 ---
 
 ## 1. SoC 的组成：一座微型城市
@@ -253,6 +260,57 @@ idle_loop:
 
 > **注意：** WFI 不是完全断电，只是停止时钟。如果需要更深的睡眠（保存状态、断电），需要 SoC 特定的电源管理单元（PMU）配合。
 
+### 6.3 低功耗模式等级
+
+RISC-V 规范本身未定义功耗状态标准，但可以通过 SBI 的 **HSM 扩展**（Hart State Management）实现，典型层级如下：
+
+```
+SBI HSM 定义的 hart 状态:
+
+  STARTED  → 正常运行
+  STOPPED  → 停机（时钟门控，PC 暂停，中断可唤醒）
+  SUSPENDED → 挂起（可进一步细分）
+
+  挂起类型（由平台定义）:
+    - 浅睡眠：时钟门控，Cache 保持供电，唤醒延迟 < 1 µs
+    - 深睡眠：电源门控核心，Cache 清空，唤醒延迟 ~10 µs
+    - 断电：核心完全掉电，寄存器/缓存丢失，需要完整启动流程
+```
+
+| 状态 | 功耗 | 唤醒延迟 | 寄存器保留 | 典型实现 |
+|------|------|----------|-----------|----------|
+| WFI | ~30% | < 1 周期 | ✅ 全部 | 所有 RISC-V 核心 |
+| 浅睡眠 (WFI + Clock Gate) | ~15% | ~10 周期 | ✅ 全部 | CLINT timer 唤醒 |
+| 深睡眠 (Power Gate Core) | ~2% | ~10 µs | ❌ 需保存 | SBI HSM suspend |
+| 断电 (Power Gate Cluster) | < 1% | ~ms | ❌ 需完整启动 | 片上 PMU 控制 |
+
+### 6.4 固件在低功耗中的关键任务
+
+```c
+// CPU 进入深睡眠前的固件操作
+void cpu_suspend(void) {
+    // 1. 保存关键 CSR 到栈或保留内存
+    uint64_t saved_mepc    = csr_read(mepc);
+    uint64_t saved_mstatus = csr_read(mstatus);
+    uint64_t saved_satp    = csr_read(satp);
+    uint64_t saved_sscratch = csr_read(sscratch);
+
+    // 2. 清空 Cache 到内存（保证数据一致性）
+    asm volatile("fence");
+
+    // 3. 设置唤醒地址（wake-up PC）
+    csr_write(mepc, (uint64_t)&wakeup_entry);
+
+    // 4. 调用 SBI HSM suspend
+    sbi_hart_suspend(SUSPEND_POWER_GATE, (uint64_t)&saved_state);
+    //    → 这条 ecall 到 M-mode
+    //    → OpenSBI 完成最终的状态保存和电源门控
+    //    → 中断到来时，从 mepc 恢复执行
+}
+```
+
+> **固件开发注意：** 深度睡眠后 Cache 内容丢失，唤醒时性能会有"冷启动"效应。如果某些核需要快速响应中断（如网络包处理的专用核），应限制其进入深睡眠，只用 WFI。对于纯计算节点（如 AI 推理核心），可在工作完成后直接电源门控，延迟和功耗之间需要权衡。
+
 ---
 
 ## 7. 实战：Bring-up 一个新 SoC
@@ -298,4 +356,17 @@ idle_loop:
 | Debug Module | JTAG 调试，支持断点和总线访问 | Bring-up 必备 |
 | WFI 低功耗 | 等待中断时进入低功耗 | 空闲循环中使用 |
 
+---
+
+## 参考资料
+
+- [ARM AMBA AXI4-Stream Protocol Spec](https://developer.arm.com/documentation/ihi0051/) — AXI 总线权威规范
+- [RISC-V AIA Spec v0.3.0](https://github.com/riscv/riscv-aia/releases/tag/0.3.0) — 高级中断架构 IMSIC + APLIC 定义
+- [RISC-V Debug Spec v1.0](https://github.com/riscv/riscv-debug-spec/releases/tag/1.0.0-STABLE) — JTAG 调试规范
+- [SiFive FU740 SoC Manual](https://www.sifive.com/documentation/chips/freedom-u740-c000-manual) — RISC-V SoC 的实际参考实现
+- [SBI HSM Extension v3.0](https://github.com/riscv-non-isa/riscv-sbi-doc/releases/tag/v3.0) — Hart State Management 的 SBI 调用
+
+---
+
 → 下一节：[汇编与底层编程](../05-system-software/assembly-and-abi.md)
+→ 高级中断架构：[RISC-V AIA 专题笔记](../aia/riscv-aia-notes.md)

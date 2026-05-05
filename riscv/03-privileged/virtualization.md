@@ -4,6 +4,14 @@
 >
 > **工程师视角**：虚拟化不是"在 CPU 上跑多个 OS"那么简单。在数据中心，虚拟化的开销直接转化为电费。两阶段地址翻译的 TLB 命中率、VM exit 的延迟、中断注入的效率，每一个指标都影响商业竞争力。RISC-V 的 H 扩展设计吸取了 x86/ARM 的经验，但实现质量取决于具体核心——这是系统软件工程师可以发挥巨大价值的领域。
 
+### 前置知识
+
+| 需要了解 | 参考文档 |
+|----------|----------|
+| H 模式 CSR (hstatus/hedeleg/hgatp 等) | [特权模式与 CSR](./privileged-modes-and-csr.md) |
+| 两阶段地址翻译 (VS-stage + G-stage) | [内存管理](./memory-management.md) |
+| Trap 处理流程 (cause/val/delegation) | [中断与异常](./interrupts-and-exceptions.md) |
+
 ---
 
 ## 1. 为什么需要虚拟化？
@@ -623,12 +631,16 @@ graph TD
 
 ---
 
-## 参考资源
+## 参考资料
 
-| 资源 | 说明 |
-|------|------|
-| [RISC-V H 扩展规范](https://github.com/riscv/riscv-isa-manual) | Hypervisor 扩展正式规范 |
-| [RISC-V IOMMU 规范](https://github.com/riscv-non-isa/riscv-iommu) | IOMMU 规范 |
-| [RISC-V AIA 规范](https://github.com/riscv-non-isa/riscv-aia) | 高级中断架构 |
-| [KVM RISC-V 代码](https://github.com/torvalds/linux/tree/master/arch/riscv/kvm) | Linux KVM RISC-V 实现 |
-| [QEMU RISC-V](https://www.qemu.org/docs/master/system/target-riscv.html) | QEMU RISC-V 文档 |
+- [RISC-V H-Extension Spec (Privileged spec 第 8 章)](https://github.com/riscv/riscv-isa-manual/releases/tag/Priv-v1.12) — H 扩展权威规范
+- [RISC-V IOMMU Spec](https://github.com/riscv-non-isa/riscv-iommu) — RISC-V IOMMU 规范
+- [RISC-V AIA Spec](https://github.com/riscv-non-isa/riscv-aia) — 高级中断架构（虚拟化中断注射依赖此标准）
+- [KVM RISC-V 代码 (Linux 主线)](https://github.com/torvalds/linux/tree/master/arch/riscv/kvm) — KVM for RISC-V 的主线实现
+- [QEMU RISC-V System Emulation](https://www.qemu.org/docs/master/system/target-riscv.html) — QEMU RISC-V 虚拟化支持文档
+- [SBI HSM Extension v3.0](https://github.com/riscv-non-isa/riscv-sbi-doc/releases/tag/v3.0) — Hart State Management 的 SBI 调用
+
+---
+
+→ [微架构第一篇：流水线基础](../04-microarchitecture/pipeline-basics.md)
+→ 实验：[Lab 4 — H 扩展两阶段 MMU](../08-labs/lab04-h-extension-two-stage-mmu.md)

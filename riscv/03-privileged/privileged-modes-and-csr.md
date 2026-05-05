@@ -4,6 +4,13 @@
 >
 > **工程师视角**：特权模式不仅是"权限分级"，更是故障隔离的最后一道防线。当用户态程序触发非法指令时，CPU 自动切换到 S-mode 处理；当 S-mode 遇到无法处理的异常时，M-mode 的固件接管。理解这个"升级"流程，是调试"神秘重启"和"权限违规"问题的关键。
 
+### 前置知识
+
+| 需要了解 | 参考文档 |
+|----------|----------|
+| RISC-V 指令集基础（RV32I/RV64I） | [RV32I/RV64I 指令集详解](../02-isa/rv32i-rv64i-instructions.md) |
+| 32 个通用寄存器与 ABI 命名 | [汇编与 ABI](../05-system-software/assembly-and-abi.md) |
+
 ---
 
 ## 1. 特权级概览
@@ -507,4 +514,14 @@ RISC-V 定义了一个独立于 M/S/U 的 **Debug Mode**（调试模式），用
 | 委托机制 | 允许 M-mode 将 trap 转发给 S-mode 处理 |
 | satp 控制虚拟内存 | MODE + ASID + PPN 三要素 |
 
-→ 下一节：[中断与异常处理](./interrupts-and-exceptions.md)
+---
+
+## 参考资料
+
+- [RISC-V Privileged Architecture Spec v1.12](https://github.com/riscv/riscv-isa-manual/releases/tag/Priv-v1.12) — 特权架构权威文档
+- [RISC-V S-Mode Spec v1.12](https://github.com/riscv/riscv-isa-manual/releases/tag/Priv-v1.12) — S 模式 CSR 与 ecall 定义
+- [RISC-V Debug Spec v1.0](https://github.com/riscv/riscv-debug-spec/releases/tag/1.0.0-STABLE) — D-mode 调试模式规范
+
+---
+
+→ 下一节：[中断与异常](./interrupts-and-exceptions.md)

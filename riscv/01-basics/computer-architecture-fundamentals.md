@@ -4,6 +4,10 @@
 >
 > **工程师视角**：这些"基础概念"不是过时的理论——它们是你日常调试的直觉来源。当程序突然变慢时，你想到的是"Cache miss 了？"；当多线程程序出现随机崩溃时，你想到的是"内存序问题？"。这些直觉，正是从基础概念中生长出来的。
 
+### 前置知识
+
+本文为整个 RISC-V 学习笔记的第一篇，无需特定前置知识。只需了解 C 语言基本语法即可。
+
 ---
 
 ## 1. CPU 的基本组成
@@ -274,4 +278,17 @@ graph LR
 | 虚拟内存 | Sv32/Sv39/Sv48 页表 |
 | 中断控制器 | CLINT、PLIC、AIA |
 
-→ 下一节：[RISC-V 概览](./riscv-overview.md)
+---
+
+## 参考资料
+
+- [David Patterson & John Hennessy — *Computer Organization and Design: RISC-V Edition*](https://www.elsevier.com/books/computer-organization-and-design-risc-v-edition/patterson/978-0-12-820331-6) — 流水线与缓存章节为本文核心参考
+- [RISC-V Unprivileged ISA Spec v20240411](https://github.com/riscv/riscv-isa-manual/releases/tag/20240411) — 整数指令集与 CSR 的权威定义
+- [RISC-V Privileged Architecture Spec v1.12](https://github.com/riscv/riscv-isa-manual/releases/tag/Priv-v1.12) — MMU 和 PMP 的权威定义
+- [POWER ISA v3.1B (Book I: Memory Model)](https://openpowerfoundation.org/specifications/isa/) — RISC-V 内存模型的参考来源之一
+- [ARMv8-M Architecture Reference Manual](https://developer.arm.com/documentation/ddi0553/) — 对比 RISC-V 中断向量表设计的差异
+
+---
+
+→ 下一篇：[RISC-V 概览](./riscv-overview.md)
+```

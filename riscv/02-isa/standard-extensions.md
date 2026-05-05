@@ -4,6 +4,13 @@
 >
 > **工程师视角**：扩展不是"越多越好"。服务器芯片需要 A（原子操作）和 V（向量）扩展；实时嵌入式系统可能只需要 M 扩展；而 Boot ROM 为了最小体积，可能连 M 都不要。理解每个扩展的代价和收益，是架构设计的基础决策。
 
+### 前置知识
+
+| 需要了解 | 参考文档 |
+|----------|----------|
+| RV32I/RV64I 整数指令集 | [RV32I/RV64I 指令集详解](./rv32i-rv64i-instructions.md) |
+| RISC-V 模块化扩展理念与 Profile | [RISC-V 概览](../01-basics/riscv-overview.md) |
+
 ---
 
 ## 1. M 扩展：整数乘除法
@@ -382,9 +389,9 @@ B 扩展（Bitmanip）提供高效的位操作指令，对密码学、网络包�
 | **Zbb** | 基本位操作 | 位反转、计数、最值等 | 已冻结 |
 | **Zbs** | 单位操作 | 位设置/清除/取反/提取 | 已冻结 |
 | **Zbc** | 进位乘法 | 大数乘法加速 | 已冻结 |
-| **Zbkb** | 密码学位操作 | 密码学专用位操作 | 已冻结 |
-| **Zbkc** | 密码学进位乘法 | 模乘加速 | 已冻结 |
-| **Zbkx** | 交叉乘 | AES 等分组密码加速 | 已冻结 |
+| **Zbkb** | 密码学位操作 | 密码学专用位操作：字节置换、按位旋转 | 已冻结 |
+| **Zbkc** | 密码学进位乘法 | 无进位乘法加速（CLMUL），用于 GCM 模式 | 已冻结 |
+| **Zbkx** | 交叉乘 | 32-bit 交叉乘法，加速 AES S-box 查表 | 已冻结 |
 
 > **RVA22 Profile 要求：** 服务器场景的 RVA22 Profile 强制要求 Zba + Zbb + Zbs，是 RV64 服务器的事实标准。
 
@@ -460,9 +467,61 @@ or    t1, a0, t0       # t1 = a0 | (1 << 5)
 bseti t1, a0, 5        # t1 = a0 | (1 << 5)，更直观
 ```
 
----
+### 5.5 密码学子扩展：Zbkb / Zbkc / Zbkx
 
-## 6. V 扩展：向量扩展
+密码学子扩展针对 AES、SM4、GHASH 等算法的核心操作做了硬件加速。对于 TLS/DTLS、磁盘加密、区块链等需要大量密码运算的场景，这些指令可以带来 **3-10 倍**的性能提升。
+
+#### Zbkb：基本密码学位操作
+
+| 指令 | 功能 | 密码学用途 |
+|------|------|-----------|
+| `PACK` `PACKH` `PACKW` | 寄存器高低半部分打包/组合 | SHA-256 消息调度中的 32-bit 加法 |
+| `BREV8` | 按位反转字节内的位（bit-reverse within byte） | 比特反转用于 CRC、扰码 |
+| `REV8` | 字节序反转（大小端转换） | 数据格式转换（网络字节序 ↔ 主机序） |
+| `UNZIP` `ZIP` | 比特交叉/解交叉 | AES S-box 查表前的比特重排 |
+| `ROL` `ROR` `RORI` | 循环左移/右移 | SHA-256 的 Σ0/Σ1 函数、SM3 的 P0/P1 置换 |
+| `ANDN` `ORN` `XNOR` | 与非、或非、同或 | 布尔函数加速 |
+| `CLMUL` `CLMULH` `CLMULR` | 无进位乘法（低位/高位/反转） | GHASH/GCM 的有限域乘法 |
+| `GORC` `GREV` | 广义 OR-Combine / 广义 Reverse | SHA-3/Keccak 的 θ 步骤 |
+
+#### Zbkc：无进位乘法
+
+Zbkc 实际是 Zbkb 中 `CLMUL*` 指令的子集，专门用于 GCM（Galois/Counter Mode）：
+
+```asm
+# GCM 中 GHASH 的有限域乘法 (GF(2^128))
+# 传统 C 实现需要数百条指令逐位处理
+# Zbkc 只需：
+clmul   t0, a0, a1        # 低 64 位 × 低 64 位（无进位）
+clmulh  t1, a0, a1        # 高 64 位 × 高 64 位（无进位）
+# 然后用几条 XOR 和移位完成 GF 约简
+```
+
+> **为什么需要无进位乘法？** 普通乘法会有进位传播，而有限域 GF(2^n) 上的乘法定义为多项式乘法（异或代替加法），天然不需要进位传播。无进位乘法 `CLMUL`（CarryLess MULtiplication）直接实现了这一点，比软件逐比特循环快 **10-50 倍**。
+
+#### Zbkx：交叉乘指令
+
+Zbkx 提供两条专用指令：
+
+| 指令 | 功能 | 说明 |
+|------|------|------|
+| `XPERM8 rd, rs1, rs2` | 交叉字节置换 | 用 rs2 的字节索引从 rs1 选字节，实现 S-box 查表 |
+| `XPERM4 rd, rs1, rs2` | 交叉半字置换 | 类似 XPERM8，但按 4-bit 半字索引 |
+
+```asm
+# AES SubBytes 步骤：每个字节进入 S-box 查表替换
+# 传统方式：查 256 字节的表 → 需要 load 指令，可能 cache miss
+# Zbkx 方式：
+#   预加载 S-box 到寄存器 rs1（8 字节容纳不了 256 条目，
+#   通常需要多次加载，但配合压缩指令可减少代码体积）
+#   但核心优势在于消除了分支和内存依赖
+#   对于 SM4 这种 8-bit S-box，XPERM8 一条指令就能完成查表
+xperm8  t0, t0, a0        # t0 中每个字节作为索引，从 a0 中选对应字节
+```
+
+> **实际应用场景：** 在 TLS 1.3 握手过程中，AES-GCM 和 ChaCha20-Poly1305 是强制密码套件。支持 Zbkb+Zbkc 的 RISC-V 处理器可以在无专用加密引擎的情况下，仅靠指令扩展就接近硬件加速器的吞吐量。这对于 IoT 设备和边缘网关（面积/功耗受限，无法放置大型加密 IP）尤为关键。
+
+---
 
 V 扩展是 RISC-V 最重要的扩展之一，提供可变长度向量（Vector）处理能力，对 AI 推理、信号处理、多媒体等场景至关重要。
 
@@ -666,6 +725,19 @@ fence.i              # 保证指令缓存与数据缓存的一致性
 ```
 
 > **注意：** Zifencei 在 RVA22 中不是强制要求，Linux 通过 SBI 调用 `sbi_remote_fence_i()` 替代。但在裸机场景仍然有用。
+
+---
+
+## 参考资料
+
+- [RISC-V Unprivileged ISA Spec v20240411](https://github.com/riscv/riscv-isa-manual/releases/tag/20240411) — M/A/F/D/B/V/C 扩展的权威规范
+- [RISC-V V Extension Spec v1.0](https://github.com/riscv/riscv-v-spec/releases/tag/v1.0) — 向量扩展详细定义
+- [RISC-V Scalar Cryptography Extensions v1.0.1](https://github.com/riscv/riscv-crypto/releases/tag/v1.0.1) — Zbkb/Zbkc/Zbkx 密码学指令规范
+- [RISC-V Bit-Manipulation (Zba/Zbb/Zbs) v1.0.0](https://github.com/riscv-non-isa/riscv-bitmanip/releases/tag/1.0.0) — 位操作扩展规范
+
+---
+
+→ 下一节：[特权模式与 CSR](../03-privileged/privileged-modes-and-csr.md)
 
 ---
 

@@ -4,6 +4,14 @@
 >
 > **工程师视角**：选择硬件平台不是"买最贵的"，而是"买最适合当前阶段的"。入门时 ESP32-C3 足够理解指令集；做 Linux 驱动开发时需要 VisionFive 2；而调试服务器级芯片的固件问题，QEMU 往往比真实硬件更高效。
 
+### 前置知识
+
+| 需要了解 | 参考文档 |
+|----------|----------|
+| RISC-V ISA 模块化扩展组合与 Profile | [RISC-V 概览](../01-basics/riscv-overview.md) |
+| 开源核心架构 (Rocket/BOOM/CVA6/香山) | [Open-Source 核心](../04-microarchitecture/opensource-cores.md) |
+| 开发工具链与模拟器 | [工具链](../06-tools/toolchain-and-simulator.md) |
+
 ---
 
 ## 1. 开发板选型
@@ -179,12 +187,12 @@ graph TD
 
 | 阶段 | 产出 | 验证方式 | 参考文档 |
 |------|------|----------|----------|
-| ISA 基础 | 能读懂 RISC-V 汇编 | objdump 反汇编分析 | [01-ISA 基础](../01-isa-basics/) |
+| ISA 基础 | 能读懂 RISC-V 汇编 | objdump 反汇编分析 | [01-基础入门](../01-basics/) |
 | 特权架构 | 能写 trap 处理程序 | QEMU 运行裸机代码 | [03-特权架构](../03-privileged/) |
 | 裸机编程 | 能实现 UART 输出和定时器 | QEMU/开发板运行 | [Lab 1](../08-labs/lab01-baremetal-trap-handler.md) |
 | 虚拟内存 | 能建立页表并启用 MMU | 虚拟地址访问成功 | [Lab 3](../08-labs/lab03-sv39-page-table.md) |
-| RTOS 移植 | 能在 RISC-V 上运行 RTOS | 多任务调度正常 | [05-OS 移植](./os-porting.md) |
-| Linux 内核 | 能编写简单驱动 | insmod 加载运行 | [05-OS 移植](./os-porting.md) |
+| RTOS 移植 | 能在 RISC-V 上运行 RTOS | 多任务调度正常 | [操作系统移植](../05-system-software/os-porting.md) |
+| Linux 内核 | 能编写简单驱动 | insmod 加载运行 | [操作系统移植](../05-system-software/os-porting.md) |
 | 虚拟化 | 能运行带 KVM 的 VM | 两阶段地址翻译成功 | [Lab 4](../08-labs/lab04-h-extension-two-stage-mmu.md) |
 
 ---
@@ -224,4 +232,15 @@ graph TD
 | 实践比看文档更重要 | 每个阶段都要有可运行的产出 |
 | 文档交叉引用 | 各章节通过 Lab 案例形成知识网络 |
 
-→ 返回：[总览目录](../README.md)
+---
+
+## 参考资料
+
+- [RISC-V International — Hardware Database](https://riscv.org/risc-v-hw/) — RISC-V 硬件平台数据库
+- [RISC-V International — Exchange (RISC-V Market)](https://riscv.org/exchange/) — 商用 RISC-V 产品列表
+- [SiFive HiFive Premier P550 Manual](https://www.sifive.com/documentation/chips/hifive-premier-p550-manual) — Eswin EIC7700 平台参考
+- [StarFive VisionFive/VisionFive2 Documentation](https://doc-en.rvspace.org/) — JH7110 SoC 平台文档
+- [Microchip PolarFire SoC Icicle Kit Docs](https://www.microchip.com/en-us/products/fpgas-and-plds/system-on-chip-fpgas/polarfire-soc-fpgas/icicle-kit) — PolarFire SoC 参考
+- [Kendryte K230 Documentation](https://www.canaan.io/products/k230) — 国产端侧 AI 芯片
+- [UCIe Consortium Spec v1.1](https://www.uciexpress.org/) — Chiplet 互连标准
+- [RISC-V International — Ratification Process](https://wiki.riscv.org/display/HOME/Policies) — 扩展规范化流程

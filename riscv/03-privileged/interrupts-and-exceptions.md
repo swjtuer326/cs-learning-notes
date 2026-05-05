@@ -4,6 +4,14 @@
 >
 > **工程师视角**：中断不是"异步事件"那么简单。在服务器 SoC 中，一个网络包到达后，从网卡 DMA → PLIC 仲裁 → CPU 中断 → 内核协议栈处理，全链路的延迟决定了系统吞吐。理解每个环节，是性能优化的起点。
 
+### 前置知识
+
+| 需要了解 | 参考文档 |
+|----------|----------|
+| RISC-V 特权模式 M/S/U 划分 | [特权模式与 CSR](./privileged-modes-and-csr.md) |
+| CSR 寄存器读写方式（csrr/csrw） | [特权模式与 CSR](./privileged-modes-and-csr.md) |
+| Zicsr / Zifencei 标准扩展 | [标准扩展详解](../02-isa/standard-extensions.md) |
+
 ---
 
 ## 1. Trap 的分类
@@ -409,4 +417,16 @@ sequenceDiagram
 | 委托机制 | M-mode 可将中断委托给 S-mode |
 | ecall 实现系统调用 | U→S 的特权级提升，a7 传递调用号 |
 
+---
+
+## 参考资料
+
+- [RISC-V Privileged Architecture Spec v1.12 — Chapter 3 (Machine-Level ISA)](https://github.com/riscv/riscv-isa-manual/releases/tag/Priv-v1.12) — Trap 处理权威定义
+- [RISC-V PLIC Spec v1.0.0](https://github.com/riscv/riscv-plic-spec/releases/tag/1.0.0) — 平台级中断控制器规范
+- [SBI Specification v3.0](https://github.com/riscv-non-isa/riscv-sbi-doc/releases/tag/v3.0) — Timer/IPI/HSM 等 SBI 调用定义
+
+---
+
 → 下一节：[内存管理](./memory-management.md)
+→ 实验：[Lab 1 — 裸机 Trap Handler](../08-labs/lab01-baremetal-trap-handler.md)
+→ 高级中断架构：[RISC-V AIA 专题笔记](../aia/riscv-aia-notes.md)（推荐在完成 PLIC 章节后阅读）

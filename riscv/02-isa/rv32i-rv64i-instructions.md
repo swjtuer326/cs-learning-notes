@@ -4,6 +4,13 @@
 >
 > **工程师视角**：这 40 条指令是你阅读反汇编的"字母表"。当你用 `objdump -d` 查看内核崩溃现场时，看到的不是神秘的十六进制，而是 `ld`、`add`、`beq` 这些熟悉的指令。掌握它们，就像掌握一门新语言的常用词汇——不需要背诵全部，但需要能快速识别。
 
+### 前置知识
+
+| 需要了解 | 参考文档 |
+|----------|----------|
+| RISC-V ISA 定位与模块化设计 | [RISC-V 概览](../01-basics/riscv-overview.md) |
+| CPU 寄存器文件与流水线概念 | [体系结构基础](../01-basics/computer-architecture-fundamentals.md) |
+
 ---
 
 ## 1. 寄存器文件
@@ -289,4 +296,14 @@ RISC-V 的 opcode 编码有清晰的规律：
 | Load-Store 架构 | 运算和访存分离，简化流水线 |
 | RV64 加 W 后缀 | 优雅地支持 32 位操作 |
 
-→ 下一节：[标准扩展 M/A/F/D/C](./standard-extensions.md)
+---
+
+## 参考资料
+
+- [RISC-V Unprivileged ISA Spec v20240411 — 第 2 章 RV32I/RV64I](https://github.com/riscv/riscv-isa-manual/releases/tag/20240411) — 整数指令集权威定义
+- [David Patterson & Andrew Waterman — *The RISC-V Reader*](http://www.riscvbook.com/) — 便携入门手册，指令编码速查
+- [RISC-V Assembly Programmer's Manual](https://github.com/riscv-non-isa/riscv-asm-manual/blob/master/riscv-asm.md) — 汇编编程实践指南
+
+---
+
+→ 下一节：[标准扩展详解](./standard-extensions.md)

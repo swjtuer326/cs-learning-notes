@@ -4,6 +4,13 @@
 >
 > **工程师视角**：RISC-V 的"开源"不只是免费——它意味着你可以深入到底层，理解每一条指令的精确行为，甚至参与标准的制定。对于系统软件工程师，这消除了 x86/ARM 中常见的"黑盒困惑"：不再依赖厂商的手册猜测行为，而是直接阅读官方 Spec 和开源实现。
 
+### 前置知识
+
+| 需要了解 | 参考文档 |
+|----------|----------|
+| CPU 体系结构基础（寄存器、流水线、Cache） | [体系结构基础](./computer-architecture-fundamentals.md) |
+| C 语言基本语法 | — |
+
 ---
 
 ## 1. RISC-V 的起源
@@ -286,6 +293,48 @@ graph LR
 
 > **服务器选型建议：** 如果目标是云服务器，至少选择 RVA22 兼容的处理器。如果需要 AI 推理或 HPC 能力，选择 RVA23 兼容的处理器。
 
+### 7.5 RISC-V Profile 与其他架构的等价对应
+
+理解 RISC-V Profile 最直观的方式是找到它在 x86 和 ARM 世界的"对应物"：
+
+| 维度 | RISC-V | x86 (Intel/AMD) | ARM |
+|------|--------|-----------------|-----|
+| **入门 MCU** | RVM22 (RV32IMC) | —（x86 无此空间） | Cortex-M4/M7 (ARMv7E-M) |
+| **中端嵌入** | RVA20 (RV64GC) | — | Cortex-R (ARMv8-R) |
+| **通用服务器** | RVA22 | x86-64-v2 (SSE4.2 + POPCNT) | ARMv8.0-A (AArch64 baseline) |
+| **高性能服务器** | RVA23 (+V) | x86-64-v3 (AVX2 + BMI) | ARMv8.2-A + SVE |
+| **HPC / AI** | RVA23 + Sv48 | x86-64-v4 (AVX-512) | ARMv9-A + SVE2 |
+
+> **关键差异：**
+> - x86 的向量能力是"与生俱来"的（SSE/AVX 从 1999 年就开始了），每次升级都是叠加
+> - ARM 的 SVE 是 2016 年后引入的可变长度向量，与 RISC-V 的 V 扩展设计理念相近
+> - RISC-V 的优势在于：**V 扩展是标准但不强制**——不需要向量的场景可以省面积，需要向量的场景全功能支持
+> - x86 在"去除历史包袱"上最弱（68000+ 条指令）；ARM 中等（A32/T32 双模式）；RISC-V 最强（从零设计）
+
+### 7.6 Profile 对固件和 OS 开发的实际影响
+
+```c
+// GCC 中指定 Profile 编译
+// RVA22 编译：生成的代码不使用 V 扩展，可用于所有 RVA22+ 平台
+riscv64-unknown-linux-gnu-gcc -march=rva22gc -O2 -c kernel.c
+
+// 在 Makefile 中使用条件编译
+ifeq ($(CONFIG_RISCV_PROFILE), rva23)
+    CFLAGS += -march=rva23gc -mabi=lp64d
+else
+    CFLAGS += -march=rva22gc -mabi=lp64d
+endif
+```
+
+| Profile | 固件需要实现的特性 | 额外考虑 |
+|---------|--------------------|----------|
+| **RVM22** | PMP（物理内存保护）、基础 trap 处理 | 无 MMU，裸机/RTOS 场景 |
+| **RVA20** | Sv39 MMU、S-mode trap、基础 SBI | Linux 可运行但缺少向量加速 |
+| **RVA22** | + Zicbom/Zicboz (Cache 管理 SBI 调用) | 服务器固件的基础要求 |
+| **RVA23** | + V 扩展上下文保存（CSR: vstart/vxsat/vcsr） | 使用 V 扩展的内核需注意向量寄存器状态 |
+
+> **实际操作：** 在 QEMU 中验证 Profile 兼容性——`qemu-system-riscv64 -cpu rva22s64`（RVA22）或 `-cpu rva23s64`（RVA23），可以在不同 Profile 下测试固件行为。
+
 ---
 
 ## 小结
@@ -299,5 +348,16 @@ graph LR
 | 自定义扩展是杀手锏 | 可以针对特定领域优化，这是 x86/ARM 做不到的 |
 | **Profile 防碎片化** | RVA22/RVA23 定义服务器标准扩展组合 |
 | **服务器 = RVA22+** | 至少 RVA22，AI/HPC 需要 RVA23 |
+
+---
+
+## 参考资料
+
+- [RISC-V Unprivileged ISA Spec v20240411](https://github.com/riscv/riscv-isa-manual/releases/tag/20240411) — 非特权 ISA 权威规范
+- [RISC-V International — Profiles](https://github.com/riscv/riscv-profiles) — RVA/RVM/RVH Profile 定义
+- [RISC-V International — Technical Overview](https://riscv.org/technical/specifications/) — 各扩展规范列表
+- [Calista Redmond (RISC-V CEO) — State of the Union 2024](https://riscv.org/blog/2024/12/) — 产业动态与生态展望
+
+---
 
 → 下一节：[基础整数指令集 RV32I/RV64I](../02-isa/rv32i-rv64i-instructions.md)

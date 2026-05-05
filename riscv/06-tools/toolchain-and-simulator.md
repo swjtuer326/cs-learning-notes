@@ -4,6 +4,13 @@
 >
 > **工程师视角**：工具链不仅是"编译代码"，更是定位问题的显微镜。当内核在目标板上 panic，而串口只输出乱码时，QEMU + GDB 的组合能让你在宿主机上精确复现和调试；当怀疑编译器生成错误指令时，`objdump` 是你的仲裁者。
 
+### 前置知识
+
+| 需要了解 | 参考文档 |
+|----------|----------|
+| RISC-V ISA 模块化扩展组合与 Profile | [RISC-V 概览](../01-basics/riscv-overview.md) |
+| 汇编基本语法 | [汇编与 ABI](../05-system-software/assembly-and-abi.md) |
+
 ---
 
 ## 1. 交叉编译工具链
@@ -354,6 +361,15 @@ fi
 > **CI 建议**：GitHub Actions 或 GitLab CI 中可以使用 `qemu-system-riscv64` 运行回归测试，确保每次代码提交都不会破坏已有的 Lab 案例。
 
 ---
+
+## 参考资料
+
+- [RISC-V GNU Toolchain (GitHub)](https://github.com/riscv-collab/riscv-gnu-toolchain) — 官方工具链源码与构建指南
+- [GCC RISC-V Options Documentation](https://gcc.gnu.org/onlinedocs/gcc/RISC-V-Options.html) — GCC RISC-V 编译选项详解
+- [LLVM RISC-V Backend Documentation](https://llvm.org/docs/RISCVUsage.html) — Clang/LLVM 的 RISC-V 后端文档
+- [gem5 — A Modular Platform Simulation Framework](https://www.gem5.org/) — RISC-V 微架构模拟器
+- [QEMU RISC-V System Emulation](https://www.qemu.org/docs/master/system/riscv/) — QEMU RISC-V 系统模拟文档
+- [OpenOCD RISC-V Target Driver](https://openocd.org/doc/html/Architecture-and-Core-Commands.html) — JTAG 调试工具配置
 
 ## 小结
 

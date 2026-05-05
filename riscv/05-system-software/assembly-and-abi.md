@@ -4,6 +4,13 @@
 >
 > **工程师视角**：当你在内核中遇到无法解释的崩溃，或需要验证编译器是否正确生成原子操作时，`objdump -d` 输出的汇编就是你的第一现场。
 
+### 前置知识
+
+| 需要了解 | 参考文档 |
+|----------|----------|
+| RISC-V 整数指令集（RV32I/RV64I）与编码 | [RV32I/RV64I 指令集详解](../02-isa/rv32i-rv64i-instructions.md) |
+| 32 个通用寄存器的基本概念 | [体系结构基础](../01-basics/computer-architecture-fundamentals.md) |
+
 ---
 
 ## 1. RISC-V 汇编基础
@@ -637,5 +644,15 @@ riscv64-unknown-elf-gcc -Og -g3 -march=rv64imac -mabi=lp64 ...
 | 裸机编程 | 入口汇编 → C main → 链接脚本 → QEMU 运行 |
 | CSR 宏 | 封装 csrr/csrw/csrs/csrc 为可读的宏 |
 | 编译器视角 | objdump -d 是日常调试工具，-Og 是开发最优选 |
+
+---
+
+## 参考资料
+
+- [RISC-V ELF psABI Specification](https://github.com/riscv-non-isa/riscv-elf-psabi-doc) — 函数调用约定与 ELF 结构定义
+- [RISC-V Assembly Programmer's Manual](https://github.com/riscv-non-isa/riscv-asm-manual/blob/master/riscv-asm.md) — 汇编编程实践指南
+- [GCC Inline Assembler Documentation](https://gcc.gnu.org/onlinedocs/gcc/Using-Assembly-Language-with-C.html) — 内联汇编语法详解
+
+---
 
 → 下一节：[操作系统移植](./os-porting.md)

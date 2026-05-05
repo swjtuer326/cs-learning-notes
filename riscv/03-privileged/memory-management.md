@@ -4,6 +4,13 @@
 >
 > **工程师视角**：页表不仅是"地址翻译"，更是安全策略的执行点。在服务器固件中，PMP 配置错误可能导致 S-mode 直接访问 M-mode 内存；在虚拟化场景中，两阶段页表的 TLB miss 路径是性能瓶颈的主要来源。理解页表遍历的每一步，是调试"神秘崩溃"和优化 VM 性能的基础。
 
+### 前置知识
+
+| 需要了解 | 参考文档 |
+|----------|----------|
+| RISC-V 特权模式与 M 模式 CSR | [特权模式与 CSR](./privileged-modes-and-csr.md) |
+| Trap 处理流程（mepc/mcause/mtval 的写入时机） | [中断与异常](./interrupts-and-exceptions.md) |
+
 ---
 
 ## 1. 物理内存保护（PMP）
@@ -477,5 +484,16 @@ sequenceDiagram
 | **hgatp** | 控制第二阶段翻译，VMID 标记 VM |
 | **hfence** | 虚拟化 TLB 刷新指令 |
 
+---
+
+## 参考资料
+
+- [RISC-V Privileged Architecture Spec v1.12 — Chapter 4 (Sv32/Sv39/Sv48)](https://github.com/riscv/riscv-isa-manual/releases/tag/Priv-v1.12) — 页表格式权威定义
+- [RISC-V PMP Spec (Privileged spec Ch3.7)](https://github.com/riscv/riscv-isa-manual/releases/tag/Priv-v1.12) — PMP 寄存器与编码
+- [RISC-V Svpbmt Extension Spec](https://github.com/riscv/riscv-isa-manual) — 内存属性 PBMT 扩展
+
+---
+
 → 下一节：[启动流程](./boot-process.md)
 → 虚拟化专题：[虚拟化：H 扩展与 KVM](./virtualization.md)
+→ 实验：[Lab 3 — Sv39 页表建立](../08-labs/lab03-sv39-page-table.md)

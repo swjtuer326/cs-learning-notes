@@ -4,6 +4,13 @@
 >
 > **工程师视角**：流水线冒险不只是考试题——在写内核自旋锁或设备驱动时，你的代码会直接在流水线上执行。Load-Use 冒险导致的停顿、分支预测失败导致的刷新，都会转化为可测量的性能损失。理解这些机制，才能写出"对流水线友好"的代码。
 
+### 前置知识
+
+| 需要了解 | 参考文档 |
+|----------|----------|
+| RISC-V ISA 指令格式与编码 | [RV32I/RV64I 指令集详解](../02-isa/rv32i-rv64i-instructions.md) |
+| CPU 体系结构基础（寄存器文件、流水线概念） | [体系结构基础](../01-basics/computer-architecture-fundamentals.md) |
+
 ---
 
 ## 1. 单周期处理器：最简单的起点
@@ -285,5 +292,15 @@ graph TD
 | 控制冒险 | 分支预测是关键，2-bit 饱和计数器是基础 |
 | 结构冒险 | 哈佛架构（I/D Cache 分离）是标准解决方案 |
 | RISC-V 无延迟分支 | 简化了编译器和硬件设计 |
+
+---
+
+## 参考资料
+
+- [David Patterson & John Hennessy — *Computer Organization and Design: RISC-V Edition*, Ch4](https://www.elsevier.com/books/computer-organization-and-design-risc-v-edition/patterson/978-0-12-820331-6) — 流水线经典讲解
+- [John Hennessy & David Patterson — *Computer Architecture: A Quantitative Approach* 6th Ed, Ch3](https://www.elsevier.com/books/computer-architecture/hennessy/978-0-12-811905-1) — 流水线与指令级并行分析
+- [Nathan Binkert et al. — *The gem5 Simulator*](https://www.gem5.org/documentation/) — 流水线参数可配的微架构模拟器
+
+---
 
 → 下一节：[高级微架构](./advanced-microarchitecture.md)

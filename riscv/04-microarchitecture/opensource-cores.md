@@ -4,6 +4,13 @@
 >
 > **工程师视角**：选核心不是选"性能最高的"，而是选"最适合当前产品的"。做 MCU 选蜂鸟 E203，做 Linux SBC 选 CVA6，做服务器选香山。更重要的是，开源核心让你可以深入 RTL 理解硬件行为——当内核在特定核心上触发无法解释的 bug 时，查看 RTL 的 LSU 或 MMU 实现往往能找到根因。
 
+### 前置知识
+
+| 需要了解 | 参考文档 |
+|----------|----------|
+| 流水线基础与微架构概念 | [流水线基础](./pipeline-basics.md) |
+| 乱序执行、超标量、多核概念 | [高级微架构](./advanced-microarchitecture.md) |
+
 ---
 
 ## 1. 开源核心全景：一张地图
@@ -211,15 +218,51 @@ graph TB
 
 | 属性 | 说明 |
 |------|------|
-| **来源** | ETH Zurich（瑞士联邦理工） |
+| **来源** | ETH Zurich / OpenHW Group |
 | **语言** | SystemVerilog |
-| **架构** | 顺序 6 级流水线 |
-| **ISA** | RV64IMAFDC |
-| **特点** | 支持 Linux SMP，代码清晰 |
+| **架构** | 顺序 6 级流水线，单发射 |
+| **ISA** | RV64IMAFDC（支持 Sv39 MMU） |
+| **特点** | 支持 Linux SMP，代码清晰，工业级验证 |
 
-CVA6 是一个"中等复杂度"的核心，比 Rocket 稍复杂，但比 BOOM 简单得多。它的 SystemVerilog 实现对不熟悉 Chisel 的开发者更友好。
+CVA6 是一个"中等复杂度"的核心——比 Rocket 稍复杂（多 1 级流水线），但远没有乱序执行的 BOOM 那么庞大。它的 SystemVerilog 实现对不熟悉 Chisel 的开发者更友好，同时已流片验证过多次（GlobalFoundries 22nm FDX 等），是**开源核心中工业成熟度最高**的选项之一。
 
-> **对固件开发者的意义：** CVA6 支持 Linux SMP，意味着你需要实现完整的缓存一致性初始化、多核启动（IPI）和 PLIC 配置。
+### CVA6 的微架构
+
+```
+CVA6 6 级流水线:
+
+  [PC Gen] → [IF] → [ID] → [Issue] → [EX] → [Commit]
+
+特点:
+  - 6 级而非经典 5 级：把 Issue（发射）独立出来
+    → ID 译码后指令进入 Issue 级等待操作数就绪
+    → 虽是顺序发射，但 Issue 级可以作为"缓冲"减少停顿
+  - 分支预测：BTB + BHT + RAS（返回地址栈），不是简单的静态预测
+  - 支持 Csr 旁路（bypass）优化 CSR 读写的延迟
+  - L1 I-Cache: 16KB, 4-way；L1 D-Cache: 16/32KB 可配，4/8-way
+```
+
+| 特性 | Rocket | CVA6 | BOOM |
+|------|--------|------|------|
+| 流水线级数 | 5-6 | 6 | 深流水（乱序） |
+| 发射宽度 | 1 | 1 | 2-4 |
+| 分支预测 | 简单 BTB | BTB + BHT + RAS | GShare/TAGE |
+| MMU | Sv39 | Sv39 | Sv39 |
+| 硬件语言 | Chisel | SystemVerilog | Chisel |
+| 社区归属 | Chips Alliance | OpenHW Group | Chips Alliance |
+
+### CVA6 的应用场景
+
+| 场景 | 说明 |
+|------|------|
+| **FPGA 原型** | 在 Xilinx/Intel FPGA 上可跑到 50-100 MHz，适合软硬件协同验证 |
+| **ASIC 流片** | 多次成功流片，有成熟的物理设计参考 |
+| **Linux SBC** | 配合 OpenSBI + Linux，可作为简单的 Linux-capable 核心 |
+| **教学研究** | SystemVerilog 代码比 Chisel 更利于教学（不需要学一门新语言） |
+
+> **对固件开发者的意义：** CVA6 支持 Linux SMP，意味着你需要实现完整的缓存一致性初始化、多核启动（IPI）和 PLIC 配置。CVA6 的 OpenHW Group 还维护了配套的验证环境和 SW 工具链，降低了 bring-up 难度。
+>
+> **选型对比：** 如果你需要做 ASIC 流片又不希望用 Chisel 开发流程，CVA6 是目前最成熟的选择。如果你在做学术界研究需要调整微架构参数，Rocket/BOOM（Chisel + Rocket Chip Generator）的灵活性更高。
 
 ---
 
@@ -307,5 +350,18 @@ graph TD
 | CVA6 | 中端通用 | SV | 6 级顺序 | 不用 Chisel 的开发者 | Linux SMP 支持 |
 | E203 | 嵌入式入门 | Verilog | 2 级顺序 | 初学者 | 极简，无 MMU |
 | IBEX | 低功耗安全 | SV | 2 级顺序 | 安全芯片开发者 | 安全启动、PMP |
+
+---
+
+## 参考资料
+
+- [Rocket Chip Generator (GitHub)](https://github.com/chipsalliance/rocket-chip) — Rocket 核心与 TileLink 总线源码
+- [BOOM Documentation (boom-core.org)](https://docs.boom-core.org/) — BOOM 乱序核心的微架构技术手册
+- [CVA6 / ARIANE (GitHub — OpenHW Group)](https://github.com/openhwgroup/cva6) — CVA6 的 SystemVerilog 实现
+- [XiangShan (香山) (GitHub — 中科院计算所)](https://github.com/OpenXiangShan/XiangShan) — 香山高性能 RISC-V 处理器
+- [Nuclei ISA Manual (蜂鸟 E203)](https://doc.nucleisys.com/) — 蜂鸟 E203 的指令与微架构文档
+- [lowRISC IBEX (GitHub)](https://github.com/lowRISC/ibex) — IBEX 低功耗嵌入式核心
+
+---
 
 → 下一节：[SoC 与系统设计](./soc-design.md)

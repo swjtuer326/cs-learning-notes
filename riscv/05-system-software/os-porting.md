@@ -4,6 +4,14 @@
 >
 > **工程师视角**：OS 移植不是"一次性任务"，而是持续迭代的过程。从 bring-up 阶段的"串口输出第一个字符"，到生产环境的"NUMA 调度优化"，每个阶段都需要深入理解硬件与软件的交互边界。
 
+### 前置知识
+
+| 需要了解 | 参考文档 |
+|----------|----------|
+| RISC-V 特权模式与 CSR 访问 | [特权模式与 CSR](../03-privileged/privileged-modes-and-csr.md) |
+| 内存管理 MMU 页表 (Sv39) | [内存管理](../03-privileged/memory-management.md) |
+| RISC-V 启动流程 (OpenSBI/U-Boot) | [启动流程](../03-privileged/boot-process.md) |
+
 ---
 
 ## 1. 操作系统移植概览
@@ -468,5 +476,16 @@ arch/riscv/
 | PLIC | Claim → 处理 → Complete |
 | 设备树 | 描述硬件信息，内核动态解析 |
 | 调试关键 | scause 值、GDB stub、earlycon |
+
+---
+
+## 参考资料
+
+- [Linux RISC-V Porting Guide (kernel.org)](https://www.kernel.org/doc/html/latest/arch/riscv/) — Linux 内核 RISC-V 移植文档
+- [SBI Specification v3.0](https://github.com/riscv-non-isa/riscv-sbi-doc/releases/tag/v3.0) — OpenSBI/S-mode ecall 的标准调用约定
+- [RISC-V ELF psABI Specification](https://github.com/riscv-non-isa/riscv-elf-psabi-doc) — 上下文切换涉及的 ABI 规范
+- [Kendryte K230 Documentation](https://www.canaan.io/products/k230) — 国产端侧 RISC-V SoC
+
+---
 
 → 下一节：[工具链与模拟器](../06-tools/toolchain-and-simulator.md)
