@@ -2,6 +2,22 @@
 
 > 从按下电源到 Linux 内核接手，固件做了哪些事？这篇按时间顺序把五个阶段走一遍，让你建立"什么阶段有什么事、能干什么、不能干什么"的直觉。具体的 API 和代码留在后面几篇。
 
+### 关键术语
+| 缩写 | 全称 | 含义 |
+|------|------|------|
+| SEC | Security Phase | 安全阶段，CPU 上电后第一段代码，建立临时栈 |
+| PEI | Pre-EFI Initialization | EFI 前初始化，用 Cache-as-RAM 初始化 DDR |
+| DXE | Driver Execution Environment | 驱动执行环境，构建 Protocol 数据库 |
+| BDS | Boot Device Selection | 启动设备选择，按 BootOrder 加载 OS Loader |
+| RT | Runtime | 运行时阶段，OS 已接管，Runtime Services 仍可用 |
+| CAR | Cache-as-RAM | 将 CPU Cache 配置为"No-Fill"模式充当临时 RAM |
+| HOB | Hand-Off Block | PEI→DXE 传递资源描述的链表结构 |
+| PPI | Pre-EFI Initialization Interface | PEI 阶段的 Protocol 替代品，单实例无引用计数 |
+| FV | Firmware Volume | 固件卷，Flash 中按规范格式存储的固件映像分区 |
+| FDT | Flattened Device Tree | DTB (Device Tree Blob) 的内存表示 |
+
+---
+
 ## 1. 五分钟速览
 
 ```mermaid
@@ -204,7 +220,8 @@ EFI_STATUS EFIAPI FatDriverEntryPoint (
     EFI_BLOCK_IO_PROTOCOL  *BlockIo;
     gBS->HandleProtocol (BlockIoHandles[i], &gEfiBlockIoProtocolGuid, (VOID**)&BlockIo);
     if (IsFatVolume(BlockIo)) {
-      InstallSimpleFileSystemOn (BlockIoHandles[i]);
+      InstallSimpleFileSystemOn (BlockIoHandles[i]);  // 安装 SimpleFileSystem Protocol
+                                                       // 实现细节见 05
     }
   }
   gBS->FreePool (BlockIoHandles);

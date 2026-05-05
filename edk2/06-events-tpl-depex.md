@@ -2,6 +2,18 @@
 
 > 前面写驱动时假设 Dispatcher 会按正确顺序加载。现实是 Dispatcher 不保证顺序。事件、TPL、DEPEX 解决"谁先谁后"和"安全共享数据"。最后三分之一篇幅是 **BDS→OS 启动的完整代码实战**——你写的所有驱动的终点，从 BootOrder 查找到 LoadImage/StartImage 到 ExitBootServices 到内核入口跳转，每步有可编译代码。
 
+### 关键术语
+| 缩写 | 全称 | 含义 |
+|------|------|------|
+| TPL | Task Priority Level | 任务优先级级别，UEFI 软件中断优先级（4/8/16/31） |
+| EVT | Event Type | 事件类型，包括 TIMER/NOTIFY_SIGNAL/NOTIFY_WAIT/EXIT_BOOT_SERVICES |
+| EBS | Exit Boot Services | 固件→OS 的不可逆交接点，之后 gBS 完全失效 |
+| DEPEX | Dependency Expression | 栈式字节码求值，决定驱动是否被 Dispatcher 加载 |
+| BDS | Boot Device Selection | 启动设备选择，负责枚举 BootOrder 并加载 OS Loader |
+| ESB | ExitBootServices Event | ExitBootServices 回调事件，驱动在此停止 DMA、设备复位 |
+
+---
+
 ## 1. 事件：UEFI 的通知机制
 
 ### 1.1 事件类型与创建
@@ -352,12 +364,12 @@ EFI_STATUS EFIAPI LinuxStubEntryPoint (
   //    包括：identity mapping of all of DRAM + kernel text mapping
 
   // ---- Step 6: 调用 ExitBootServices (不可逆) ----
-  //    MapKey 必须匹配——这是为什么上面 GetMemoryMap 要放进 do-while 循环
+  //    MapKey 必须匹配——详细的重试循环见 §5.5
   Status = gBS->ExitBootServices (ImageHandle, MapKey);
   if (EFI_ERROR (Status)) {
     // MapKey 在 GetMemoryMap 之后变了 (又有人调了 AllocatePages/InstallProtocol)
-    // → 必须重新 GetMemoryMap → 重新 ExitBootServices
-    goto RetryGetMemoryMap;
+    // → 必须重新 GetMemoryMap → 重新 ExitBootServices（实际代码用 do-while 重试）
+    CpuDeadLoop ();  // 简化版：ESB 失败直接挂起（完整逻辑见 §5.5）
   }
 
   // ==== 从这一行起：gBS = 非法，任何 Boot Services 调用都是未定义行为 ====
@@ -383,27 +395,21 @@ Status = EFI_SUCCESS;
 UINTN  RetryCount = 0;
 
 do {
-  // 每一次重试都必须重新 GetMemoryMap——MapKey 可能已过期
   MemoryMapSize = 0;
   Status = gBS->GetMemoryMap (&MemoryMapSize, MemoryMap, &MapKey,
                                &DescSize, &DescVersion);
   if (Status == EFI_BUFFER_TOO_SMALL) {
     if (MemoryMap) { gBS->FreePool (MemoryMap); }
     MemoryMap = AllocatePool (MemoryMapSize);
-    continue;   // ← 重新循环：AllocatePool 改了 MapKey！
+    continue;
   }
   if (EFI_ERROR (Status)) {
     DEBUG ((DEBUG_ERROR, "GetMemoryMap failed: %r\n", Status));
-    goto Fail;
+    return Status;  // 获取内存映射失败，无法继续
   }
 
-  // 必须使用刚获取的 MapKey——旧的 MapKey 在 AllocatePool 之后就过期了
   Status = gBS->ExitBootServices (ImageHandle, MapKey);
-
-  // ExitBootServices 成功后不应该执行到这里
   if (Status == EFI_INVALID_PARAMETER) {
-    // MapKey 过期了 → 有人调了 Boot Service (AllocatePool 之类)
-    // 这是预期内的情况，重试即可
     RetryCount++;
   }
 } while (Status == EFI_INVALID_PARAMETER && RetryCount < 5);

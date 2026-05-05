@@ -1,6 +1,18 @@
 # 04 — Handle / Protocol：核心通信模型
 
-> Handle 是装 Protocol 的容器，Protocol 是贴在 Handle 上的能力标签。所有驱动通过 GUID 在 Handle 数据库里互相发现，不直接依赖对方的存在。这是你要理解的第一优先级概念——后面的驱动编写、事件通知、TP 级别，全都构建在它之上。
+> Handle 是装 Protocol 的容器，Protocol 是贴在 Handle 上的能力标签。所有驱动通过 GUID 在 Handle 数据库里互相发现，不直接依赖对方的存在。这是你要理解的第一优先级概念——后面的驱动编写、事件通知、TPL 级别，全都构建在它之上。
+
+### 关键术语
+| 缩写 | 全称 | 含义 |
+|------|------|------|
+| GUID | Globally Unique Identifier | 全局唯一标识符，128 位值，标识 Protocol、文件等一切实体 |
+| PciIo | PCI I/O Protocol | 抽象 PCI 设备配置空间和 MMIO 访问的 Protocol |
+| BlockIo | Block I/O Protocol | 抽象块设备（磁盘）读写操作的 Protocol |
+| DriverBinding | Driver Binding Protocol | 驱动声明"我能管理哪些设备"的三回调 Protocol |
+| DEPEX | Dependency Expression | 依赖表达式字节码，决定驱动加载顺序 |
+| BY_DRIVER | Open Protocol By Driver | 标记当前驱动对某 Protocol 的控制权声明 |
+
+---
 
 ## 1. 核心概念
 

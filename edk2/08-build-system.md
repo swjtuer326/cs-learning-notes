@@ -2,6 +2,19 @@
 
 > 之前写驱动时，DEC/DSC/INF/FDF 只是"照搬模板"。这篇讲清它们的配合机制：四种元数据文件各自解决什么问题，Library Class/Instance 的绑定意味着什么，以及 AutoGen 如何把"声明"翻译成"可编译的 C 代码"。
 
+### 关键术语
+| 缩写 | 全称 | 含义 |
+|------|------|------|
+| DEC | Package Declaration | 包声明文件，定义包对外暴露的 GUID/PCD/LibraryClass |
+| DSC | Platform Description | 平台描述文件，决定库绑定、PCD 值、包含哪些模块 |
+| INF | Module Information | 模块信息文件，描述源码列表、依赖的 Library/Protocol、DEPEX |
+| FDF | Flash Definition | Flash 布局文件，定义物理分区和固件卷内的模块列表 |
+| FV | Firmware Volume | 固件卷，Flash 中按 FFS (Firmware File System) 格式存储的映像分区 |
+| FD | Flash Device | Flash 设备，FDF 中的物理存储抽象 |
+| PCD | Platform Configuration Database | 平台配置数据库，构建时/运行时可配的平台常量 |
+
+---
+
 ## 1. 四种元数据文件的分工
 
 EDK2 的构建是**声明式**的——你告诉构建系统"要编译什么"，而不是"怎么编译"。四种元数据文件各司其职，范围层层收窄：

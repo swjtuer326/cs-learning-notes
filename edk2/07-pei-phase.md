@@ -2,6 +2,19 @@
 
 > PEI 是在 DDR 初始化之前的阶段。你只有几十 KB 的临时 RAM（Cache-as-RAM，CAR），却需要初始化内存控制器、构建内存描述 HOB、定位 DXE Core 映像。这篇讲 PEIM 怎么写、PPI 怎么用、HOB 如何从 PEI 流通到 DXE，以及"极简主义"到底意味着什么——**全部用可编译代码**。
 
+### 关键术语
+| 缩写 | 全称 | 含义 |
+|------|------|------|
+| PEI | Pre-EFI Initialization | EFI 前初始化，DDR 初始化前的过渡阶段 |
+| PEIM | PEI Module | PEI 阶段的可加载模块，类比 DXE Driver |
+| PPI | PEIM-to-PEIM Interface | PEI 阶段的通信接口（单实例，无引用计数） |
+| HOB | Hand-Off Block | PEI→DXE 传递资源描述的链表 |
+| CAR | Cache-as-RAM | 将 CPU Cache 配置为临时 RAM，PEI 阶段唯一可用"内存" |
+| FDT | Flattened Device Tree | 设备树的扁平化表示 (DTB)，PEI 解析的内存映射来源 |
+| FV | Firmware Volume | 固件卷，Flash 中存储 PEIM/DXE Core 映像的分区 |
+
+---
+
 ## 1. PEI vs. DXE：根本区别
 
 | | DXE Driver | PEIM |
@@ -158,6 +171,7 @@ typedef struct {
 #define FDT_END_NODE    0x00000002
 #define FDT_PROP        0x00000003
 #define FDT_NOP         0x00000004
+#define FDT_END         0x00000009
 
 STATIC UINT32 Fdt32ToCpu (UINT32 V) {
   // PEI 单字节处理大端 (lw + swap) — 简单实现
@@ -200,27 +214,12 @@ STATIC VOID ParseMemoryNode (
   }
 }
 
-// ── 解析 /cpus 节点中的 cpu 子节点，构建 GUID HOB ──
+// ── Hart 信息结构 (与 DXE HART_INFO 兼容，见 09 §5.2) ──
 typedef struct {
   UINT32 HartId;
   UINT32 AcpiUid;
   CHAR8  IsaString[128];
-} PEI_HART_INFO;  // 注意：与 DXE HART_INFO (09 §5.2) 一致，版本兼容
-
-STATIC VOID ParseCpuNode (
-  IN UINT8 *Fdt, IN UINT8 *PropStart, IN UINT32 PropLen,
-  IN PEI_HART_INFO *Hart, IN UINTN *HartIdx)
-{
-  // /cpus/cpu@N 节点的属性: reg = <HartId>; riscv,isa = "rv64..."
-  // 在 FDT 结构区，cpu 节点的 reg 属性值是 HartId
-  UINT64 HartId = Fdt64ToCpu (*(UINT64*)PropStart);
-
-  Hart->HartId = (UINT32)HartId;
-  Hart->AcpiUid = (UINT32)(*HartIdx);
-
-  // ISA 字符串从 FDT strings 块获取 (见下面主循环中的逻辑)
-  // 此处假定主循环已在扫描, Hart 结构已部分填充
-}
+} PEI_HART_INFO;
 
 // ── 主 PEIM 入口点 ──
 EFI_STATUS EFIAPI FdtPeimEntryPoint (
@@ -302,18 +301,16 @@ EFI_STATUS EFIAPI FdtPeimEntryPoint (
 
     } else if (Token == FDT_NOP) {
       // NOP → skip
-
-    } else if (Token == FDT_END_NODE) {
-      // 已在上面处理了
+    } else if (Token == FDT_END) {
+      // FDT token 流终止——正常退出
+      break;
     } else {
       // 未知 token → FDT 扫描错误
       DEBUG ((DEBUG_ERROR, "PEI: Bad FDT token 0x%x at offset %ld\n",
               Token, Ptr - StructBlock));
       break;
-    }
-
-    // FDT token 序列最后以 0x00000009 (FDT_END) 结束
   }
+}
 
   // — 构建 GUID HOB，传递 Hart 信息给 DXE（供 ACPI 表构造使用） —
   //   对应 [09 §5.2](09-riscv-porting.md) 的 HART_INFO 结构

@@ -390,8 +390,7 @@ STATIC EFI_ACPI_RHCT_NODE_STRUCTURE * BuildRhctHartNode (
   Node->Length  = (UINT16)NodeSize;
   Node->Revision = 1;
 
-  // Hart Info 特有字段 (紧随 Node 通用头) — offset + NumOffsets + ISA_str
-  // 按 RHCT 规范: byte 20 = AffinityId, byte 24 = NumOffsets, byte 26 = offsets
+  // Hart Info 特有字段 (紧随 Node 通用头): NumOfOffsets + AffinityId + Offsets
   UINT8  *HartData = ((UINT8*)Node) + sizeof (EFI_ACPI_RHCT_NODE_STRUCTURE);
   *(UINT16*)(HartData)     = 1;            // NumOfOffsets = 1 (只有一个 ISA string)
   *(UINT32*)(HartData + 2) = Hart->AcpiUid; // AffinityId = ACPI Processor UID

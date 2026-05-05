@@ -2,6 +2,17 @@
 
 > 不直接从 "写 HelloWorld 驱动" 开始。先理解 UEFI 解决的是谁的什么问题，EDK2 在其中的位置，以及贯穿始终的核心设计原则。这些是理解后续所有代码的基础。
 
+### 关键术语
+| 缩写 | 全称 | 含义 |
+|------|------|------|
+| UEFI | Unified Extensible Firmware Interface | 统一可扩展固件接口，取代传统 BIOS 的固件规范 |
+| PI | Platform Initialization | UEFI 平台初始化规范，定义 SEC→PEI→DXE→BDS→RT 五个阶段 |
+| DXE | Driver Execution Environment | 驱动执行环境，加载并执行设备驱动，构建 Protocol 数据库 |
+| BDS | Boot Device Selection | 启动设备选择，按 BootOrder 加载 OS Loader |
+| PEI | Pre-EFI Initialization | EFI 前初始化，在无 DDR 时用 Cache-as-RAM 初始化内存控制器 |
+| SEC | Security Phase | 安全阶段，CPU 上电后第一段代码，建立临时栈并移交 PEI |
+| GUID | Globally Unique Identifier | 全局唯一标识符，128 位值，UEFI 中用于标识一切（Protocol/文件/PCD） |
+
 ## 1. BIOS 的尽头
 
 传统 BIOS（Basic Input/Output System）诞生于 1981 年的 IBM PC。它完成三件事：
