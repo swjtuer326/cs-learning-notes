@@ -142,12 +142,12 @@
 **颜色体系**（语义化 classDef）：
 
 ```
-成功/正常:  fill:#d4edda, stroke:#28a745, color:#155724    (绿色系)
-警告/注意:  fill:#fff3cd, stroke:#ffc107, color:#856404    (黄色系)
-错误/异常:  fill:#f8d7da, stroke:#dc3545, color:#721c24    (红色系)
-信息/说明:  fill:#d1ecf1, stroke:#17a2b8, color:#0c5460    (蓝色系)
-处理/流程:  fill:#cce5ff, stroke:#007bff, color:#004085    (蓝色系)
-中性/默认:  fill:#e2e3e5, stroke:#6c757d, color:#383d41    (灰色系)
+成功/正常:  fill:#d1fae5, stroke:#059669, color:#065f46    (绿色系)
+警告/注意:  fill:#fef3c7, stroke:#d97706, color:#92400e    (黄色系)
+错误/异常:  fill:#fee2e2, stroke:#dc2626, color:#991b1b    (红色系)
+信息/说明:  fill:#cffafe, stroke:#0891b2, color:#155e75    (蓝色系)
+处理/流程:  fill:#dbeafe, stroke:#2563eb, color:#1e40af    (蓝色系)
+中性/默认:  fill:#f1f5f9, stroke:#64748b, color:#334155    (灰色系)
 ```
 
 - 同一文档内颜色语义必须一致
@@ -159,7 +159,7 @@
 每个图表**必须**包含 `%%{init}%%` 配置，统一使用以下主题：
 
 ```
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#ECECFF", "primaryTextColor": "#333333", "primaryBorderColor": "#9370DB", "lineColor": "#666666", "secondaryColor": "#ffffde", "secondaryBorderColor": "#aaaa33", "tertiaryColor": "#f0f0f0", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 ```
 
 ### 6.4 命名
