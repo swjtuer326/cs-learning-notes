@@ -116,6 +116,23 @@ EFI_STATUS EFIAPI ProducerEntryPoint (
 
 `EFI_NATIVE_INTERFACE` 表示这是一个普通的 Protocol 实例（不是 notification 回调）。其他取值用于更高级的场景。
 
+**一次安装多个 Protocol**：设备 Handle 几乎总是同时需要多个 Protocol（如 DevicePath + PciIo）。用 `InstallMultipleProtocolInterfaces`：
+
+```c
+// 总线驱动扫描到一个设备 → 创建 Handle → 一次贴多个标签
+EFI_HANDLE  DeviceHandle = NULL;
+
+gBS->InstallMultipleProtocolInterfaces (
+       &DeviceHandle,
+       &gEfiPciIoProtocolGuid,       &mPciIoInstance,     // (GUID, 实例) 对
+       &gEfiDevicePathProtocolGuid,  &mDevicePathInstance,
+       NULL                           // NULL 终结符——不是参数，是列表终止
+       );
+// DeviceHandle 现在对 PCI 总线来说有 PciIo，对 BDS 来说有 DevicePath
+```
+
+> ⚠️ 最后一个参数必须是 `NULL`——它不是 Protocol 实例指针，而是告诉 API "列表在此终止"。忘了写 NULL → API 会把栈上的随机值当 GUID 去比较 → 未定义行为。
+
 ### 2.2 查找 Protocol
 
 三种查找方式对应三种使用场景：

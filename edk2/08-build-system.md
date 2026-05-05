@@ -165,7 +165,115 @@ build -a RISCV64 -p MyPkg/MyPkg.dsc -t GCC5 -m MyPkg/Drivers/MyDriver/MyDriver.i
 build clean && build ...  # 全量重构建
 ```
 
-## 8. CI 系统
+## 8. 完整示例：UART16550 驱动的四种元数据
+
+以 [05 §3](05-first-driver.md) 的 NS16550 UART 驱动为例，四个文件如何配合：
+
+### MyPkg.dec（包声明——定义"有什么可用"）
+
+```ini
+[Defines]
+  DEC_SPECIFICATION = 0x0001001B
+  PACKAGE_NAME      = MyPkg
+  PACKAGE_GUID      = 3F7E8D9A-B1C2-4D5E-6F7A-8B9C0D1E2F3A
+
+[Includes]
+  Include                        # 公开头文件路径 (MyPkg/Include/ → MyPkg/Include/Protocol/UartIo.h)
+
+[Protocols]
+  gMyProtocolGuid          = { 0xABCD1234, 0x5678, 0x9ABC, { 0xDE, 0xF0, 0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC }}
+  gMyUartIoProtocolGuid    = { 0x8A2B1C3D, 0x4E5F, 0x6A7B, { 0x8C, 0x9D, 0x0E, 0x1F, 0x2A, 0x3B, 0x4C, 0x5D }}
+
+[PcdsFixedAtBuild]
+  gMyPkgTokenSpaceGuid.PcdUartDefaultBaudRate|115200|UINT32|0x00000001
+```
+
+### MyPkg.dsc（平台配置——决定"用什么实现"）
+
+```ini
+[Defines]
+  PLATFORM_NAME           = MyPlatform
+  SUPPORTED_ARCHITECTURES = RISCV64
+  BUILD_TARGETS           = DEBUG|RELEASE
+  FLASH_DEFINITION        = MyPkg/MyPkg.fdf
+
+[LibraryClasses]
+  DebugLib|MdePkg/Library/BaseDebugLibSerialPort/BaseDebugLibSerialPort.inf
+  BaseLib|MdePkg/Library/BaseLib/BaseLib.inf
+  MemoryAllocationLib|MdePkg/Library/UefiMemoryAllocationLib/UefiMemoryAllocationLib.inf
+
+[LibraryClasses.common.DXE_DRIVER]
+  UefiDriverEntryPoint|MdePkg/Library/UefiDriverEntryPoint/UefiDriverEntryPoint.inf
+  UefiBootServicesTableLib|MdePkg/Library/UefiBootServicesTableLib/UefiBootServicesTableLib.inf
+
+[PcdsFixedAtBuild]
+  gEfiMdePkgTokenSpaceGuid.PcdDebugPrintErrorLevel|0x8000000F  # DEBUG_INFO + 以上
+
+[Components]
+  MyPkg/Drivers/HelloWorldDxe/HelloWorldDxe.inf
+  MyPkg/Drivers/ProducerDxe/ProducerDxe.inf
+  MyPkg/Drivers/ConsumerDxe/ConsumerDxe.inf
+  MyPkg/Drivers/Uart16550Dxe/Uart16550Dxe.inf
+  MyPkg/Drivers/UartTestDxe/UartTestDxe.inf
+```
+
+### Uart16550Dxe.inf（模块定义——"这个模块需要什么"）
+
+```ini
+[Defines]
+  INF_VERSION    = 0x00010005
+  BASE_NAME      = Uart16550Dxe
+  MODULE_TYPE    = DXE_DRIVER           # 决定入口签名 (ImageHandle + SystemTable)
+  ENTRY_POINT    = Uart16550EntryPoint
+
+[Sources]    Uart16550Dxe.c
+
+[Packages]   MdePkg/MdePkg.dec  MyPkg/MyPkg.dec
+
+[LibraryClasses]
+  UefiDriverEntryPoint                   # → 入口点设 gST
+  UefiBootServicesTableLib               # → 入口点设 gBS
+  DebugLib                               # → DEBUG 宏
+  BaseLib                                # → MmioRead8 / MmioWrite8
+  MemoryAllocationLib                    # → AllocateZeroPool
+
+[Protocols]
+  gEfiPciIoProtocolGuid                  # 消费: 读 BAR、查 Class Code
+  gEfiDriverBindingProtocolGuid          # 安装: 声明自己是 DriverBinding 驱动
+  gMyUartIoProtocolGuid                  # 安装: 暴露 UART 写/读接口
+
+[Depex]   gEfiPciIoProtocolGuid          # PCI 总线已在位 → 才有 PciIo 可用
+```
+
+### MyPkg.fdf（Flash 布局——"这些 .efi 放在 Flash 哪个位置"）
+
+```ini
+[FD.Main]
+  BaseAddress = 0x20000000 | Size = 0x00800000    # 8MB Flash
+  BlockSize    = 0x00001000                       # 4KB erase block
+
+  # 分区: 起始偏移 | 大小
+  0x00000000|0x00800000
+  FV = CODE                                      # 固件卷 CODE 占整个 Flash
+
+[FV.CODE]
+  FvNameGuid  = 7C1E8B3A-9D4F-5A6B-8C9D-0E1F2A3B4C5D
+  BlockSize   = 0x00001000      # 必须与 FD BlockSize 一致
+
+  # ── 固件卷中的模块列表（构建系统按此顺序打包） ──
+  INF MdeModulePkg/Core/Dxe/DxeMain.inf               # DXE Core 最先
+  INF MyPkg/Drivers/HelloWorldDxe/HelloWorldDxe.inf
+  INF MyPkg/Drivers/ProducerDxe/ProducerDxe.inf         # 安装 MY_PROTOCOL
+  INF MyPkg/Drivers/ConsumerDxe/ConsumerDxe.inf         # 用通知回调等待 MY_PROTOCOL
+  INF MyPkg/Drivers/Uart16550Dxe/Uart16550Dxe.inf       # UART 硬件驱动
+  INF MyPkg/Drivers/UartTestDxe/UartTestDxe.inf         # 测试: 枚举 UART → 写 "OK\n"
+```
+
+**数据流向回顾**：DEC 声明 GUID "存在" → INF 引用 GUID "我要用/我安装了" → DSC 绑定实现在 "用哪个库" → FDF 分配 Flash 位置 "在哪执行"。四个文件缺一不可——DSC 不加 `[Components]` 你的模块不会被编译，FDF 不加 `INF` 编译出的 .efi 不会打包进 ROM。
+
+---
+
+## 9. CI 系统
 
 EDK2 源码仓库使用基于 **Stuart/PyTool** 的 CI 框架（`.pytool/CISettings.py`）在多平台上自动构建并检查 GUID 唯一性、库声明合法性、编码格式等。参与上游开发时，通过插件链式执行 `stuart_setup` → `stuart_update` → `stuart_ci_build` 确保改动不破坏现有平台。
 
