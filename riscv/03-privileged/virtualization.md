@@ -192,7 +192,7 @@ hgatp 布局 (RV64):
  63    60 59      44 43             0
 ┌─────────┬──────────┬───────────────┐
 │  MODE   │   VMID   │     PPN       │
-│  [4 bit]│ [14 bit] │   [44 bit]    │
+│  [4 bit]│ [16 bit] │   [44 bit]    │
 └─────────┴──────────┴───────────────┘
 
 MODE:
@@ -201,7 +201,7 @@ MODE:
   1001 = Sv48x4（49 位 GPA，4 级页表，根页表 1024 项）
   1010 = Sv57x4（58 位 GPA，5 级页表，根页表 1024 项）
 
-VMID: 虚拟机 ID，用于 TLB 标记，避免 VM 切换时刷新全部 TLB
+VMID: 虚拟机 ID，用于 TLB 标记，避免 VM 切换时刷新全部 TLB（字段宽度 16 位，有效位数由实现决定，QEMU RV64 实现为 14 位）
 PPN:  第二阶段页表的根物理页号
 ```
 
@@ -624,7 +624,7 @@ graph TD
 | **VM 切换指令** | sret | VMLAUNCH/VMRESUME | ERET |
 | **中断注入** | hvip 位写入 | VMCS 字段 | HCR_EL2 位 |
 | **IOMMU** | RISC-V IOMMU | VT-d | SMMU |
-| **TLB 标记** | VMID (14-bit) | VPID (16-bit) | VMID (8/16-bit) |
+| **TLB 标记** | VMID (16-bit 字段，有效位数由实现决定) | VPID (16-bit) | VMID (8/16-bit) |
 | **设计风格** | CSR 寄存器为主 | VMCS 结构体 | 系统寄存器 |
 
 > **RISC-V 的优势：** H 扩展的设计更加简洁，通过 CSR 寄存器直接控制，没有 x86 VMCS 那样的复杂状态结构，实现更简单。

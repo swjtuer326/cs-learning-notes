@@ -471,7 +471,7 @@ trap_entry_nested:
 
 | 要点 | 说明 |
 |------|------|
-| 复位状态 | M-mode，中断全关，PC=0x80000000（QEMU） |
+| 复位状态 | M-mode，中断全关，PC=0x1000（QEMU virt 复位向量，ROM 跳转到 0x80000000） |
 | Trap 栈切换 | `csrrw sp, mscratch, sp` 原子交换 |
 | 上下文保存 | 保存所有通用寄存器，共 256 字节 |
 | 定时器中断 | CLINT mtimecmp，注意 64-bit 写入顺序 |

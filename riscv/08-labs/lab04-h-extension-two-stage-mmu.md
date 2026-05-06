@@ -211,7 +211,7 @@ done:
 #define HGATP_MODE_SV39X4   (8ULL << 60)
 
 struct kvm_mmu_page {
-    uint64_t spt[512];  /* Stage-2 page table */
+    uint64_t spt[1024]; /* Stage-2 page table (Sv39x4 root = 1024 entries) */
 };
 
 /* 建立 GPA → HPA 映射（第二阶段） */
@@ -222,29 +222,29 @@ void kvm_riscv_stage2_map_page(struct kvm *kvm,
     uint64_t *table = root->spt;
 
     /* Sv39x4: 3 级页表（根页表 1024 项） */
-    /* Level 3 (root): GPA[39:30], 10-bit index, 1024 entries */
-    uint64_t idx3 = (gpa >> 30) & 0x3FF;
-    uint64_t pte3 = table[idx3];
-    if (!(pte3 & PTE_V)) {
+    /* Level 2 (root): GPA[39:30], 10-bit index, 1024 entries */
+    uint64_t idx2_root = (gpa >> 30) & 0x3FF;
+    uint64_t pte2_root = table[idx2_root];
+    if (!(pte2_root & PTE_V)) {
         struct kvm_mmu_page *new = alloc_stage2_page();
-        table[idx3] = make_pte(virt_to_phys(new), PTE_V);
-        pte3 = table[idx3];
+        table[idx2_root] = make_pte(virt_to_phys(new), PTE_V);
+        pte2_root = table[idx2_root];
     }
-    table = phys_to_virt((pte3 >> PTE_PPN_SHIFT) << 12);
+    table = phys_to_virt((pte2_root >> PTE_PPN_SHIFT) << 12);
 
-    /* Level 2: GPA[29:21], 9-bit index */
-    uint64_t idx2 = (gpa >> 21) & 0x1FF;
-    uint64_t pte2 = table[idx2];
-    if (!(pte2 & PTE_V)) {
+    /* Level 1: GPA[29:21], 9-bit index */
+    uint64_t idx1 = (gpa >> 21) & 0x1FF;
+    uint64_t pte1 = table[idx1];
+    if (!(pte1 & PTE_V)) {
         struct kvm_mmu_page *new = alloc_stage2_page();
-        table[idx2] = make_pte(virt_to_phys(new), PTE_V);
-        pte2 = table[idx2];
+        table[idx1] = make_pte(virt_to_phys(new), PTE_V);
+        pte1 = table[idx1];
     }
-    table = phys_to_virt((pte2 >> PTE_PPN_SHIFT) << 12);
+    table = phys_to_virt((pte1 >> PTE_PPN_SHIFT) << 12);
 
-    /* Level 1 (leaf): GPA[20:12], 9-bit index */
-    uint64_t idx1 = (gpa >> 12) & 0x1FF;
-    table[idx1] = make_pte(hpa, flags | PTE_V | PTE_A | PTE_D);
+    /* Level 0 (leaf): GPA[20:12], 9-bit index */
+    uint64_t idx0 = (gpa >> 12) & 0x1FF;
+    table[idx0] = make_pte(hpa, flags | PTE_V | PTE_A | PTE_D);
 }
 
 /* VM 切换时写 hgatp */

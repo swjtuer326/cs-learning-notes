@@ -15,19 +15,25 @@
 
 ## 1. 特权级概览
 
-RISC-V 定义了三级特权模式（加上 H 扩展共四级）：
+RISC-V 定义了三级特权模式（M/S/U）；H 扩展在 S-mode 基础上增加虚拟化支持，新增 VS 和 VU 两个虚拟化模式，共五个运行模式：
 
 ```mermaid
 graph TB
     M["Machine Mode (M)<br/>最高特权级<br/>完全控制硬件"]
-    S["Supervisor Mode (S)<br/>操作系统内核<br/>管理虚拟内存和进程"]
+    HS["HS-mode (Hypervisor Extended S)<br/>Hypervisor / Host OS<br/>管理虚拟机和两阶段翻译"]
+    VS["VS-mode (Virtual Supervisor)<br/>Guest OS 内核<br/>与 S-mode 视角相同，但受限"]
+    VU["VU-mode (Virtual User)<br/>Guest 用户程序<br/>与 U-mode 视角相同"]
     U["User Mode (U)<br/>用户程序<br/>受限访问"]
 
-    M --> |"委托"| S
-    S --> |"系统调用 ecall"| U
+    M --> |"委托"| HS
+    HS --> |"sret (SPV=1)"| VS
+    VS --> |"sret"| VU
+    HS --> |"ecall"| U
 
     style M fill:#ff6b6b,color:#fff
-    style S fill:#ffa502,color:#fff
+    style HS fill:#ffa502,color:#fff
+    style VS fill:#4ecdc4,color:#fff
+    style VU fill:#a4b0be,color:#333
     style U fill:#4ecdc4,color:#fff
 ```
 
@@ -36,7 +42,11 @@ graph TB
 | **U (User)** | 00 | 用户态应用程序 | 只能访问 U 级 CSR，不能执行特权指令 |
 | **S (Supervisor)** | 01 | 操作系统内核 | 可访问 S 级和 U 级 CSR，管理虚拟内存 |
 | **M (Machine)** | 11 | 固件/BIOS (OpenSBI) | 完全控制硬件，可访问所有 CSR |
-| **HS (Hypervisor)** | — | 虚拟机监控器 | H 扩展，管理虚拟机 |
+| **HS (Hypervisor Extended S)** | 01（与 S 共享） | 虚拟机监控器 / Host OS | H 扩展启用后的 S-mode，管理 Guest 和两阶段翻译 |
+| **VS (Virtual Supervisor)** | 01（与 S 共享） | Guest OS 内核 | 与 S-mode 视角相同，但受 HS-mode 约束 |
+| **VU (Virtual User)** | 00（与 U 共享） | Guest 用户程序 | 与 U-mode 视角相同 |
+
+> **编码共享说明：** HS 与 S 共享编码 01，VS 与 S/HS 共享编码 01，VU 与 U 共享编码 00。硬件通过 `hstatus.SPV` 位区分当前处于 HS-mode 还是 VS-mode：SPV=0 时为 HS-mode，SPV=1 时为 VS/VU-mode。
 
 ### 类比理解
 
@@ -326,7 +336,7 @@ MODE:
   1001 = Sv48（48 位虚拟地址，4 级页表）
   1010 = Sv57（57 位虚拟地址，5 级页表）
 
-ASID: 地址空间标识符（16 位），用于 TLB 标记
+ASID: 地址空间标识符（16 位字段，有效位数由实现决定），用于 TLB 标记
 PPN:  页表根节点的物理页号
 ```
 
@@ -507,7 +517,7 @@ RISC-V 定义了一个独立于 M/S/U 的 **Debug Mode**（调试模式），用
 
 | 要点 | 说明 |
 |------|------|
-| 三级特权 | M（固件）> S（内核）> U（应用） |
+| 三级特权 | M（固件）> S（内核）> U（应用）；H 扩展新增 VS/VU，共五个运行模式 |
 | CSR 地址编码 | 高 2 位表示权限，硬件自动检查 |
 | mstatus 是核心 | 控制中断使能、特权级保存、内存特权 |
 | trap 处理流程 | 硬件保存现场 → 跳转处理 → mret/sret 恢复 |
