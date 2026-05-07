@@ -129,6 +129,8 @@ trap_exit:
 
 ## 3. 中断控制器
 
+trap handler 负责统一调度和分发，但实际的中断信号来源于硬件控制器。RISC-V 定义了 CLINT 和 PLIC 两级中断控制器，分别管理本地中断和外部设备中断：
+
 ### 3.1 CLINT（Core Local Interruptor）
 
 CLINT 处理**每个核心本地**的中断：
@@ -299,6 +301,8 @@ nested_trap_entry:
 
 ## 5. S-mode 的中断处理
 
+前面讨论的中断嵌套是 M-mode 的高级用法。但在实际系统中，大部分中断最终由操作系统（S-mode）处理。M-mode 通过委托机制将中断下放，S-mode 拥有一套对称的 CSR（sip/sie/scause 等）来完成自己的 trap 处理。
+
 ### 5.1 中断路由
 
 ```mermaid
@@ -357,7 +361,7 @@ S-mode (Linux):
 
 ## 6. ecall：系统调用的实现
 
-ecall 是用户态请求内核服务的机制：
+中断与异常都是被动触发的——前者来自外部，后者是执行错误。而 `ecall` 是软件主动请求特权级提升的唯一方式，也是用户态与内核之间唯一的合法"大门"。
 
 ```mermaid
 sequenceDiagram

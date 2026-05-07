@@ -80,8 +80,9 @@ U-mode = 普通员工
 > **服务器场景重点：** 在服务器虚拟化场景中，HS-mode 运行 Host Linux + KVM，VS-mode 运行 Guest OS，VU-mode 运行 Guest 用户态。理解 HS/VS/VU 的关系是掌握 RISC-V 服务器虚拟化的基础。详见 [虚拟化专题](./virtualization.md)。
 
 ---
-
 ## 2. CSR 寄存器地址编码
+
+理解了特权级的角色分工之后，接下来需要认识每个特权级的具体"工具箱"——CSR（Control and Status Register，控制与状态寄存器）。这些寄存器是 CPU 内部的特权资源，不同特权级只能访问属于自己的 CSR，硬件通过地址编码来强制这个访问规则。
 
 CSR 地址是 12 位（0x000 - 0xFFF），编码规则如下：
 
@@ -117,8 +118,9 @@ CSR 地址: [11:10] [9:8] [7:0]
 > **访问规则：** 低特权级不能访问高特权级的 CSR，否则触发非法指令异常。高特权级可以访问低特权级的 CSR。
 
 ---
-
 ## 3. CSR 指令
+
+了解了 CSR 的地址编码规则后，还需要知道如何读写它们。RISC-V 提供了专门的 CSR 指令集，支持原子读写、置位和清位操作，这些都是操作 CSR 的唯一途径。
 
 | 指令 | 功能 | 等价伪代码 |
 |------|------|-----------|
@@ -147,8 +149,9 @@ csrrs t1, mstatus, t0    # 原子地设置 bit 3，t1 = 旧值
 ```
 
 ---
-
 ## 4. M-mode 核心 CSR 详解
+
+掌握了 CSR 的读写指令后，我们来看 M-mode 中最核心的几个寄存器。M-mode 拥有最高特权，其 CSR 控制着 CPU 的全局状态——中断使能、异常处理、权限切换等都依赖于它们。
 
 ### 4.1 mstatus — 机器状态寄存器
 
@@ -292,7 +295,7 @@ csrrw  sp, mscratch, sp    # 交换 sp 和 mscratch
 
 ## 5. S-mode 核心 CSR 详解
 
-S-mode 的 CSR 与 M-mode 大致对称，前缀从 `m` 改为 `s`：
+M-mode 的 CSR 是固件的核心工具箱，而操作系统内核（S-mode）也需要自己的特权资源来管理用户程序。S-mode 的 CSR 与 M-mode 大致对称，前缀从 `m` 改为 `s`：
 
 | M-mode CSR | S-mode CSR | 说明 |
 |------------|------------|------|
@@ -346,6 +349,8 @@ PPN:  页表根节点的物理页号
 
 ## 6. 特权级切换
 
+前面逐一介绍了 M-mode 和 S-mode 的核心 CSR，但它们是"静态"的视角。接下来从"动态"角度，看这些寄存器是如何在特权级切换时协同工作的——trap 发生时硬件自动保存什么、mret/sret 返回时硬件恢复什么。这套机制是操作系统实现进程调度、系统调用和异常处理的基础。
+
 ### 6.1 特权级提升（trap 进入）
 
 ```mermaid
@@ -355,8 +360,16 @@ stateDiagram-v2
     S --> M: ecall / 异常 / 中断
     U --> M: 中断（如果未委托给 S）
 
-    note right of S: sstatus.SPP = 原特权级\nsepc = 原PC\nscause = 原因
-    note right of M: mstatus.MPP = 原特权级\nmepc = 原PC\nmcause = 原因
+    note right of S
+        sstatus.SPP = 原特权级
+        sepc = 原PC
+        scause = 原因
+    end note
+    note right of M
+        mstatus.MPP = 原特权级
+        mepc = 原PC
+        mcause = 原因
+    end note
 ```
 
 **trap 发生时硬件自动完成：**
@@ -487,7 +500,7 @@ graph TD
 
 ## 8. Debug Mode（调试模式）
 
-RISC-V 定义了一个独立于 M/S/U 的 **Debug Mode**（调试模式），用于 JTAG 调试器控制处理器：
+前面讨论的特权模式和 trap 委托机制都属于"正常执行流"下的 CPU 行为。但在开发、bring-up 和现场调试阶段，工程师还需要一种不依赖软件的外部控制能力。为此，RISC-V 定义了一个独立于 M/S/U 的 **Debug Mode**（调试模式），专门用于 JTAG 调试器控制处理器：
 
 | 特性 | 说明 |
 |------|------|

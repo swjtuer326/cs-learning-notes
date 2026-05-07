@@ -319,9 +319,11 @@ VM 切换时需要保存/恢复的 CSR：
 
 ## 5. KVM on RISC-V
 
+前面讨论的 VM 生命周期管理是理论模型。在 Linux 系统中，这个模型的具体实现就是 KVM——它将 H 扩展的硬件能力封装为标准的 Linux 接口，让 QEMU 等用户态 VMM 可以通过 `/dev/kvm` 创建和管理虚拟机。
+
 ### 5.1 架构概览
 
-Linux KVM 在 RISC-V 上的实现采用 Type-2 架构：
+KVM 在 RISC-V 上的实现采用 Type-2 架构：
 
 ```mermaid
 graph TB
@@ -409,6 +411,8 @@ sequenceDiagram
 ---
 
 ## 6. IOMMU（RISC-V IOMMU）
+
+KVM 负责 CPU 侧的虚拟化，但虚拟机的 I/O 安全同样重要——Guest 的 DMA 请求需要地址翻译和权限检查，防止恶意设备访问其他 VM 的内存。RISC-V IOMMU 就是为此而生的外设侧内存保护单元。
 
 ### 6.1 为什么需要 IOMMU？
 
@@ -585,6 +589,8 @@ cat /sys/module/kvm/version
 ---
 
 ## 9. 虚拟化性能优化
+
+QEMU 能让你快速验证功能，但生产环境中每一项 VM Exit 都直接转化为性能开销。以下优化技术是缩小虚拟化与裸机性能差距的关键。
 
 ### 9.1 常见优化技术
 

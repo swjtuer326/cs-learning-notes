@@ -63,7 +63,7 @@ satp     = 0（裸模式，不使用虚拟内存）
 
 ## 3. OpenSBI：RISC-V 的标准固件
 
-OpenSBI 是 RISC-V 官方的 M-mode 固件，类似于 x86 的 BIOS/UEFI。
+复位向量是硬件定义的起点，但 CPU 从这里能做的事情极其有限——需要初始化 DRAM、CSR、PMP，然后才能加载操作系统。在 RISC-V 生态中，OpenSBI 承担了这个角色，它是事实上的标准 M-mode 固件，类似于 x86 的 BIOS/UEFI。
 
 ### 3.1 OpenSBI 的三种运行模式
 
@@ -315,7 +315,7 @@ start_kernel()
 
 ## 6. RTOS 启动流程（以 Zephyr 为例）
 
-RTOS 的启动更简单，通常没有 Bootloader 阶段：
+Linux 的启动链涉及多级引导程序，步骤多、灵活性高。而 RTOS 面向的是资源受限的嵌入式场景，启动通常更直接——往往省去 Bootloader 阶段，固件直接从 ROM 跳转到 RTOS 本体。
 
 ```mermaid
 graph LR
@@ -342,7 +342,7 @@ Zephyr RISC-V 启动流程:
 
 ## 7. 服务器启动：UEFI + ACPI
 
-RISC-V 服务器场景采用 UEFI + ACPI 启动模式，与 x86 服务器保持一致，便于云部署和运维管理。
+嵌入式场景追求极简快速，而服务器场景更看重标准化和可管理性。RISC-V 服务器采用 UEFI + ACPI 启动模式，与 x86 服务器保持一致，便于云部署和运维管理。
 
 ### 7.1 服务器启动 vs 嵌入式启动
 
@@ -457,7 +457,7 @@ qemu-system-riscv64 \
 
 ## 8. 设备树（Device Tree）
 
-设备树是 RISC-V 系统传递硬件信息的主要方式（非 UEFI 场景），替代了硬编码。
+UEFI+ACPI 是服务器标准，但对于嵌入式和非 UEFI 场景，RISC-V 系统传递硬件信息的主流方式是 **设备树（Device Tree）**。它让操作系统脱离硬编码，通过解析外部的数据结构来发现硬件——一份内核镜像即可适配多种开发板。
 
 ### 8.1 为什么需要设备树？
 
