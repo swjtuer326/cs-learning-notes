@@ -417,11 +417,11 @@ RLHF 三阶段：
 ```
 以 GPT-175B 为例 (A100 × 1024 训练)：
 
-  数据并行 (DP) = 64        → 每个 DP 组有同样的数据，不同参数分片
+  数据并行 (DP) = 8         → 每个 DP 组有同样的数据，不同参数分片
   张量并行 (TP) = 8         → 每层的 Attention/MLP 在 8 张卡内切分
   流水线并行 (PP) = 16       → 模型切 16 段，每段 8 张卡（TP）
   ─────────────────────
-  总显卡 = 64 × 8 × 16 / (TP/PP 去重后) 的设计空间搜索
+  总显卡 = 8 × 8 × 16 = 1024
 
   关键约束：
   - TP 组内必须用 NVLink 互联（带宽 ~900 GB/s）
@@ -667,7 +667,7 @@ torch.compile 的工作流程：
 | **llama.cpp** | GGUF 量化格式 + CPU/GPU 混合推理 | 消费级设备部署 | 极致的量化方案 + 跨平台 |
 | **Ollama** | 封装 llama.cpp + 一键部署 | 本地 LLM 体验 | 易用性，但性能不如专业引擎 |
 
-### 3.5 关键维度：KV Cache 管理
+### 3.7 KV Cache 管理
 
 ```
 KV Cache 的生命周期与挑战：
@@ -931,7 +931,7 @@ Speculative Decoding:
   │   └────┬────┘  └────┬────┘  └────┬────┘  └────┬────┘   │
   │        │            │            │            │        │
   │   ═════╧════════════╧════════════╧════════════╧════    │
-  │              NVSwitch (全互联, 3.2 TB/s)                 │
+  │              NVSwitch (全互联, 3.6 TB/s)                 │
   │   ══════════════════════════════════════════════════    │
   │                       ↕                                  │
   │   ┌─────────────────────────────────────────────────┐   │
@@ -945,7 +945,7 @@ Speculative Decoding:
 | 互联技术 | 带宽 (单向/每链路) | 拓扑 | 特征 |
 |---------|-------------------|------|------|
 | **NVLink 4.0** | 100 GB/s | 全互联 (NVSwitch) | GPU-GPU 直接通信；TP 依赖 |
-| **NVSwitch 3.0** | 3.2 TB/s (全双工) | 多层 fat-tree / Clos | 域内任意 GPU 间等带宽 |
+| **NVSwitch 2.0** | 3.6 TB/s (全双工) | 多层 fat-tree / Clos | 域内任意 GPU 间等带宽 |
 | **NVLink-C2C** | 450 GB/s (Grace-Hopper) | 点对点 | CPU-GPU 一致性互联 |
 | **InfiniBand NDR400** | 400 Gbps | 自适应路由 | 超大规模集群标配；SHARP |
 | **RoCE v2** | 400 Gbps | ECMP | 以太网替代方案，成本低 |
@@ -1012,6 +1012,7 @@ Speculative Decoding:
 | 技术 | 带宽 | 关键变化 |
 |------|------|---------|
 | **NVLink 5.0 (Blackwell)** | 1.8 TB/s (双向) | 比 NVLink 4.0 翻倍 |
+| **NVSwitch 3.0** | 7.2 TB/s (域内全双工) | 支持 8 GPU 域内全互联 (DGX B200) |
 | **NVSwitch 4.0** | 14.4 TB/s (域内全双工) | 支持 72 GPU 域内全互联 (GB200 NVL72) |
 | **Ultra Ethernet Consortium (UEC)** | 目标 800G/1.6T | 开放标准替代 InfiniBand |
 | **Spectrum-X (NVIDIA)** | 400G | NVIDIA 的以太网方案，与 InfiniBand 互补 |

@@ -235,7 +235,7 @@ RLHF 的 PPO 目标可以重新参数化，直接用偏好数据优化策略，
   反解: r(x,y) = β × log(π*(y|x)/π_ref(y|x)) + β × log Z(x)
   
   代入 Bradley-Terry:
-  P(y_w > y_l) = σ(β × log(π_θ(y_w)/π_ref(y_w)) - β × log(π_θ(y_l)/π_ref(y_l)))
+  P(y_w > y_l | x) = σ(β × log(π_θ(y_w|x)/π_ref(y_w|x)) - β × log(π_θ(y_l|x)/π_ref(y_l|x)))
 
 DPO 损失函数:
   L_DPO = -E[log σ(β × log(π_θ(y_w|x)/π_ref(y_w|x)) 
