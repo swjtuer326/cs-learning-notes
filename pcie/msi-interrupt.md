@@ -3,6 +3,16 @@
 > 核心问题：PCIe设备如何高效地异步通知CPU？MSI/MSI-X在内核中如何实现？
 > 关联索引：[PCIe核心知识索引](./pcie-learning-resources.md) Phase 0, 5
 
+### 关键术语
+| 缩写 | 全称 | 含义 |
+|------|------|------|
+| MSI | Message Signaled Interrupt | 基于消息的中断，通过MemWr TLP投递 |
+| MSI-X | Message Signaled Interrupt Extended | MSI扩展版，支持更多向量和Per-Vector Mask |
+| APIC | Advanced Programmable Interrupt Controller | x86高级可编程中断控制器 |
+| ITS | Interrupt Translation Service | ARM GIC中的中断转换服务 |
+| LPI | Locality-specific Peripheral Interrupt | ARM GIC中的局部外设中断 |
+| IRTE | Interrupt Remapping Table Entry | 中断重映射表项，VT-d安全机制 |
+
 ---
 
 ## 0. 前置背景
@@ -68,7 +78,57 @@ Message Address (64-bit模式, 支持x2APIC):
   ...同上
 ```
 
-> 📌 ARM架构使用GIC ITS，MSI Address指向ITS的GITS_TRANSLATER寄存器，DeviceID由硬件自动附加（从BDF推导）。
+> ARM架构使用GIC ITS，MSI Address指向ITS的GITS_TRANSLATER寄存器，DeviceID由硬件自动附加（从BDF推导）。
+
+**ARM GIC ITS 工作流程**：
+
+GIC ITS (Interrupt Translation Service) 是ARM GICv3/v4中的MSI分发机制，与x86的Local APIC模型有本质区别：
+
+```
+x86 MSI路径:
+  设备 → MemWr TLP (Address=APIC地址, Data=向量号) → APIC → CPU中断
+
+ARM ITS MSI路径:
+  设备 → MemWr TLP (Address=ITS地址, Data=EventID) → ITS → 查表转换 → Redistributor → CPU中断
+```
+
+ITS的核心是三张表：
+
+| 表 | 存储位置 | 作用 |
+|---|---------|------|
+| Device Table | 内存 (由ITS管理) | DeviceID → ITT (Interrupt Translation Table) 索引 |
+| ITT | 内存 (由ITS管理) | EventID → LPI (Locality-specific Peripheral Interrupt) 号 |
+| Collection Table | 内存 (由ITS管理) | LPI → 目标Redistributor (即目标CPU) |
+
+**DeviceID的附加**：PCIe设备发出的MemWr TLP不携带DeviceID。ITS通过以下方式获取：
+- RC从TLP的Requester ID（BDF）推导DeviceID
+- 推导规则由`GITS_BASERn`中的DeviceID字段位数决定
+- 典型映射：DeviceID = (Bus << 8) | (Dev << 3) | Func，即BDF的低16位
+
+**LPI分配**：ITS为每个EventID分配一个LPI号（范围8192-2^32-1），LPI号通过Collection Table路由到目标CPU的Redistributor。驱动通过irqdomain API分配LPI，无需手动配置ITS表。
+
+**x2APIC 64-bit地址格式**：
+
+x2APIC将APIC ID从8位扩展到32位，支持更多CPU核心。对应的MSI地址格式也扩展为64位：
+
+```
+x2APIC MSI Address (64-bit):
+  [63:40] = 0 (保留)
+  [39:32] = Destination ID [31:8]   ← x2APIC扩展的高24位
+  [31:20] = 0xFEE                    ← APIC MMIO基址
+  [19:12] = Destination ID [7:0]     ← 原始8位
+  [11]    = RH (Redirection Hint)
+  [10]    = DM (Delivery Mode)
+  [9:0]   = 0 (保留)
+
+x2APIC MSI Data:
+  [63:32] = 0 (保留, 64-bit Data不使用高32位)
+  [31:16] = 0 (保留)
+  [15:8]  = Vector
+  [7:0]   = Delivery Mode | Trigger Mode | Level等
+```
+
+> x2APIC要求MSI Capability支持64-bit Address（bit7=1）。如果设备只支持32-bit MSI Address，则Destination ID限制为8位，最多255个CPU目标。Linux内核在x2APIC模式下自动选择64-bit地址格式。
 
 ---
 
@@ -77,6 +137,7 @@ Message Address (64-bit模式, 支持x2APIC):
 ### 1.1 中断演进
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
 graph LR
     INTx["INTx<br/>引脚中断<br/>4线共享"] --> MSI["MSI<br/>1-32向量<br/>无Per-Vector Mask"] --> MSIX["MSI-X<br/>1-2048向量<br/>Per-Vector Mask"]
 ```
@@ -206,6 +267,7 @@ static int pci_msi_supported(struct pci_dev *dev, int nvec)
 ### 2.4 驱动API演进
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
 graph TD
     OLD_MSI["旧API<br/>pci_enable_msi()<br/>pci_enable_msix_range()"] --> NEW["新API<br/>pci_alloc_irq_vectors()"]
     OLD_MSI -->|"单向量MSI"| DEV_IRQ["dev->irq"]
@@ -311,6 +373,7 @@ int pci_msi_setup_msi_irqs(struct pci_dev *dev, int nvec, int type)
 ```
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
 graph TD
     DRV["驱动调用<br/>pci_alloc_irq_vectors()"] --> CORE["MSI Core<br/>msi.c"]
     CORE --> CHECK["pci_msi_supported()"]
@@ -346,7 +409,35 @@ int nvec = pci_alloc_irq_vectors(dev, 4, 4, PCI_IRQ_MSI);
 
 > 多向量MSI要求连续的向量号，分配可能失败。MSI-X无此限制。
 
-### 3.2 中断亲和性
+### 3.2 MSI vs MSI-X 选择策略
+
+从驱动开发者视角，选择MSI还是MSI-X的决策依据：
+
+| 场景 | 推荐机制 | 原因 |
+|------|---------|------|
+| 只需1个中断向量 | MSI | 最简单，无需映射MMIO表 |
+| 需要2-32个向量，且向量数是2的幂 | MSI | 满足MME约束，分配成功率高 |
+| 需要非2的幂向量数（如3、5、6） | MSI-X | MSI只支持2的幂，MSI-X支持任意数量 |
+| 需要Per-Vector Mask | MSI-X | MSI不支持Per-Vector Mask（除少数设备有Extended Capability） |
+| 需要运行时动态增减向量 | MSI-X | Linux 5.17+支持`pci_msix_alloc_irq_at()`动态分配 |
+| NVMe/网卡等高性能设备 | MSI-X | 多队列需要独立向量+Per-Vector Mask |
+| SR-IOV VF | MSI-X | VF需要独立中断向量，MSI-X更灵活 |
+
+**推荐做法**：使用`pci_alloc_irq_vectors()`统一API，让内核自动选择：
+
+```c
+// 优先尝试MSI-X，回退到MSI
+int nvec = pci_alloc_irq_vectors(dev, minvec, maxvec,
+                                  PCI_IRQ_MSIX | PCI_IRQ_MSI);
+if (nvec < 0) {
+    // 最后回退到INTx (不推荐，但某些老旧设备必须)
+    nvec = pci_alloc_irq_vectors(dev, 1, 1, PCI_IRQ_LEGACY);
+}
+```
+
+> 实际上，现代设备几乎都实现了MSI-X。MSI主要存在于老旧设备或低成本设备中。新驱动应优先支持MSI-X。
+
+### 3.3 中断亲和性
 
 ```c
 // 设置中断亲和性 (绑定到特定CPU)
@@ -360,7 +451,7 @@ irq_set_affinity(pci_irq_vector(dev, 0), &mask);
 // ARM: 修改GIC ITS的Interrupt Translation Table
 ```
 
-### 3.3 中断重映射 (Interrupt Remapping)
+### 3.4 中断重映射 (Interrupt Remapping)
 
 在虚拟化环境中，VF的MSI地址可能被恶意篡改（GPA指向其他VM的内存）。Intel VT-d提供**中断重映射**保护：
 
@@ -393,9 +484,9 @@ struct irte {
 };
 ```
 
-> 📌 中断重映射是VF直通安全的必要条件。Linux内核在启用VFIO时自动检查IOMMU中断重映射支持。
+> 中断重映射是VF直通安全的必要条件。Linux内核在启用VFIO时自动检查IOMMU中断重映射支持。
 
-### 3.4 动态MSI-X分配
+### 3.5 动态MSI-X分配
 
 Linux 5.17+ 支持运行时动态分配MSI-X向量：
 
@@ -432,7 +523,7 @@ struct pci_driver my_pf_driver = {
 // echo 32 > /sys/bus/pci/devices/.../sriov_vf_msix_count
 ```
 
-> 📌 详见 [SR-IOV虚拟化](./sriov-virtualization.md)
+> 详见 [SR-IOV虚拟化](./sriov-virtualization.md)
 
 ---
 
@@ -492,6 +583,7 @@ done
 | 5 | `include/uapi/linux/pci_regs.h` | `PCI_MSI_*`, `PCI_MSIX_*` 寄存器定义 |
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
 graph TD
     A["api.c<br/>驱动入口"] --> B["msi.c<br/>核心逻辑"]
     B --> C["irqdomain.c<br/>IRQ分配"]
@@ -505,6 +597,19 @@ graph TD
     style B fill:#fff3e0
     style E fill:#e3f2fd
 ```
+
+---
+
+## 参考资料
+
+- [PCIe Base Specification 6.0](https://pcisig.com/specifications) — §6.1.4 MSI Capability, §6.1.5 MSI-X Capability
+- [Intel VT-d Specification](https://www.intel.com/content/www/us/en/io/virtualization-technology-for-directed-connectivity-vt-d.html) — 中断重映射
+- [ARM GICv3 Architecture Specification](https://developer.arm.com/documentation/) — ITS与LPI机制
+- [Linux Kernel Source](https://git.kernel.org/) — `drivers/pci/msi/`, `kernel/irq/`
+
+---
+
+上一篇：[设备枚举流程](./enumeration-flow.md) | 下一篇：[SR-IOV虚拟化](./sriov-virtualization.md)
 
 ---
 

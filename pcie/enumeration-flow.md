@@ -4,6 +4,15 @@
 > 关联索引：[PCIe核心知识索引](./pcie-learning-resources.md) Phase 0, 2
 > 前置阅读：[ECAM与配置空间](./ecam-config-space.md) · [BAR与资源分配](./bar-resource-allocation.md)
 
+### 关键术语
+| 缩写 | 全称 | 含义 |
+|------|------|------|
+| BDF | Bus/Device/Function | PCIe设备的三级地址编号 |
+| ARI | Alternative Routing-ID Interpretation | 替代路由ID解释，扩展Function编号到8位 |
+| CRS | Configuration Request Retry Status | 配置请求重试状态，设备未就绪时的特殊响应 |
+| D0/D3 | Device Power State 0/3 | 设备电源状态，D0全工作，D3低功耗 |
+| ASPM | Active State Power Management | 活动状态电源管理，链路层自动省电 |
+
 ---
 
 ## 0. 前置背景
@@ -57,6 +66,7 @@ pci_host_bridge (Segment 0)
 ## 1. 枚举全流程
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
 graph TD
     START["系统启动"] --> HB["创建Host Bridge<br/>pci_alloc_host_bridge()"]
     HB --> SCAN0["扫描Bus 0<br/>pci_scan_child_bus()"]
@@ -142,6 +152,37 @@ int pci_scan_slot(struct pci_bus *bus, int devfn)
 **ARI (Alternative Routing-ID Interpretation)**：
 - 标准PCIe: Function号0-7 (3位)
 - ARI: Function号0-255 (8位)，`next_ari_fn()` 读取ARI Capability获取下一个Function号
+
+**ARI Capability工作原理**：
+
+ARI是PCIe Extended Capability（ID=0x0E），位于Extended Config Space中。它只有一个关键寄存器：
+
+```
+ARI Capability (Extended Config Space):
+├── Cap ID = 0x0E
+├── Next Capability Offset
+└── ARI Control Register (偏移+0x04)
+    └── [0] ARI Capable Hierarchy (由固件/驱动设置)
+```
+
+ARI改变了Function扫描方式：
+
+```
+标准PCIe扫描:
+  for (fn = 1; fn < 8; fn++)       // 固定扫描Func 0-7
+    pci_scan_single_device(bus, devfn + fn)
+
+ARI扫描:
+  fn = next_ari_fn(bus, dev, 0)    // 读取Next Function Number
+  while (fn) {
+    pci_scan_single_device(bus, devfn + fn)
+    fn = next_ari_fn(bus, dev, fn) // 继续读取下一个
+  }
+```
+
+`next_ari_fn()` 读取设备的ARI Capability中的**Next Function Number**字段（PCIe Spec §7.32），该字段由硬件自动维护，指向下一个已实现的Function号。这避免了扫描未实现的Function号，也突破了8个Function的限制。
+
+> ARI主要用于SR-IOV场景：一个PF可能创建数十个VF，标准3位Function号不够用。ARI要求整条链路（从Root Port到Endpoint）都支持ARI，由桥的ARI Capable Hierarchy位控制。详见 [SR-IOV虚拟化](./sriov-virtualization.md)。
 
 ### 2.3 pci_scan_single_device() —— 扫描单个设备
 
@@ -245,7 +286,7 @@ int pci_bus_read_dev_vendor_id(struct pci_bus *bus, int devfn,
 }
 ```
 
-> 📌 CRS是NVMe等设备启动慢时枚举不丢失的关键机制。
+> CRS是NVMe等设备启动慢时枚举不丢失的关键机制。
 
 ### 2.5 pci_setup_device() —— 设备配置
 
@@ -381,6 +422,7 @@ I/O Base/Limit (0x1C-0x1F):
 ### 3.3 Type 0 vs Type 1 配置事务
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
 graph TD
     RC["Root Complex"] -->|"Type 0 Config<br/>Bus=目标Bus"| EP["Endpoint<br/>BDF匹配"]
     RC2["Root Complex"] -->|"Type 1 Config<br/>Secondary<=Bus<=Subordinate"| BR["Bridge"]
@@ -400,6 +442,7 @@ graph TD
 ### 4.1 分配顺序
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
 graph TD
     A["pci_host_probe()"] --> B["pci_scan_child_bus()"]
     B --> C["pci_bus_size_bridges()"]
@@ -442,6 +485,40 @@ void pcibios_resource_to_bus(struct pci_bus *bus,
 
 > offset = CPU物理地址 - PCIe总线地址，由DT/ACPI中的`dma-ranges`属性定义。
 
+### 4.3 枚举性能优化
+
+枚举是系统启动的关键路径，Linux内核做了多项优化：
+
+**BAR掩码批量读取**：`pci_read_bases()` 先关闭解码，一次性调用`__pci_size_stdbars()`读取所有BAR掩码，再恢复解码，最后逐个解析。这比逐个BAR开关解码减少了N次Command寄存器写入（N=BAR数量）。在虚拟化环境中，每次配置空间写操作可能触发VM Exit，批量读取的开销降低更为显著。
+
+**CRS超时机制**：`pci_bus_read_dev_vendor_id()` 对未就绪设备最多等待60秒，但使用`msleep(100)`轮询而非忙等，避免占用CPU。
+
+**两遍桥扫描**：Pass 0只扫描固件已配置的桥（快速路径），Pass 1才分配新Bus号。大多数系统在Pass 0就能完成大部分工作。
+
+**D3cold设备跳过**：枚举时如果设备处于D3cold电源状态，配置空间读取返回0xFFFFFFFF，内核会跳过该设备而非报错。设备在电源恢复后可通过rescan重新发现。
+
+### 4.4 枚举过程中的电源状态
+
+枚举时内核对设备电源状态的处理：
+
+```
+枚举前: 设备可能处于任意电源状态 (由固件决定)
+  ├── D0 (全工作): 正常枚举
+  ├── D3hot (低功耗): 配置空间仍可访问，但设备功能受限
+  └── D3cold (断电): 配置空间不可访问，Vendor ID = 0xFFFFFFFF
+
+枚举时:
+  1. pci_scan_device() 读取Vendor ID
+     → 0xFFFFFFFF: 设备不存在或D3cold，跳过
+     → 其他值: 设备存在，继续配置
+  2. pci_setup_device() 设置初始电源状态
+     → 默认将设备置于D0
+     → 设置 pci_dev->current_state = PCI_D0
+  3. 驱动绑定后，驱动可主动管理电源状态 (runtime PM)
+```
+
+> 内核不会在枚举阶段主动将设备从D3cold唤醒。如果固件将设备置于D3cold，该设备在枚举时不可见，需要固件或驱动在后续阶段恢复。
+
 ---
 
 ## 5. Capability发现
@@ -449,6 +526,7 @@ void pcibios_resource_to_bus(struct pci_bus *bus,
 枚举过程中，`pci_read_capabilities()` 扫描设备的Capability链表：
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
 graph LR
     CAP_PTR["Cap Pointer<br/>0x34"] --> C1["Cap ID=0x10<br/>PCIe<br/>Next=0x40"]
     C1 --> C2["Cap ID=0x05<br/>MSI<br/>Next=0x00"]
@@ -509,6 +587,7 @@ echo 1 > /sys/bus/pci/devices/0000:00:01.0/rescan
 服务器热插拔场景（如NVMe背板、GPU热替换）的枚举流程与启动时不同：
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
 sequenceDiagram
     participant HP as Hot-Plug Controller
     participant RP as Root Port
@@ -565,6 +644,7 @@ echo 0 > /sys/bus/pci/slots/1/power  # 下电
 | 5 | `drivers/pci/pci-driver.c` | `pci_bus_add_devices()`, `__pci_device_probe()` |
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
 graph TD
     A["pci_host_probe()"] --> B["pci_scan_child_bus()"]
     B --> C["pci_scan_slot()"]
@@ -581,6 +661,18 @@ graph TD
     style G fill:#e3f2fd
     style I fill:#fce4ec
 ```
+
+---
+
+## 参考资料
+
+- [PCIe Base Specification 6.0](https://pcisig.com/specifications) — §2.2.6 配置请求, §7.5.1.1 Type 0/1 Header
+- [Linux Kernel Source](https://git.kernel.org/) — `drivers/pci/probe.c`, `drivers/pci/setup-bus.c`
+- [PCI Firmware Specification 3.3](https://uefi.org/specifications) — 固件与OS的枚举协作
+
+---
+
+上一篇：[BAR与资源分配](./bar-resource-allocation.md) | 下一篇：[MSI/MSI-X中断机制](./msi-interrupt.md)
 
 ---
 

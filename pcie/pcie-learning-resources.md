@@ -3,21 +3,22 @@
 > 定位：系统软件工程师的PCIe核心概念速查与深度指引
 > 原则：不摊大饼，每个主题触及核心机制，指向关键规范章节与代码
 
-### 📚 专题文档
+### 专题文档
 
-| 主题   | 文档                                       | 核心内容                        |
-| ---- | ---------------------------------------- | --------------------------- |
-| ECAM | [ECAM与配置空间访问](./ecam-config-space.md)    | 地址计算、MCFG、内核ECAM实现、控制器变体    |
-| BAR  | [BAR与资源分配](./bar-resource-allocation.md) | BAR探测协议、资源分配三阶段、iATU地址转换    |
-| 枚举   | [设备枚举流程](./enumeration-flow.md)          | 深度优先扫描、桥配置递归、Capability发现   |
-| 中断   | [MSI/MSI-X中断机制](./msi-interrupt.md)      | MSI/MSI-X结构、irqdomain集成、亲和性 |
-| 虚拟化  | [SR-IOV虚拟化](./sriov-virtualization.md)   | PF/VF架构、ATS缓存、ACS隔离、VFIO    |
+| 序号 | 主题   | 文档                                       | 核心内容                        | 建议学时 |
+| --- | ---- | ---------------------------------------- | --------------------------- | ---- |
+| 1   | ECAM | [ECAM与配置空间访问](./ecam-config-space.md)    | 地址计算、MCFG、内核ECAM实现、控制器变体    | 3h   |
+| 2   | BAR  | [BAR与资源分配](./bar-resource-allocation.md) | BAR探测协议、资源分配三阶段、iATU地址转换    | 4h   |
+| 3   | 枚举   | [设备枚举流程](./enumeration-flow.md)          | 深度优先扫描、桥配置递归、Capability发现   | 4h   |
+| 4   | 中断   | [MSI/MSI-X中断机制](./msi-interrupt.md)      | MSI/MSI-X结构、irqdomain集成、亲和性 | 3h   |
+| 5   | 虚拟化  | [SR-IOV虚拟化](./sriov-virtualization.md)   | PF/VF架构、ATS缓存、ACS隔离、VFIO    | 4h   |
 
 ***
 
 ## 学习路径
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
 graph TD
     P0["Phase 0<br/>基础概念<br/>拓扑/地址空间/Lane"]
     P1["Phase 1<br/>地址空间与访问机制<br/>ECAM/BAR/iATU"]
@@ -84,6 +85,7 @@ graph TD
 ### 0.2 PCIe拓扑组件
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
 graph TD
     CPU["CPU"] --> RC["Root Complex<br/>根联合体"]
     RC --> RP1["Root Port 0"]
@@ -139,6 +141,7 @@ Linux中BDF完整表示为 `Segment:Bus:Device.Function`，如 `0000:01:00.0`。
 PCIe定义了三种独立的地址空间，每种有不同的访问方式：
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
 graph LR
     CFG["Configuration Space<br/>配置空间<br/>4KB/Function<br/>通过ECAM访问"]
     MEM["Memory Space<br/>存储空间<br/>BAR映射的区域<br/>通过Memory R/W访问"]
@@ -197,6 +200,7 @@ x16链路: TX[0:15] → RX[0:15]
 PCIe事务在三层之间传递：
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
 graph LR
     TLP["TLP<br/>Transaction Layer Packet<br/>承载业务数据"]
     DLLP["DLLP<br/>Data Link Layer Packet<br/>链路管理/ACK"]
@@ -216,7 +220,7 @@ graph LR
 - **DLLP**：数据链路层包，用于链路管理（ACK/NAK、电源管理、流量控制）
 - **物理层**：负责编码、加扰、串并转换，将数据变为差分信号
 
-> 📌 软件工程师主要关注TLP（Phase 3），DLLP和物理层是硬件自动处理的
+> 软件工程师主要关注TLP（Phase 3），DLLP和物理层是硬件自动处理的
 
 ### 0.7 DMA —— 设备主动访问内存
 
@@ -233,7 +237,7 @@ DMA的关键问题：
 - IOMMU限制设备只能访问授权的内存区域（DMA安全）
 - 设备通过MSI/MSI-X中断通知CPU DMA完成
 
-> 📌 DMA是高性能I/O的基础，理解DMA是理解PCIe数据面的关键
+> DMA是高性能I/O的基础，理解DMA是理解PCIe数据面的关键
 
 ***
 
@@ -246,6 +250,7 @@ DMA的关键问题：
 理解PCIe的第一步是看清CPU地址空间与PCIe总线地址空间之间的映射关系：
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
 graph TD
     CPU["CPU"] -->|"Memory R/W<br/>(BAR地址范围)"| iATU_O["iATU Outbound"]
     CPU -->|"Memory R/W<br/>(ECAM地址范围)"| ECAM["ECAM区域<br/>256MB/Segment"]
@@ -274,13 +279,13 @@ graph TD
 ECAM地址 = 基址 + (Bus << 20) + (Dev << 15) + (Func << 12) + Offset
 ```
 
-> 📌 枚举（Phase 2）通过ECAM扫描每个BDF位置，读Vendor ID判断设备是否存在
+> 枚举（Phase 2）通过ECAM扫描每个BDF位置，读Vendor ID判断设备是否存在
 
 **规范**：PCIe Base Spec §7.2.2 | PCI Firmware Spec 3.0 (MCFG表)
 
 **Linux**：`pci_mmcfg_init()` · `pci_read_config_*()` · `/sys/firmware/acpi/tables/MCFG`
 
-> 📌 ECAM访问的是**下游设备**的配置空间。RC自身的配置空间通过控制器的**DBI**接口访问，详见 [ECAM与配置空间](./ecam-config-space.md) §3.4
+> ECAM访问的是**下游设备**的配置空间。RC自身的配置空间通过控制器的**DBI**接口访问，详见 [ECAM与配置空间](./ecam-config-space.md) §3.4
 
 ***
 
@@ -291,6 +296,7 @@ ECAM地址 = 基址 + (Bus << 20) + (Dev << 15) + (Func << 12) + Offset
 **协商过程**：
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
 sequenceDiagram
     participant SW as 软件(枚举)
     participant DEV as 设备BAR
@@ -317,7 +323,7 @@ sequenceDiagram
 - Prefetchable：用于帧缓冲等无副作用内存；非Prefetchable：用于有读副作用的寄存器
 - BAR0-5最多6个
 
-> 📌 BAR分配完成后，CPU对该地址范围的Memory访问被RC转换为MemRd/MemWr TLP（Phase 3）
+> BAR分配完成后，CPU对该地址范围的Memory访问被RC转换为MemRd/MemWr TLP（Phase 3）
 
 **规范**：PCIe Base Spec §7.5.1.2.1 | PCI Local Bus Spec §6.2.5.1
 
@@ -338,6 +344,7 @@ sequenceDiagram
 **双向映射**：
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
 graph TD
     PA["CPU物理地址"] -->|"iATU Window"| BA["PCIe总线地址"]
     BA2["PCIe总线地址"] -->|"iATU Window"| PA2["SoC本地地址"]
@@ -354,7 +361,7 @@ graph TD
 | `iATU_LIMIT_ADDR`            | 源地址范围上限        |
 | `iATU_LWR/UPPER_TARGET_ADDR` | 目标地址           |
 
-> 📌 Outbound映射错误→CPU访问设备地址不正确；Inbound映射错误→DMA数据写错位置（Phase 3）
+> Outbound映射错误→CPU访问设备地址不正确；Inbound映射错误→DMA数据写错位置（Phase 3）
 
 **规范**：各厂商控制器手册（DWC、Cadence、PLDA）
 
@@ -369,6 +376,7 @@ graph TD
 ### 2.1 枚举算法 —— 深度优先扫描
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
 graph TD
     START["扫描 Bus 0"] --> SCAN["遍历 Device 0..31"]
     SCAN --> CHECK{"Vendor ID<br/>== 0xFFFF?"}
@@ -397,7 +405,7 @@ graph TD
 
 **Type 0 vs Type 1配置周期**：Type 0用于目标设备（BDF匹配），Type 1用于穿透桥接（转发到下游）
 
-> 📌 枚举通过ECAM（Phase 1）执行配置读写；完成后BAR已分配、路由路径已建立（Phase 3）
+> 枚举通过ECAM（Phase 1）执行配置读写；完成后BAR已分配、路由路径已建立（Phase 3）
 
 **规范**：PCIe Base Spec §7.3-7.4
 
@@ -413,7 +421,7 @@ Bus (8bit, 0-255) : Device (5bit, 0-31) : Function (3bit, 0-7, ARI扩展至0-255
 
 Linux表示：`0000:01:00.0` = Segment 0, Bus 1, Dev 0, Func 0
 
-> 📌 TLP Header中的Requester ID / Completer ID就是BDF（Phase 3）
+> TLP Header中的Requester ID / Completer ID就是BDF（Phase 3）
 
 ***
 
@@ -481,7 +489,7 @@ DW2: [Requester ID | Tag | Lower BE | Upper BE]
 | ID路由       | Config/Completion | Switch匹配Bus号；桥匹配BDF               |
 | Implicit路由 | Message           | RC/Switch特殊处理（广播、本地）              |
 
-> 📌 枚举时配置的桥窗口和BAR就是路由表的"规则"；MSI本质是MemWr TLP（Phase 5）
+> 枚举时配置的桥窗口和BAR就是路由表的"规则"；MSI本质是MemWr TLP（Phase 5）
 
 ### 3.4 流量控制 (Flow Control)
 
@@ -502,9 +510,25 @@ PCIe使用**基于信用的流量控制**避免接收端缓冲区溢出：
 | VC0 | NPH/NPD | Non-Posted Header/Data |
 | VC0 | CplH/CplD | Completion Header/Data |
 
-> 📌 Flow Control是PCIe不需要总线仲裁的原因——每个设备独立管理自己的发送节奏。FC Init在LTSSM Configuration阶段完成（Phase 4）。
+> Flow Control是PCIe不需要总线仲裁的原因——每个设备独立管理自己的发送节奏。FC Init在LTSSM Configuration阶段完成（Phase 4）。
 
 **规范**：PCIe Base Spec §2.2.4
+
+### 3.5 TLP错误检测
+
+PCIe在多个层次检测传输错误：
+
+| 层次 | 机制 | 检测的错误 |
+|------|------|---------|
+| 数据链路层 | LCRC (32-bit) | TLP传输中的比特错误 |
+| 数据链路层 | Sequence Number | TLP丢失或重复 |
+| 事务层 | ECRC (可选, 32-bit) | 端到端数据完整性（穿过Switch后仍有效） |
+| 事务层 | Poisoned TLP | 数据已被上游组件标记为损坏（bit0 of DW0=1） |
+| 事务层 | Unsupported Request | 目标不支持该事务类型 |
+
+**LCRC vs ECRC**：LCRC由每条链路的发送端计算、接收端校验，Switch转发时重新计算；ECRC由源端计算、最终目的端校验，中间Switch不修改。ECRC用于检测Switch内部的数据损坏。
+
+> Poisoned TLP是一种"尽力通知"机制：发送端知道数据已损坏但仍传递给接收端，接收端通过AER报告该错误。
 
 ***
 
@@ -515,6 +539,7 @@ PCIe使用**基于信用的流量控制**避免接收端缓冲区溢出：
 ### 4.1 LTSSM —— 链路生命周期
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
 graph TD
     DET["Detect<br/>检测对端"] --> POL["Polling<br/>速率协商"]
     POL --> CFG["Configuration<br/>宽度协商"]
@@ -536,7 +561,7 @@ graph TD
     style DIS fill:#e0e0e0
 ```
 
-> 📌 只有L0状态才能传TLP（Phase 3）；链路训练失败是设备"消失"最常见原因；Recovery过多触发AER（Phase 7）
+> 只有L0状态才能传TLP（Phase 3）；链路训练失败是设备"消失"最常见原因；Recovery过多触发AER（Phase 7）
 
 ### 4.2 链路均衡 (Equalization)
 
@@ -560,7 +585,7 @@ Gen3 (8 GT/s) 及以上速率需要**链路均衡**补偿高频信号损耗：
 | 8 GT/s (Gen3) | 必须 | `GEN3_RELATED_OFF`, `GEN3_EQ_CONTROL` |
 | 16+ GT/s (Gen4/5) | 必须，更复杂 | `GEN4_*/GEN5_*` 扩展寄存器 |
 
-> 📌 均衡失败是Gen3+链路降速的常见原因。DWC控制器通过DBI配置均衡参数（见ECAM文档§3.4）。
+> 均衡失败是Gen3+链路降速的常见原因。DWC控制器通过DBI配置均衡参数（见ECAM文档§3.4）。
 
 ### 4.3 链路能力
 
@@ -580,7 +605,22 @@ Gen3 (8 GT/s) 及以上速率需要**链路均衡**补偿高频信号损耗：
 
 **Device PM**：D0 → D1 → D2 → D3hot → D3cold
 
-> 📌 低功耗唤醒需要PME Message（Phase 5）
+> 低功耗唤醒需要PME Message（Phase 5）
+
+### 4.4 LTSSM关键状态详解
+
+| 状态 | 触发条件 | 行为 | 延迟 |
+|------|---------|------|------|
+| Detect | 上电/复位 | 检测对端是否存在（检测RX端差分信号） | - |
+| Polling | Detect成功 | 速率协商、位锁定、符号锁定 | ~24ms |
+| Configuration | Polling完成 | Lane编号分配、宽度协商 | - |
+| L0 | Configuration完成 | 正常工作，可传TLP | 0 |
+| L0s | ASPM触发 | 关闭TX，RX保持活跃 | ~1us恢复 |
+| L1 | ASPM/软件触发 | 关闭TX和RX，省电更多 | ~10us恢复 |
+| Recovery | 速率切换/错误 | 重新训练链路（不回到Detect） | ~24ms |
+| Disabled | 软件禁用 | 链路关闭 | 需重新训练 |
+
+> 链路从L0进入Recovery的常见原因：ASPM L1.2子状态退出、链路速率/宽度重新协商、错误恢复。Recovery失败才回退到Detect。
 
 **规范**：PCIe Base Spec §5.0 | §4 (Physical Layer)
 
@@ -607,7 +647,7 @@ Config Space
 └── Message Control  → 启用/禁用，向量数量
 ```
 
-> 📌 MSI本质是MemWr TLP（Phase 3）；VF需要独立MSI-X向量（Phase 6）
+> MSI本质是MemWr TLP（Phase 3）；VF需要独立MSI-X向量（Phase 6）
 
 **规范**：PCIe Base Spec §6.1
 
@@ -622,6 +662,7 @@ Config Space
 ### 虚拟化栈全景
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
 graph TD
     VM1["VM 1"] --> VF1["VF 1"]
     VM2["VM 2"] --> VF2["VF 2"]
@@ -659,7 +700,7 @@ graph TD
 
 **关键寄存器**：`NumVFs` · `VF Enable` · `VF Offset` · `Stride` · `System Page Size`
 
-> 📌 VF有独立BDF（Phase 2），枚举时作为独立设备发现
+> VF有独立BDF（Phase 2），枚举时作为独立设备发现
 
 **规范**：SR-IOV Specification 1.1
 
@@ -677,13 +718,14 @@ graph TD
 | P2P Completion Redirect | 将Completion重定向到Upstream |
 | Direct Translated P2P   | 允许特定已转换P2P              |
 
-> 📌 ACS影响路由决策（Phase 3），启用Redirect后P2P TLP被重定向到Upstream
+> ACS影响路由决策（Phase 3），启用Redirect后P2P TLP被重定向到Upstream
 
 **规范**：PCIe Base Spec §6.12
 
 ### 6.3 ATS —— IOMMU的缓存
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
 sequenceDiagram
     participant EP as Endpoint
     participant RC as RC/IOMMU
@@ -709,6 +751,7 @@ sequenceDiagram
 ### AER —— 分级报警系统
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
 graph TD
     AER["AER Extended Capability"]
 
@@ -743,7 +786,21 @@ graph TD
 | Root Error Command/Status | Root Port错误收集       |
 | Error Source ID           | 错误来源BDF             |
 
-> 📌 物理层Receiver Error→AER（Phase 4）；事务层Poisoned TLP→AER（Phase 3）
+> 物理层Receiver Error→AER（Phase 4）；事务层Poisoned TLP→AER（Phase 3）
+
+**AER错误处理流程**：
+
+```
+错误发生 → 设备设置AER Status位
+  → Root Port收集错误 (Root Error Command控制是否上报)
+  → Root Port发送MSI/MSI-X中断给CPU
+  → Linux AER驱动 (aerdrv.c) 处理中断
+     ├── Correctable: 计数+1，清除状态位
+     ├── Non-Fatal: 记录错误，尝试恢复（重试/链路重训练）
+     └── Fatal: 链路复位，可能触发DPC
+```
+
+**AER固件优先 (Firmware First)**：某些平台（如ARM服务器）由固件（UEFI/ACPI）先处理AER，再通过GHES (Generic Hardware Error Source) 通知OS。Linux通过`CONFIG_ACPI_APEI`支持此模式。
 
 **规范**：PCIe Base Spec §6.2
 
@@ -783,7 +840,7 @@ static void dpc_handler(struct irq_desc *desc)
 }
 ```
 
-> 📌 DPC + AER + Hot-Plug构成现代PCIe错误恢复的完整方案。DPC确保错误不扩散，AER提供诊断信息，Hot-Plug支持设备重新枚举。
+> DPC + AER + Hot-Plug构成现代PCIe错误恢复的完整方案。DPC确保错误不扩散，AER提供诊断信息，Hot-Plug支持设备重新枚举。
 
 ***
 
@@ -811,13 +868,14 @@ static void dpc_handler(struct irq_desc *desc)
 
 传统BAR大小固定，现代GPU 24GB+显存需要更大MMIO映射。Resizable BAR允许运行时动态调整。
 
-> 📌 对传统BAR机制（Phase 1.2）的扩展，增加 Resizable BAR Capability
+> 对传统BAR机制（Phase 1.2）的扩展，增加 Resizable BAR Capability
 
 **Linux**：`pci_resize_resource()` · `/sys/bus/pci/devices/.../resource_resize`
 
 ### 8.3 CXL —— 超越I/O的互联
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
 graph TD
     IO["CXL.io<br/>兼容PCIe I/O"] --> PCIE["PCIe 5.0/6.0 PHY"]
     CACHE["CXL.cache<br/>缓存一致性"] --> PCIE
@@ -848,7 +906,7 @@ graph TD
 
 **为什么需要FLIT**：PAM4信噪比低需要FEC纠错，FEC需要固定长度数据块。TLP仍然存在，但被封装在FLIT中——事务层语义不变，链路层实现大变。
 
-> 📌 FEC纠正物理层比特错误，减少AER Correctable Errors（Phase 7）
+> FEC纠正物理层比特错误，减少AER Correctable Errors（Phase 7）
 
 ***
 

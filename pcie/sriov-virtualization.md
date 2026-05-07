@@ -4,6 +4,17 @@
 > 关联索引：[PCIe核心知识索引](./pcie-learning-resources.md) Phase 0, 6
 > 前置阅读：[MSI/MSI-X中断](./msi-interrupt.md) · [BAR与资源分配](./bar-resource-allocation.md)
 
+### 关键术语
+| 缩写 | 全称 | 含义 |
+|------|------|------|
+| SR-IOV | Single Root I/O Virtualization | 单根I/O虚拟化，一个PF创建多个VF |
+| PF | Physical Function | 物理功能，管理SR-IOV的完整PCIe Function |
+| VF | Virtual Function | 虚拟功能，轻量级PCIe Function，可直通给VM |
+| ATS | Address Translation Service | 地址转换服务，设备缓存IOMMU转换结果 |
+| ACS | Access Control Services | 访问控制服务，控制P2P TLP路由 |
+| VFIO | Virtual Function I/O | Linux用户态驱动框架，支持设备直通 |
+| IOMMU | Input/Output Memory Management Unit | I/O内存管理单元，DMA地址转换与隔离 |
+
 ---
 
 ## 0. 前置背景
@@ -61,6 +72,7 @@ SR-IOV将一个物理设备（PF）拆分为多个虚拟功能（VF），每个V
 ### 1.1 SR-IOV架构
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
 graph TD
     PF_CFG["PF完整配置空间<br/>0x00-0xFFF"]
     PF_BAR["PF独立BAR"]
@@ -238,6 +250,7 @@ static int sriov_enable(struct pci_dev *dev, int nr_virtfn)
 ### 2.3 VF创建流程
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
 sequenceDiagram
     participant USER as 用户/sysfs
     participant IOV as iov.c
@@ -326,6 +339,29 @@ static void pci_read_vf_config_common(struct pci_dev *virtfn)
 - INTx禁用 (VF只能用MSI/MSI-X)
 - 无SR-IOV Capability (VF不能再创建VF)
 
+**VFIO对VF配置空间的虚拟化**：
+
+VF直通给VM时，QEMU/VFIO不能让VM直接访问VF的配置空间——VM可能修改关键寄存器（如Command寄存器关闭Memory Space）导致VF不可用，或读取不应暴露的信息。VFIO通过`vfio_pci_config.c`实现配置空间拦截：
+
+```
+VM访问VF配置空间:
+  VM → VFIO ioctl → vfio_pci_config.c → 拦截判断
+    ├── 允许直通: 无安全影响的寄存器 (如BAR读取、Status)
+    ├── 虚拟化: 返回虚拟值 (如Vendor ID可能被修改)
+    └── 拦截写入: 危险操作 (如关闭Memory Space、修改Command寄存器)
+```
+
+关键虚拟化策略：
+
+| 寄存器 | 处理方式 | 原因 |
+|--------|---------|------|
+| Vendor/Device ID | 虚拟化 | VM可能需要看到不同于物理设备的ID |
+| Command | 部分拦截 | 禁止VM关闭Memory/IO解码，否则VF不可用 |
+| BAR | 直通读取 | BAR值由宿主机分配，VM只读即可 |
+| MSI-X Enable | 拦截 | 由VFIO管理中断路由，VM不能直接修改 |
+| Power Management | 虚拟化 | VM不能真正控制设备电源状态 |
+| AER | 拦截 | 错误报告由宿主机统一处理 |
+
 ---
 
 ## 3. ATS (Address Translation Service)
@@ -333,6 +369,7 @@ static void pci_read_vf_config_common(struct pci_dev *virtfn)
 ### 3.1 ATS机制
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
 sequenceDiagram
     participant VF as VF/Endpoint
     participant RC as RC/IOMMU
@@ -396,6 +433,7 @@ int pci_enable_ats(struct pci_dev *dev, int ps)
 ### 4.1 ACS控制点
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
 graph TD
     SV["Source Validation<br/>验证请求者身份"]
     TB["Translation Blocking<br/>阻止已转换地址P2P"]
@@ -449,6 +487,7 @@ static bool pci_upstream_bridge_acs_redir(struct pci_dev *pdev)
 ### 5.1 VFIO架构
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
 graph TD
     VM["QEMU / 用户态驱动"]
     VFIO_LIB["libvfio"]
@@ -503,9 +542,108 @@ ioctl(device_fd, VFIO_DEVICE_SET_IRQS, &irq_set);
 
 ---
 
-## 6. 实战调试
+## 6. VF Migration
 
-### 6.1 SR-IOV操作
+SR-IOV Capability中包含VF Migration相关字段（VF Migration Enable、VF Migration Interrupt Enable、VF Migration Status），允许VF的状态在物理主机之间迁移。这是虚拟机热迁移（Live Migration）的关键支撑。
+
+### 6.1 为什么需要VF Migration
+
+VF直通给VM后，VF的设备状态（DMA上下文、队列状态、内部寄存器）绑定在物理主机上。如果需要将VM迁移到另一台物理机，必须：
+
+```
+无VF Migration:
+  VM迁移 → VF状态丢失 → 目标机VF从头初始化 → 业务中断
+
+有VF Migration:
+  VM迁移 → PF驱动保存VF状态 → 传输到目标机 → PF驱动恢复VF状态 → 业务连续
+```
+
+### 6.2 Migration流程
+
+```
+源主机:                              目标主机:
+  1. VM暂停                            1. 创建VF (sriov_numvfs)
+  2. PF驱动保存VF状态                   2. PF驱动准备接收VF状态
+     - DMA上下文                        3. 接收VF状态数据
+     - 队列状态                         4. 写入VF配置空间和BAR寄存器
+     - 内部寄存器                       5. VF恢复工作
+  3. 传输VF状态数据
+  4. 释放源VF
+```
+
+### 6.3 当前实现状态
+
+SR-IOV规范定义了Migration的Capability框架，但**具体迁移哪些状态、如何序列化**由设备厂商决定。Linux内核目前提供了基础设施：
+
+- `VF Migration State Array Offset`：SR-IOV Cap中指向VF迁移状态的MMIO偏移
+- `VF Migration Enable/Interrupt`：控制迁移流程的开关
+- VFIO的`VFIO_DEVICE_FEATURE` ioctl支持设备状态的保存/恢复（Linux 6.0+）
+
+> 实际的VF Migration高度依赖设备厂商的PF驱动实现。目前Mellanox/NVIDIA的网卡（mlx5）和Intel的网卡（ice/iavf）是VF Migration支持较好的参考实现。
+
+---
+
+## 7. Multi-Queue 与 VF
+
+网卡的SR-IOV VF通常需要多个收发队列（Multi-Queue）以实现高性能。队列分配机制是VF驱动设计的核心考量。
+
+### 7.1 队列分配模型
+
+```
+物理网卡 (PF):
+  总队列数 = 128 (硬件固定)
+  ├── PF保留: 16队列
+  └── VF池: 112队列
+      ├── VF0: 8队列
+      ├── VF1: 8队列
+      ├── VF2: 16队列
+      └── ...
+
+PF驱动负责:
+  1. 在VF创建时为每个VF分配队列数
+  2. 通过PF-VF邮箱通道通知VF其队列配置
+  3. 运行时可调整VF队列数 (通过sriov_vf_msix_count)
+```
+
+### 7.2 RSS (Receive Side Scaling)
+
+RSS是网卡将入向流量分散到多个接收队列的机制，避免单队列成为瓶颈：
+
+```
+入向数据包 → RSS哈希 (基于五元组) → 哈希值 % 队列数 → 目标队列
+  → 不同流的数据包被分散到不同队列
+  → 每个队列有独立的MSI-X向量
+  → 不同队列的中断可绑定到不同CPU
+```
+
+VF的RSS配置由VF驱动通过PF-VF邮箱通道请求PF设置，VF不能直接修改RSS间接表（因为RSS间接表是全局共享资源）。
+
+### 7.3 队列与MSI-X向量的关系
+
+每个VF的队列数决定了其需要的MSI-X向量数：
+
+```
+VF MSI-X向量需求:
+  向量数 = 接收队列数 + 发送队列数 + 其他向量(如链路状态、错误)
+  
+  例: 8收8发 + 2其他 = 18个MSI-X向量
+```
+
+PF驱动通过`sriov_set_msix_vec_count()`回调为每个VF配置MSI-X向量数。内核6.0+支持通过sysfs动态调整：
+
+```bash
+# 查看VF总MSI-X向量数
+cat /sys/bus/pci/devices/0000:03:00.0/sriov_vf_total_msix
+
+# 设置单个VF的MSI-X向量数
+echo 32 > /sys/bus/pci/devices/0000:03:00.0/sriov_vf_msix_count
+```
+
+---
+
+## 8. 实战调试
+
+### 8.1 SR-IOV操作
 
 ```bash
 # 查看VF能力
@@ -524,7 +662,7 @@ ls -la /sys/bus/pci/devices/0000:03:00.0/virtfn*
 echo 0 > /sys/bus/pci/devices/0000:03:00.0/sriov_numvfs
 ```
 
-### 6.2 VFIO绑定
+### 8.2 VFIO绑定
 
 ```bash
 # 解绑原驱动
@@ -540,7 +678,7 @@ ls /sys/kernel/iommu_groups/
 cat /sys/kernel/iommu_groups/26/devices
 ```
 
-### 6.3 常见问题
+### 8.3 常见问题
 
 | 现象 | 原因 | 排查 |
 |------|------|------|
@@ -552,7 +690,7 @@ cat /sys/kernel/iommu_groups/26/devices
 
 ---
 
-## 7. 代码阅读路线
+## 9. 代码阅读路线
 
 | 顺序 | 文件 | 关注函数 |
 |------|------|----------|
@@ -563,6 +701,7 @@ cat /sys/kernel/iommu_groups/26/devices
 | 5 | `drivers/pci/p2pdma.c` | P2P DMA与ACS交互 |
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
 graph TD
     A["iov.c<br/>SR-IOV核心"] --> B["probe.c<br/>VF枚举"]
     A --> C["ats.c<br/>ATS缓存"]
@@ -575,6 +714,19 @@ graph TD
     style C fill:#fff3e0
     style D fill:#e3f2fd
 ```
+
+---
+
+## 参考资料
+
+- [PCIe Base Specification 6.0](https://pcisig.com/specifications) — §9.3 SR-IOV Capability, §6.12 ACS, §6.13 ATS
+- [Intel VT-d Specification](https://www.intel.com/content/www/us/en/io/virtualization-technology-for-directed-connectivity-vt-d.html) — DMA重映射与设备直通
+- [VFIO Documentation](https://www.kernel.org/doc/html/latest/driver-api/vfio.html) — Linux VFIO框架
+- [Linux Kernel Source](https://git.kernel.org/) — `drivers/pci/iov.c`, `drivers/vfio/pci/`
+
+---
+
+上一篇：[MSI/MSI-X中断机制](./msi-interrupt.md) | 返回：[PCIe核心知识索引](./pcie-learning-resources.md)
 
 ---
 

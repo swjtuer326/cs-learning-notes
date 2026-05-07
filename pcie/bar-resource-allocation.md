@@ -3,6 +3,16 @@
 > 核心问题：设备如何声明地址需求？系统如何为所有设备分配不冲突的地址？
 > 关联索引：[PCIe核心知识索引](./pcie-learning-resources.md) Phase 0, 1.2, 2.1
 
+### 关键术语
+| 缩写 | 全称 | 含义 |
+|------|------|------|
+| BAR | Base Address Register | 基地址寄存器，设备声明地址需求的机制 |
+| iATU | Internal Address Translation Unit | 内部地址转换单元，RC中CPU地址与PCIe地址的桥梁 |
+| NP | Non-Prefetchable | 不可预取内存，读取有副作用 |
+| PF | Prefetchable | 可预取内存，读取无副作用 |
+| VF | Virtual Function | SR-IOV虚拟功能，轻量级PCIe Function |
+| PCIe | Peripheral Component Interconnect Express | 高速外设互连标准 |
+
 ---
 
 ## 0. 前置背景
@@ -69,9 +79,26 @@ Type 0 Header (普通设备) 有6个BAR (0x10-0x24)，Type 1 Header (桥) 有2�
                                                   └─ 1 = I/O Space
 ```
 
-### 1.2 BAR大小探测协议
+### 1.2 Prefetchable 的含义
+
+BAR的bit3（Prefetchable位）决定了CPU对该地址区域的访问语义：
+
+| Prefetchable | 含义 | 典型用途 |
+|-------------|------|---------|
+| 0（非预取） | 读取有副作用，CPU不能预取、不能合并访问 | 控制寄存器、状态寄存器、门铃寄存器 |
+| 1（可预取） | 读取无副作用，多次读取返回相同值 | 帧缓冲、显存、ROM |
+
+**为什么区分**：CPU和桥在访问非预取区域时必须严格遵守程序顺序，不能进行读预取（Read Prefetching）或写合并（Write Combining）。对控制寄存器做读预取可能导致状态位被意外清除（如中断状态寄存器读后自动清零）；对帧缓冲做写合并则能显著提升性能。
+
+**规则**：
+- 如果设备的某个Memory区域读取**无副作用**，应声明为Prefetchable
+- Prefetchable BAR通常使用64-bit类型（bit2:1=10），以便映射到4GB以上地址空间
+- 桥窗口分为非预取（Memory Base/Limit）和预取（Prefetchable Base/Limit）两类，分别转发
+
+### 1.3 BAR大小探测协议
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
 sequenceDiagram
     participant SW as 枚举软件
     participant BAR as 设备BAR寄存器
@@ -99,6 +126,17 @@ sequenceDiagram
 掩码: 0xFFF00000 & 0xFFFFFFF0 = 0xFFF00000
 大小: ~0xFFF00000 + 1 = 0x00100000 = 1MB
 ```
+
+**示例**：设备需要256字节I/O空间
+
+```
+写入: 0xFFFFFFFF
+读回: 0xFFFFFF00  (低8位可写=0, 高24位不可写=1)
+掩码: 0xFFFFFF00 & 0xFFFFFFFC = 0xFFFFFF00  (I/O掩码低2位为类型标志)
+大小: ~0xFFFFFF00 + 1 = 0x00000100 = 256B
+```
+
+> I/O BAR与Memory BAR的探测协议相同，区别仅在于掩码：I/O使用`PCI_BASE_ADDRESS_IO_MASK`（bit2-31），Memory使用`PCI_BASE_ADDRESS_MEM_MASK`（bit4-31）。I/O空间在现代系统中已很少使用，x86平台保留`in/out`指令兼容，ARM/RISC-V平台通常不支持I/O空间。
 
 ### 1.3 64-bit BAR
 
@@ -294,6 +332,7 @@ static __always_inline void pci_read_bases(struct pci_dev *dev,
 ### 3.1 三阶段分配
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
 graph TD
     PHASE1["Phase 1: 枚举<br/>pci_scan_child_bus()"] --> PHASE2["Phase 2: 大小计算<br/>__pci_bus_size_bridges()"]
     PHASE2 --> PHASE3["Phase 3: 地址分配<br/>__pci_bus_assign_resources()"]
@@ -354,6 +393,10 @@ static void pci_std_update_resource(struct pci_dev *dev, int resno)
     struct resource *res = pci_resource_n(dev, resno);
 
     // VF的BAR是只读的
+    // VF BAR由PF的SR-IOV Capability中的VF BAR寄存器定义(偏移0x24-0x3C)，
+    // 系统在启用VF时通过sriov_enable()统一分配，而非走标准BAR分配路径。
+    // VF BAR的值由PF驱动写入SR-IOV Cap，硬件自动将同一BAR值映射到所有同类型VF，
+    // 因此VF的配置空间中BAR是只读的，pci_std_update_resource()对VF直接返回。
     if (dev->is_virtfn)
         return;
 
@@ -459,6 +502,7 @@ int dw_pcie_prog_inbound_atu(struct dw_pcie *pci, int index, int type,
 ### 4.3 地址转换全景
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
 graph TD
     CPU["CPU物理地址"] -->|"Memory R/W<br/>PA范围"| OUT["iATU Outbound<br/>CPU PA to PCIe BA"]
     OUT -->|"MemRd/MemWr TLP<br/>BA范围"| BAR["设备BAR<br/>PCIe总线地址"]
@@ -551,7 +595,7 @@ Resizable BAR:
   → 显著提升性能 (尤其CPU直接访问显存场景)
 ```
 
-> 📌 AMD "Smart Access Memory" (SAM) 和 NVIDIA "Resizable BAR" 是同一技术的不同品牌名。
+> AMD "Smart Access Memory" (SAM) 和 NVIDIA "Resizable BAR" 是同一技术的不同品牌名。
 
 ### 7.2 Resizable BAR Capability
 
@@ -614,3 +658,19 @@ echo 1 > /sys/bus/pci/devices/0000:01:00.0/resize
 # 内核参数自动启用
 pci=realloc
 ```
+
+---
+
+## 参考资料
+
+- [PCIe Base Specification 6.0](https://pcisig.com/specifications) — §7.5.1.2 BAR寄存器定义, §7.8.5 Resizable BAR Capability
+- [Linux Kernel Source](https://git.kernel.org/) — `drivers/pci/setup-res.c`, `kernel/resource.c`
+- [PCI Firmware Specification 3.3](https://uefi.org/specifications) — BAR分配与固件交互
+
+---
+
+上一篇：[ECAM与配置空间](./ecam-config-space.md) | 下一篇：[设备枚举流程](./enumeration-flow.md)
+
+---
+
+*源码版本：Linux 6.x | 更新：2026-04-21*

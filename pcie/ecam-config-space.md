@@ -3,6 +3,16 @@
 > 核心问题：CPU如何读写PCIe设备的4KB配置空间？
 > 关联索引：[PCIe核心知识索引](./pcie-learning-resources.md) Phase 0, 1.1
 
+### 关键术语
+| 缩写 | 全称 | 含义 |
+|------|------|------|
+| ECAM | Enhanced Configuration Access Mechanism | 增强型配置访问机制，将配置空间映射到MMIO |
+| CAM | Configuration Access Mechanism | 传统PCI配置访问机制，使用端口I/O |
+| MCFG | Memory-mapped ConFiGuration | ACPI表，记录ECAM基址和总线范围 |
+| DBI | Data Bus Interface | DWC控制器内部寄存器访问接口 |
+| RC | Root Complex | 根复合体，PCIe拓扑的根节点 |
+| BDF | Bus/Device/Function | PCIe设备的三级地址编号 |
+
 ---
 
 ## 0. 前置背景
@@ -74,6 +84,7 @@ ECAM (Enhanced Configuration Access Mechanism) 将整个配置空间映射到MMI
 ### 1.2 地址计算
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
 graph LR
     BASE["ECAM基址<br/>MCFG表"] --> ADD["+ Bus<<20"]
     ADD --> ADD2["+ Dev<<15"]
@@ -112,6 +123,32 @@ MCFG Table
 ```
 
 Linux查看：`cat /sys/firmware/acpi/tables/MCFG`
+
+**多Segment场景**：
+
+大型服务器可能有多个PCIe Segment（域），每个Segment有独立的ECAM基址。MCFG表中包含多个Allocation Structure，每个描述一个Segment的ECAM映射：
+
+```
+MCFG表 (多Segment示例):
+├── Allocation Structure 0:
+│   ├── Base Address = 0xE000_0000
+│   ├── Segment Group = 0
+│   ├── Start Bus = 0, End Bus = 0xFF
+│   └── 覆盖: 256MB (Bus 0-255)
+├── Allocation Structure 1:
+│   ├── Base Address = 0xC000_0000
+│   ├── Segment Group = 1
+│   ├── Start Bus = 0, End Bus = 0x7F
+│   └── 覆盖: 128MB (Bus 0-127)
+└── ...
+
+内核处理:
+  pci_mmcfg_list → 逐个解析Allocation Structure
+  每个Segment创建独立的 pci_config_window
+  设备BDF前缀即Segment号: 0000:xx:yy.z vs 0001:xx:yy.z
+```
+
+> Segment Group号与Linux的`pci_domain_nr()`对应。不同Segment的ECAM基址可以不同，甚至Bus范围也可以不同（如一个Segment只覆盖Bus 0-127，只需128MB映射空间）。
 
 ---
 
@@ -166,6 +203,7 @@ struct pci_ecam_ops {
 ### 2.3 初始化流程
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
 sequenceDiagram
     participant DT as Device Tree / ACPI
     participant DRV as pci-host-generic
@@ -260,6 +298,7 @@ void __iomem *pci_ecam_map_bus(struct pci_bus *bus, unsigned int devfn, int wher
 ### 2.6 配置空间读写调用链
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
 graph TD
     DRIVER["驱动调用<br/>pci_read_config_dword()"] --> BUS_OP["pci_bus_read_config_dword()<br/>drivers/pci/access.c"]
     BUS_OP --> LOCK["pci_lock_config()<br/>获取自旋锁"]
@@ -291,6 +330,28 @@ int pci_generic_config_read(struct pci_bus *bus, unsigned int devfn,
     return 0;
 }
 ```
+
+**配置空间访问的并发保护**：
+
+`pci_lock_config()` 使用全局自旋锁 `pci_lock` 保护所有配置空间访问：
+
+```c
+// drivers/pci/access.c
+static DEFINE_SPINLOCK(pci_lock);
+
+void pci_lock_config(void)
+{
+    spin_lock_irqsave(&pci_lock, flags);
+    *flags_ptr = flags;
+}
+```
+
+为什么需要全局锁：
+- **CAM模式**：CF8/CFC端口对是全局共享的，两次操作（写地址+读写数据）之间不能被其他CPU打断
+- **ECAM模式**：虽然MMIO访问本身是原子的，但某些控制器（如CAM兼容模式、自定义pci_ops）仍需要串行化
+- **PCI 2.2规范**：要求配置空间访问在Host Bridge级别串行化，确保一个配置事务完成后再开始下一个
+
+> ECAM的per-Bus映射在硬件层面允许不同Bus的访问并行，但Linux仍使用全局锁简化实现。对于高性能场景（如大量VF配置），这个锁可能成为瓶颈。
 
 ---
 
@@ -327,7 +388,37 @@ static bool pci_dw_valid_device(struct pci_bus *bus, unsigned int devfn)
 
 ### 3.3 CAM (Configuration Access Mechanism)
 
-CAM是ECAM的前身，bus_shift=16（只支持256B配置空间）：
+CAM是ECAM的前身，使用x86端口I/O访问配置空间，bus_shift=16（只支持256B配置空间）：
+
+**CAM操作流程**：
+
+```
+1. 构造地址值:
+   CF8 = [31:Enable=1][30:Reserved][23:16:Bus][15:11:Dev][10:8:Func][7:2:Reg][1:0:00]
+
+2. 写入地址端口:
+   outl(CF8, 0xCF8)
+
+3. 读写数据端口:
+   val = inl(0xCFC)          // 读配置空间
+   outl(new_val, 0xCFC)      // 写配置空间
+```
+
+**CAM的局限**：
+- 全局独占：每次配置访问需先写CF8再读写CFC，多CPU并发访问需加锁
+- 空间受限：Reg字段仅bit7:2（8位×4=32个DWORD偏移），最多访问256B
+- 只支持x86：端口I/O是x86特有的机制，ARM/RISC-V无法使用
+- 不可预取：端口I/O是严格有序的，不能做MMIO那样的合并优化
+
+**CAM vs ECAM 对比**：
+
+| 特性 | CAM | ECAM |
+|------|-----|------|
+| 访问方式 | 端口I/O (CF8/CFC) | MMIO映射 |
+| 空间范围 | 256B | 4KB |
+| 并发控制 | 全局锁（软件） | per-Bus映射（硬件并行） |
+| 架构依赖 | 仅x86 | 通用 |
+| 地址计算 | 运行时写CF8 | 编译时偏移计算 |
 
 ```c
 // drivers/pci/controller/pci-host-generic.c
@@ -481,6 +572,7 @@ ECAM at [mem 0x4010000000-0x401fffffff] for [bus 00-ff]
 ## 5. 代码阅读路线
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
 graph TD
     A["pci-ecam.h<br/>数据结构与宏"] --> B["ecam.c<br/>核心实现"]
     B --> C["pci-host-common.c<br/>通用初始化"]
@@ -500,6 +592,18 @@ graph TD
 | 3 | `drivers/pci/access.c` | `pci_generic_config_read/write()`、`pci_lock` |
 | 4 | `drivers/pci/controller/pci-host-generic.c` | DT匹配、DWC过滤 |
 | 5 | `drivers/pci/controller/pci-host-common.c` | Host Bridge初始化流程 |
+
+---
+
+## 参考资料
+
+- [PCIe Base Specification 6.0](https://pcisig.com/specifications) — §7.2.2 ECAM机制定义
+- [ACPI Specification 6.5](https://uefi.org/specifications) — §5.2.12.16 MCFG Table定义
+- [Linux Kernel Source](https://git.kernel.org/) — `drivers/pci/ecam.c`, `drivers/pci/access.c`
+
+---
+
+上一篇：[PCIe核心知识索引](./pcie-learning-resources.md) | 下一篇：[BAR与资源分配](./bar-resource-allocation.md)
 
 ---
 
