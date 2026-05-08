@@ -1,10 +1,23 @@
 # DDR 附录与参考资料
 
-> 本文档为 DDR 学习笔记的附录部分，包含 DDR 初始化与训练流程详解、内存映射与地址译码、功耗管理与温度管理、错误检测与纠正(ECC)、调试与故障排查、总结以及术语表和频率对照表等参考资料。
+> 本文档为 DDR 学习笔记的附录部分，包含术语表、频率对照表、寄存器速查、命令速查和调试命令速查。
+> **工程师视角**：附录是"用到时翻"的内容，不需要通读。建议收藏本文档作为速查手册。
+
+### 关键术语
+
+| 缩写 | 全称 | 含义 |
+|------|------|------|
+| JEDEC | Joint Electron Device Engineering Council | 联合电子设备工程委员会 |
+| SPD | Serial Presence Detect | 串行存在检测（DIMM 上的配置 EEPROM） |
+| ODT | On-Die Termination | 片上端接电阻 |
+| ECC | Error Correction Code | 错误纠正码 |
+| CRC | Cyclic Redundancy Check | 循环冗余校验（DDR5 写操作使用） |
 
 ***
 
 ## 附录A: DDR初始化和训练流程详解
+
+> **参考**：详细内容见 [DDR 控制器、PHY 与训练](./04-DDR控制器PHY与训练.md)。以下为快速参考摘要。
 
 ### A.1 上电初始化序列 (JEDEC标准)
 
@@ -48,6 +61,7 @@ MRS 寄存器配置内容：
 **完整时序图**：
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 sequenceDiagram
     participant PWR as 电源
     participant RST as RESET
@@ -99,6 +113,7 @@ sequenceDiagram
 4. 将 DQS 延迟设置为跳变点 + 90°（1/4 周期）
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 flowchart LR
     subgraph 调整前
         CK1["CK 时钟信号"] --- DQS1["DQS 延迟太大<br/>未与 CK 对齐"]
@@ -356,6 +371,7 @@ void write_training(void) {
 ### A.3 完整训练流程总结
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 flowchart TB
     A["1. Write Leveling<br/>对齐 DQS 和 CK，补偿时钟延迟<br/>（每个 Byte Lane 独立）"]
     B["2. Read Gate Training<br/>找到 DQS 前导码，确定有效数据窗口<br/>（每个 Byte Lane 独立）"]
@@ -380,6 +396,8 @@ flowchart TB
 ***
 
 ## 附录B: DDR内存映射与地址译码
+
+> **参考**：详细内容见 [DDR 性能优化与测量调试](./06-DDR性能优化与测量调试.md) 第 1.3 和 1.5 节。以下为快速参考摘要。
 
 ### B.1 物理地址到DDR地址的映射
 
@@ -442,6 +460,8 @@ CPU 使用线性地址空间访问内存，DDR 芯片需要分层地址（Rank/B
 
 ## 附录C: DDR功耗管理与温度管理
 
+> **参考**：详细内容见 [DDR 工作原理与时序参数](./03-DDR工作原理与时序参数.md) 功耗模式章节。以下为快速参考摘要。
+
 ### C.1 功耗管理概述
 
 总功耗 = 动态功耗 + 静态功耗。
@@ -475,6 +495,7 @@ CPU 使用线性地址空间访问内存，DDR 芯片需要分层地址（Rank/B
 ### C.2 低功耗模式详解
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 stateDiagram-v2
     [*] --> IDLE: 正常操作
     IDLE --> PowerDown: CKE=Low
@@ -527,6 +548,8 @@ stateDiagram-v2
 
 ## 附录D: DDR错误检测与纠正(ECC)
 
+> **参考**：详细内容见 [DDR 物理结构与硬件设计](./02-DDR物理结构与硬件设计.md) ECC 章节。以下为快速参考摘要。
+
 ### D.1 ECC概述
 
 **软错误（Soft Error）来源**：宇宙射线（中子、α粒子）、电磁干扰、电源噪声、时序边际失效。
@@ -563,6 +586,8 @@ ECC 能力：SECDED（单错误纠正，双错误检测），需要额外 8 位 
 ***
 
 ## 附录E: DDR调试与故障排查
+
+> **参考**：详细内容见 [DDR 驱动开发与调试](./05-DDR驱动开发与调试.md) 第四章。以下为快速参考摘要。
 
 ### E.1 常见问题分类
 
@@ -726,6 +751,93 @@ ECC 能力：SECDED（单错误纠正，双错误检测），需要额外 8 位 
 | DDR5-8800 | 4400 MHz | 8800 MT/s | 70.4 GB/s  |
 | MRDIMM-12800 | 3200 MHz | 12800 MT/s | 102.4 GB/s |
 
+---
+
+## 附录H: 如何阅读 DDR 数据手册
+
+DDR 颗粒的数据手册（如 Micron、Samsung、SK hynix 的 datasheet）是配置 DDR 控制器的核心参考。以下是阅读要点：
+
+### H.1 数据手册关键章节
+
+| 章节 | 内容 | 用途 |
+|------|------|------|
+| **Ordering Information** | 颗粒型号编码规则 | 确认颗粒容量、位宽、速度等级、封装 |
+| **Ball Assignment** | 引脚定义图 | 确认 DQ/DQS/CK/CA 等信号对应的物理引脚 |
+| **AC/DC Characteristics** | 电气特性表 | 确认 VDD/VDDQ 电压范围、输入电平 VIH/VIL |
+| **Timing Parameters** | 时序参数表 | 提取 tCL/tRCD/tRP/tRFC 等填入控制器寄存器 |
+| **Mode Register Definition** | 模式寄存器位定义 | 配置 CL/CWL/ODT/DLL 等 |
+| **Initialization Sequence** | 上电初始化流程 | 确认 RESET#/CKE 时序和 MRS 顺序 |
+
+### H.2 从数据手册提取时序参数的步骤
+
+```
+1. 找到 "Speed Bin" 表格
+   → 确认目标频率对应的 Speed Bin（如 DDR4-2400 对应 2400 Mbps）
+   → 提取该 Speed Bin 下的 tCK(min)、CL、tRCD、tRP 值
+
+2. 找到 "Timing Parameters" 表格
+   → 提取所有以 t 开头的参数（tRFC、tWR、tFAW、tCCD 等）
+   → 注意单位：有些是 ns，有些是 tCK（时钟周期数）
+
+3. 转换单位
+   → tCK(ns) = 1 / (频率/2) × 1000
+   → 例如 DDR4-2400: tCK = 1/1200MHz × 1000 = 0.833 ns
+   → 将 ns 值转换为 tCK 周期数: tRCD(tCK) = tRCD(ns) / tCK(ns)
+
+4. 填入控制器寄存器
+   → 控制器寄存器通常以 tCK 为单位
+   → 注意有些参数需要减 1（如 CL 寄存器值 = CL - 1）
+```
+
+> **工程师视角**：数据手册中最容易踩坑的是单位转换。JEDEC 标准中有些参数以 ns 为单位（如 tRFC），有些以 tCK 为单位（如 CL）。如果搞混了单位，DDR 可能完全起不来。
+
+***
+
+## 附录I: 命令速查
+
+### I.1 DDR 命令速查
+
+| 命令 | 缩写 | 说明 |
+|-----|------|------|
+| **ACTIVATE** | ACT | 激活指定行 |
+| **READ** | RD | 读命令 |
+| **WRITE** | WR | 写命令 |
+| **PRECHARGE** | PRE | 预充电，关闭行 |
+| **REFRESH** | REF | 刷新命令 |
+| **MODE REGISTER SET** | MRS | 设置模式寄存器 |
+| **ZQ CALIBRATION** | ZQCL/ZQCS | ZQ 校准 |
+| **SELF REFRESH ENTRY** | SRE | 进入自刷新 |
+| **SELF REFRESH EXIT** | SRX | 退出自刷新 |
+
+### I.2 时序参数速查
+
+| 参数 | 说明 | 典型值 (DDR4-2400) |
+|-----|------|-------------------|
+| **CL** | CAS 延迟 | 17 |
+| **tRCD** | RAS 到 CAS 延迟 | 17 |
+| **tRP** | 预充电时间 | 17 |
+| **tRAS** | 行激活时间 | 39 |
+| **tRC** | 行周期时间 | 56 |
+| **tRFC** | 刷新周期时间 | 350 ns |
+| **tWR** | 写恢复时间 | 15 |
+| **tFAW** | 4 激活窗口 | 30 |
+
+### I.3 常用调试命令
+
+```bash
+# U-Boot 命令
+md  <address> <count>     # 示例: md 0x80000000 100
+mw  <address> <value>     # 示例: mw 0x80000000 0x12345678
+mtest <start> <end>       # 示例: mtest 0x80000000 0x90000000
+
+# Linux 命令
+cat /proc/meminfo         # 查看内存信息
+free -h                   # 查看内存使用
+memtester <size> <loops>  # 示例: memtester 1G 5
+dmidecode -t memory       # 查看 DIMM 信息
+lshw -C memory            # 查看内存硬件信息
+```
+
 ***
 
 **文档版本**: v2.2
@@ -738,5 +850,4 @@ ECC 能力：SECDED（单错误纠正，双错误检测），需要额外 8 位 
 
 ***
 
-> 导航链接：
-> - [上一篇：DDR新技术与学习资源](./07-DDR新技术与学习资源.md)
+> **导航**：[上一篇：DDR 新技术与学习资源](./07-DDR新技术与学习资源.md)

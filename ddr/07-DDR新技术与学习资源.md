@@ -1,6 +1,25 @@
 # DDR 新技术趋势与学习资源
 
-> 本文档涵盖 DDR 新技术趋势（DDR5、HBM、GDDR）、学习资源与参考，以及快速参考手册。
+> 本文档涵盖 DDR 新技术趋势（DDR5、HBM、GDDR、MRDIMM）以及精选学习资源。
+> **工程师视角**：DDR5 不是 DDR4 的频率升级版——16n-prefetch、双通道架构、片上 ECC 是架构级变化。理解这些变化才能做好下一代产品的 DDR 选型。
+
+### 关键术语
+
+| 缩写 | 全称 | 含义 |
+|------|------|------|
+| HBM | High Bandwidth Memory | 高带宽内存，3D 堆叠，1024 位宽接口 |
+| GDDR | Graphics DDR | 图形 DDR，面向 GPU 的高带宽内存 |
+| MRDIMM | Multi-Ranked Buffered DIMM | 多 Rank 缓冲 DIMM，DDR5 时代的新 DIMM 类型 |
+| TSV | Through-Silicon Via | 硅通孔，HBM 堆叠的关键技术 |
+| RFM | Refresh Management | 刷新管理，DDR5 引入的 Row Hammer 缓解机制 |
+| ODT | On-Die Termination | 片上端接电阻 |
+
+### 1.1 前置知识
+
+| 需要了解 | 参考文档 |
+|----------|----------|
+| DDR4 架构和时序参数 | [DDR 工作原理与时序参数](./03-DDR工作原理与时序参数.md) |
+| DDR 物理结构和 DIMM 类型 | [DDR 物理结构与硬件设计](./02-DDR物理结构与硬件设计.md) |
 
 ***
 
@@ -24,6 +43,7 @@
 #### 1.1.1 DDR5 双通道子通道架构详解
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 flowchart TB
     subgraph DDR4["DDR4 DIMM（单通道）"]
         CA4["命令/地址（共享）"]
@@ -92,6 +112,24 @@ MRDIMM（Multiplexed RIMM）是 DDR5 服务器平台引入的新一代内存模�
 **工作原理**：MRDIMM 在控制器与 DRAM 之间增加了一个复用缓冲芯片，将 DDR5-12800 的高频信号降为 DDR5-6400 的信号传给 DRAM，同时保持对外（CPU侧）的高速接口。
 
 > **MRDIMM vs LRDIMM**：两者都使用缓冲芯片，但 MRDIMM 采用频率倍增（2:1），而 LRDIMM 主要是降低负载（1:N 缓冲）。MRDIMM 适合需要极高带宽的场景，LRDIMM 适合需要大容量和多 Rank 的场景。
+
+### 1.5 LPDDR 与标准 DDR 的关键差异
+
+LPDDR（Low Power DDR）不是 DDR 的"低功耗版本"——它是为移动和嵌入式场景重新设计的独立产品线。
+
+| 对比维度 | 标准 DDR (DDR4/DDR5) | LPDDR (LPDDR4/LPDDR5) |
+|----------|---------------------|----------------------|
+| **目标场景** | 服务器、PC、工作站 | 手机、平板、汽车、IoT |
+| **封装形式** | DIMM/SODIMM（可插拔） | PoP（Package-on-Package）或直接焊接 |
+| **位宽** | 64-bit（DIMM） | 16/32-bit per channel |
+| **供电电压** | DDR4: 1.2V, DDR5: 1.1V | LPDDR4: 1.1V/0.6V, LPDDR5: 1.05V/0.5V |
+| **功耗管理** | 自刷新、时钟停止 | 深度睡眠、部分阵列自刷新（PASR）、温度补偿自刷新（TCSR） |
+| **频率** | DDR5-6400 起步 | LPDDR5-6400 起步，LPDDR5X 达 8533 Mbps |
+| **ECC** | 可选（DIMM 上） | 通常无硬件 ECC（依赖链路层 CRC） |
+| **训练** | 每次上电训练 | 训练结果可保存，减少启动时间 |
+| **信号完整性** | 多 Rank、多 DIMM，拓扑复杂 | 点对点连接，信号完整性更好 |
+
+> **工程师视角**：如果你在做嵌入式 Linux 产品（如 AI 摄像头、车载域控），大概率用的是 LPDDR4/LPDDR5 焊接在 PCB 上。LPDDR 的初始化流程和标准 DDR 类似（都是 JEDEC 标准），但寄存器地址和时序参数不同，需要查阅具体颗粒的数据手册。
 
 ***
 
@@ -229,52 +267,6 @@ Samsung K4A8G165WB-BCTD:
 
 ***
 
-## 三、快速参考
-
-### 3.1 DDR 命令速查
-
-| 命令 | 缩写 | 说明 |
-|-----|------|------|
-| **ACTIVATE** | ACT | 激活指定行 |
-| **READ** | RD | 读命令 |
-| **WRITE** | WR | 写命令 |
-| **PRECHARGE** | PRE | 预充电，关闭行 |
-| **REFRESH** | REF | 刷新命令 |
-| **MODE REGISTER SET** | MRS | 设置模式寄存器 |
-| **ZQ CALIBRATION** | ZQCL/ZQCS | ZQ 校准 |
-| **SELF REFRESH ENTRY** | SRE | 进入自刷新 |
-| **SELF REFRESH EXIT** | SRX | 退出自刷新 |
-
-### 3.2 时序参数速查
-
-| 参数 | 说明 | 典型值 (DDR4-2400) |
-|-----|------|-------------------|
-| **CL** | CAS 延迟 | 17 |
-| **tRCD** | RAS 到 CAS 延迟 | 17 |
-| **tRP** | 预充电时间 | 17 |
-| **tRAS** | 行激活时间 | 39 |
-| **tRC** | 行周期时间 | 56 |
-| **tRFC** | 刷新周期时间 | 350 ns |
-| **tWR** | 写恢复时间 | 15 |
-| **tFAW** | 4 激活窗口 | 30 |
-
-### 3.3 常用调试命令
-
-```bash
-# U-Boot 命令
-md  <address> <count>     # 示例: md 0x80000000 100
-mw  <address> <value>     # 示例: mw 0x80000000 0x12345678
-mtest <start> <end>       # 示例: mtest 0x80000000 0x90000000
-
-# Linux 命令
-cat /proc/meminfo         # 查看内存信息
-free -h                   # 查看内存使用
-memtester <size> <loops>  # 示例: memtester 1G 5
-dmidecode -t memory       # 查看 DIMM 信息
-lshw -C memory            # 查看内存硬件信息
-```
-
 ***
 
-> 导航链接：
-> - [上一篇：DDR性能优化与测量调试](./06-DDR性能优化与测量调试.md) | [下一篇：DDR附录与参考资料](./08-DDR附录与参考资料.md)
+> **导航**：[上一篇：DDR 性能优化与测量调试](./06-DDR性能优化与测量调试.md) | [下一篇：DDR 附录与参考资料](./08-DDR附录与参考资料.md)

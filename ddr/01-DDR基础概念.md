@@ -1,6 +1,26 @@
 # DDR 基础概念
 
 > 本篇介绍 DDR 内存的基本概念、发展历程、系统架构以及存储阵列结构，帮助读者建立对 DDR 技术的整体认知。
+> **工程师视角**：DDR 是嵌入式系统中最容易出问题的部分之一——理解基本概念是排查一切 DDR 问题的前提。
+
+### 关键术语
+
+| 缩写 | 全称 | 含义 |
+|------|------|------|
+| DDR | Double Data Rate | 双倍数据速率，在时钟双边沿传输数据 |
+| SDRAM | Synchronous Dynamic Random Access Memory | 同步动态随机存取存储器 |
+| DIMM | Dual In-line Memory Module | 双列直插式内存模块（内存条） |
+| RCD | Registering Clock Driver | 寄存时钟驱动器（RDIMM 上的缓冲芯片） |
+| DB | Data Buffer | 数据缓冲器（LRDIMM 上的缓冲芯片） |
+| JEDEC | Joint Electron Device Engineering Council | 联合电子设备工程委员会，制定 DDR 标准 |
+| LPDDR | Low Power DDR | 低功耗 DDR，面向移动设备 |
+
+### 1.1 前置知识
+
+| 需要了解 | 参考文档 |
+|----------|----------|
+| 计算机体系结构基础（CPU-内存模型） | — |
+| 数字电路基础（频率/周期/双边沿） | — |
 
 ***
 
@@ -42,6 +62,7 @@ DDR (Double Data Rate):
 ### 1.2 为什么嵌入式工程师需要了解 DDR
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 flowchart TD
     A[CPU 上电，执行内部 ROM 代码] --> B[初始化时钟、电源]
     B --> C["★ 初始化 DDR 控制器 ★"]
@@ -66,6 +87,7 @@ flowchart TD
 ### 2.1 技术演进路线
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 timeline
     title DDR 技术发展历程
     2000 : DDR : 2.5V / 266 MT/s
@@ -160,7 +182,7 @@ timeline
 
 #### 3.2.1 主要信号线详解
 
-##### 1. 时钟信号 (Clock Signals)
+**1. 时钟信号 (Clock Signals)**
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -190,7 +212,7 @@ timeline
         数据采样点: ↑ 和 ↓ (上升沿和下降沿)
 ```
 
-##### 2. 地址/命令总线 (Address/Command Bus)
+**2. 地址/命令总线 (Address/Command Bus)**
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -372,7 +394,7 @@ ODT 阻抗值 (可配置):
 └── 通过模式寄存器 MR1 配置
 ```
 
-##### 3. 数据总线 (Data Bus)
+**3. 数据总线 (Data Bus)**
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -503,7 +525,7 @@ DBI = 1 (表示已翻转)
 接收端: DBI=1 时，对 0xFF 取反 (NOT) → 0x00 (恢复原始数据)
 ```
 
-##### 4. 信号线总结表
+**4. 信号线总结表**
 
 | 信号名 | 方向 | 作用说明 |
 |--------|------|----------|
@@ -798,20 +820,45 @@ board_init_f()
     └── gd->ram_size = xxx MB        // 保存内存大小
 ```
 
-以 Rockchip RK3588 为例，DDR 初始化代码在独立的 `ddr.bin` 中，由 BootROM 加载运行：
+以 Rockchip RK3588 为例，DDR 初始化代码在独立的 `ddr.bin` 中，由 BootROM 加载运行。这意味着 U-Boot SPL 本身不包含 DDR 初始化代码——它只是调用已加载的 `ddr.bin` 完成初始化后，再获取结果。
 
 ```c
-/* U-Boot 中典型的 dram_init 实现 (简化) */
+/* U-Boot 中典型的 dram_init 实现 (简化)
+ *
+ * 这个函数在 DDR 已经初始化完成后被调用，它的职责不是"初始化 DDR"，
+ * 而是"告诉 U-Boot DDR 在哪里、有多大"。
+ *
+ * 为什么 DDR 已经初始化好了？
+ * 因为在 U-Boot SPL 阶段（或更早的 BootROM），DDR 控制器已经被配置、
+ * 训练完成，DDR 已经可以正常读写。dram_init() 只是把结果注册到
+ * U-Boot 的全局数据结构中，供后续阶段使用。
+ */
 int dram_init(void)
 {
-    /* 1. 从 SPL/TPL 获取 DDR 信息 */
     struct dram_info *info = &dram_info;
 
-    /* 2. DDR 已经被 SPL 初始化好了，这里只需要获取容量 */
-    info->base = CONFIG_SYS_SDRAM_BASE;   // 通常 0x80000000
-    info->size = rockchip_dram_size();    // 从寄存器读取实际容量
+    /*
+     * base: DDR 在 CPU 物理地址空间中的起始地址。
+     * 对于大多数 ARM SoC，DDR 起始于 0x80000000。
+     * 这个值由 CONFIG_SYS_SDRAM_BASE 定义，不同 SoC 可能不同。
+     */
+    info->base = CONFIG_SYS_SDRAM_BASE;
 
-    /* 3. 注册到 U-Boot 全局数据 */
+    /*
+     * size: 从 DDR 控制器寄存器中读取实际探测到的容量。
+     * rockchip_dram_size() 是平台相关函数，它读取控制器状态寄存器
+     * 中训练完成后记录的容量值。注意：这不是"配置的容量"，
+     * 而是"训练后实际可用的容量"——如果某颗颗粒训练失败，
+     * 这里返回的容量会小于硬件实际容量。
+     */
+    info->size = rockchip_dram_size();
+
+    /*
+     * gd (global_data) 是 U-Boot 的全局数据结构，在 board_init_f()
+     * 阶段分配在栈上，board_init_r() 阶段迁移到 DDR 中。
+     * ram_base 和 ram_size 被后续的内存管理、设备树修复（fdt_fixup_memory）、
+     * Linux 内核启动参数（ATAG 或 FDT memory node）等模块使用。
+     */
     gd->ram_base = info->base;
     gd->ram_size = info->size;
 
@@ -822,42 +869,82 @@ int dram_init(void)
 
 #### 4.4.2 Linux 内核中的 DDR 驱动
 
-Linux 内核对 DDR 控制器的支持主要体现在几个方面：
+Linux 内核不需要像 U-Boot 那样重新初始化 DDR——DDR 在 U-Boot 阶段已经初始化完成。内核的角色是**识别和管理**已有的 DDR 资源。这通过设备树（Device Tree）和内核的内存管理子系统共同完成。
+
+**设备树中的 DDR 节点**：设备树不是用来"配置 DDR 控制器"的（那已经在 U-Boot 中完成了），而是告诉内核 DDR 控制器的寄存器地址和时钟信息，以便内核进行电源管理（devfreq）和性能监控（PMU）。
 
 ```c
-/* 设备树中 DDR 节点的典型描述 (以 i.MX8 为例) */
+/* 设备树中 DDR 节点的典型描述 (以 i.MX8 为例)
+ *
+ * 注意：这里的 reg 属性描述的是 DDR 控制器寄存器的地址，
+ * 不是 DDR 内存本身的地址范围。DDR 内存范围由 memory 节点描述。
+ */
 / {
-    ddr {
-        compatible = "nxp,imx8m-ddrc";
-        reg = <0x3d400000 0x400000>;    // 控制器寄存器基址
-        clocks = <&clk DDR_CLK>;
-        /* DDR PHY 通常单独一个节点 */
+    /*
+     * memory 节点：告诉内核 DDR 的物理地址范围。
+     * 这个节点通常由 U-Boot 在启动时根据实际探测结果动态填充（fdt_fixup_memory），
+     * 而不是在静态设备树中写死。
+     */
+    memory@80000000 {
+        device_type = "memory";
+        reg = <0x80000000 0x80000000>;  // 起始 2GB，U-Boot 会修正此值
     };
 
+    /*
+     * ddrc 节点：DDR 控制器本身，用于 devfreq 调频和 PMU 监控。
+     * 内核通过这个节点知道"控制器的寄存器在哪里"，
+     * 从而可以动态调整 DDR 频率（DVFS）或读取性能计数器。
+     */
+    ddrc: ddrc@3d400000 {
+        compatible = "nxp,imx8m-ddrc";
+        reg = <0x3d400000 0x400000>;    // 控制器寄存器基址和大小
+        clocks = <&clk IMX8M_CLK_DRAM_CORE>;
+        operating-points-v2 = <&ddrc_opp_table>;  // 频率/电压表
+    };
+
+    /*
+     * ddr-pmu 节点：DDR 性能监控单元。
+     * 提供读写次数、带宽利用率、延迟分布等硬件计数器，
+     * 通过 Linux perf 框架暴露给用户空间。
+     */
     ddr-pmu {
         compatible = "nxp,imx8m-ddr-pmu";
-        /* DDR 性能监控单元 */
+        interrupts = <GIC_SPI 98 IRQ_TYPE_LEVEL_HIGH>;
     };
 };
+```
 
-/* Linux 中查看 DDR 控制器信息 */
-# cat /proc/meminfo
-MemTotal:        4036608 kB       // 总内存 (约 4GB)
-MemFree:         2845120 kB       // 空闲内存
-MemAvailable:    3123456 kB       // 可用内存
-...
+**内核如何获取 DDR 信息**：内核不直接读 DDR 控制器寄存器来获取容量，而是通过以下途径：
 
-/* 查看内核识别的内存区域 */
-# cat /proc/iomem
-  80000000-bfffffff : System RAM   // DDR 起始地址和大小
+```bash
+# /proc/meminfo —— 内核管理的内存统计
+# MemTotal 不是"硬件容量"，而是内核实际可用的内存总量。
+# 它已经扣除了内核代码、设备树、保留内存（reserved-memory）等占用的部分。
+$ cat /proc/meminfo
+MemTotal:        4036608 kB       # 约 4GB，但硬件可能是 4GB 整
+MemFree:         2845120 kB       # 完全未使用的内存
+MemAvailable:    3123456 kB       # 可用内存（含可回收的缓存）
+CmaTotal:         262144 kB       # 连续内存分配器预留
+
+# /proc/iomem —— 物理地址空间分配
+# 这里显示的是"物理地址范围"到"用途"的映射。
+# System RAM 段就是 DDR 占用的物理地址空间。
+$ cat /proc/iomem
+  80000000-bfffffff : System RAM   # DDR 物理地址范围
 ```
 
 #### 4.4.3 常用调试命令
 
+以下命令覆盖从 U-Boot 到 Linux 的 DDR 调试全流程。每个命令的用途和解读要点如下：
+
+**U-Boot 阶段**——此时 Linux 尚未启动，只能用 U-Boot 自带命令检查 DDR 状态：
+
 ```bash
 # ===== U-Boot 中 =====
 
-# 查看 DDR 基本信息
+# bdinfo: 查看 U-Boot 记录的 DDR 信息
+# 关键字段: DRAM bank start/size —— 如果 size 为 0 或远小于预期，
+# 说明 DDR 初始化失败或容量探测有问题。
 => bdinfo
 arch_number = 0x00000000
 boot_params = 0x80000100
@@ -865,21 +952,34 @@ DRAM bank   = 0x00000000
 -> start    = 0x80000000
 -> size     = 0x80000000 (2 GiB)
 
-# DDR 内存测试 (简单读写校验)
+# mtest: 简单的 DDR 读写测试
+# 原理: 向指定地址范围写入递增模式，再读回比对。
+# 注意: mtest 会破坏测试区域的数据，不要在存有有用数据的区域运行。
+# 如果测试失败，先缩小范围定位问题地址，再结合示波器排查硬件。
 => mtest 0x80000000 0x81000000
 Testing 00000000 ... 00ffffff:
 Pattern 00000000  Writing... Reading...
 
-# 查看内存内容
+# md: 查看 DDR 中任意地址的内容
+# 用于检查特定地址的数据是否正确，例如验证设备树或内核镜像是否完整加载。
 => md 0x80000000 10
 80000000: 00000000 00000000 00000000 00000000    ................
+```
 
+**Linux 阶段**——系统启动后，通过内核接口获取更详细的 DDR 信息：
+
+```bash
 # ===== Linux 中 =====
 
-# 查看内存信息
+# /proc/meminfo: 内核内存统计
+# MemTotal 是内核实际可用的内存总量（已扣除保留区域）。
+# 如果 MemTotal 远小于硬件容量，检查 reserved-memory 设备树节点
+# 和内核 cmdline 中的 mem= 参数。
 $ cat /proc/meminfo
 
-# x86 平台查看 DDR 详细信息 (SPD)
+# dmidecode: 读取 DIMM 的 SPD (Serial Presence Detect) 信息
+# SPD 是 DIMM 上的一颗小 EEPROM，存储了厂商、型号、时序参数等。
+# 注意: 这仅在 x86 服务器/PC 上有效，嵌入式系统（ARM SoC + 焊接颗粒）没有 SPD。
 $ sudo dmidecode -t memory
 # Memory Device
 #   Size: 8192 MB
@@ -889,12 +989,15 @@ $ sudo dmidecode -t memory
 #   Manufacturer: Samsung
 #   Part Number: M378A1K43CB2-CTD
 
-# 查看 DDR 频率 (通过 devfreq)
+# devfreq: DDR 频率调节接口
+# cur_freq 是当前 DDR 控制器运行频率（不是数据速率，数据速率 = 频率 × 2）。
+# available_frequencies 列出所有支持的频率档位。
+# 如果 cur_freq 一直是最低档，可能是 devfreq 调速策略过于保守。
 $ cat /sys/class/devfreq/ddr-devfreq/cur_freq
-1056000000    // 当前 DDR 频率 1056MHz (DDR4-2133)
+1056000000    # 当前 DDR 频率 1056MHz → DDR4-2133
 
 $ cat /sys/class/devfreq/ddr-devfreq/available_frequencies
-1056000000 664000000 528000000    // 支持的频率档位
+1056000000 664000000 528000000    # 支持的频率档位
 ```
 
 #### 4.4.4 从上电到 DDR 可用：全流程
@@ -967,5 +1070,4 @@ $ cat /sys/class/devfreq/ddr-devfreq/available_frequencies
 
 ***
 
-> 导航链接：
-> - [下一篇：DDR物理结构与硬件设计](./02-DDR物理结构与硬件设计.md)
+> **导航**：[下一篇：DDR 物理结构与硬件设计](./02-DDR物理结构与硬件设计.md)
