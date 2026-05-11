@@ -84,7 +84,7 @@ ECAM (Enhanced Configuration Access Mechanism) 将整个配置空间映射到MMI
 ### 1.2 地址计算
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "'trebuchet ms', verdana, arial, sans-serif"}}}%%
 graph LR
     BASE["ECAM基址<br/>MCFG表"] --> ADD["+ Bus<<20"]
     ADD --> ADD2["+ Dev<<15"]
@@ -93,8 +93,6 @@ graph LR
     B["Bus [27:20]"] --> D["Dev [19:15]"]
     D --> F["Func [14:12]"]
     F --> R["Reg [11:0]"]
-
-    style BASE fill:#e8f5e9
 ```
 
 | 位域 | 位 | 含义 |
@@ -203,7 +201,7 @@ struct pci_ecam_ops {
 ### 2.3 初始化流程
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "'trebuchet ms', verdana, arial, sans-serif"}}}%%
 sequenceDiagram
     participant DT as Device Tree / ACPI
     participant DRV as pci-host-generic
@@ -298,7 +296,7 @@ void __iomem *pci_ecam_map_bus(struct pci_bus *bus, unsigned int devfn, int wher
 ### 2.6 配置空间读写调用链
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "'trebuchet ms', verdana, arial, sans-serif"}}}%%
 graph TD
     DRIVER["驱动调用<br/>pci_read_config_dword()"] --> BUS_OP["pci_bus_read_config_dword()<br/>drivers/pci/access.c"]
     BUS_OP --> LOCK["pci_lock_config()<br/>获取自旋锁"]
@@ -572,7 +570,7 @@ ECAM at [mem 0x4010000000-0x401fffffff] for [bus 00-ff]
 ## 5. 代码阅读路线
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "'trebuchet ms', verdana, arial, sans-serif"}}}%%
 graph TD
     A["pci-ecam.h<br/>数据结构与宏"] --> B["ecam.c<br/>核心实现"]
     B --> C["pci-host-common.c<br/>通用初始化"]

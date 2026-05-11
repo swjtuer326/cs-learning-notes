@@ -19,7 +19,7 @@
 
 ### 0.1 什么是BAR
 
-Base Address Register (BAR) 是设备配置空间中的寄存器（Type 0 Header: 0x10-0x24），用于向系统声明：
+Base Address Register (BAR) 是设备配置空间中的寄存器（Type 0 Header: 0x10-0x27，共6个），用于向系统声明：
 - **需要多大的地址空间**（大小）
 - **需要什么类型的空间**（Memory还是I/O）
 - **是否允许预取**（Prefetchable）
@@ -45,15 +45,75 @@ CPU的物理地址空间是全局共享的。如果两个设备的MMIO区域重�
 
 ### 0.3 资源分配与iATU的关系
 
-BAR分配的是**PCIe总线地址**，但CPU使用的是**物理地址**。两者的转换由Host Bridge内的iATU完成。因此资源分配必须考虑iATU窗口的限制。
+BAR分配的是**PCIe总线地址**，但CPU使用的是**物理地址**。两者的转换由Host Bridge内的iATU完成（详见 [§4. iATU与地址转换](#4-iatu与地址转换)）。因此资源分配必须考虑iATU窗口的限制。
+
+### 0.4 全景视图：从上电到设备可用
+
+BAR地址的分配有**两条路径**，取决于固件是否做了枚举：
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
+flowchart TD
+    BOOT["上电"] --> CHK{"固件是否枚举PCI?"}
+
+    CHK -->|"是 (x86典型)"| FW1["固件枚举设备<br/>分配PCIe地址写入BAR"]
+    FW1 --> FW2["固件配置iATU<br/>写ACPI表传递配置"]
+    FW2 --> K1
+
+    CHK -->|"否 (嵌入式典型)"| K0["内核配置RC和iATU<br/>从零建立地址映射"]
+    K0 --> K1
+
+    K1["内核Phase 1: 枚举<br/>扫描总线、读取BAR、探测大小"]
+    K1 --> K2["内核Phase 2: 计算<br/>汇总桥窗口需求"]
+    K2 --> K3["内核Phase 3: 分配<br/>写入地址到BAR和桥窗口"]
+    K3 --> DRV["驱动映射BAR<br/>pci_iomap → 访问设备"]
+    DRV --> DMA["设备DMA<br/>通过iATU Inbound访问内存"]
+
+    classDef chk fill:#fef3c7, stroke:#d97706, color:#92400e, stroke-width:2px
+    classDef fw fill:#fef3c7, stroke:#d97706, color:#92400e, stroke-width:2px
+    classDef phase1 fill:#d1fae5, stroke:#059669, color:#065f46, stroke-width:2px
+    classDef phase2 fill:#cffafe, stroke:#0891b2, color:#155e75, stroke-width:2px
+    classDef phase3 fill:#dbeafe, stroke:#2563eb, color:#1e40af, stroke-width:2px
+    classDef drv fill:#f1f5f9, stroke:#64748b, color:#334155, stroke-width:2px
+
+    class CHK chk
+    class FW1,FW2,K0 fw
+    class K1 phase1
+    class K2 phase2
+    class K3 phase3
+    class DRV,DMA drv
+```
+
+**两条路径的区别**：
+
+| | x86 桌面/服务器 | 嵌入式 (ARM/RISC-V) |
+|--|----------------|---------------------|
+| 固件 | BIOS/UEFI 完成枚举和地址分配 | 可能只初始化RC，不枚举下游设备 |
+| 内核 Phase 1 | 读取固件写入的地址，探测大小 | 扫描总线发现设备，BAR为空或未定义 |
+| 内核 Phase 3 | 固件分配有效则复用，否则重新分配 | 从零分配所有地址 |
+
+> **无论哪条路径，内核的 Phase 1/2/3 逻辑相同**——区别仅在于 Phase 1 读到的BAR值是否有固件写入的有效地址。
+
+**各章覆盖的阶段**：
+
+| 章节 | 覆盖阶段 |
+|------|---------|
+| §1 规范机制 | 不对应具体阶段，是理解 §2/§3 的硬件基础 |
+| §2 Linux内核实现 | Phase 1：枚举设备、读取BAR、探测大小 |
+| §3 资源分配流程 | Phase 2 & 3：计算桥窗口、分配地址、写入BAR |
+| §4 iATU与地址转换 | 固件/内核配置iATU、驱动访问设备、设备DMA |
+| §5 实战调试 | 驱动使用阶段：查看分配结果、映射BAR、排查问题 |
+| §7 Resizable BAR | 运行时调整BAR大小，触发重新走 Phase 2/3 |
 
 ---
 
 ## 1. 规范机制
 
+本章解释BAR寄存器的硬件规范——它长什么样、怎么探测大小、Prefetchable位的含义。这些规范是后续 §2（内核如何读BAR）和 §3（内核如何分配地址）的基础，不对应全景中的具体阶段。
+
 ### 1.1 BAR寄存器结构
 
-Type 0 Header (普通设备) 有6个BAR (0x10-0x24)，Type 1 Header (桥) 有2个BAR (0x10-0x14)。
+Type 0 Header (普通设备) 有6个BAR (BAR0-BAR5, 0x10-0x27)，Type 1 Header (桥) 有2个BAR (BAR0-BAR1, 0x10-0x17)。
 
 **Memory Space BAR**：
 
@@ -76,7 +136,8 @@ Type 0 Header (普通设备) 有6个BAR (0x10-0x24)，Type 1 Header (桥) 有2�
 ┌──────────────────────────────────────────────┬─┬─┐
 │          Base Address / Size Mask            │ │1│
 └──────────────────────────────────────────────┴─┴─┘
-                                                  └─ 1 = I/O Space
+                                                │ └─ 1 = I/O Space
+                                                └─── 保留 (硬连线为0)
 ```
 
 ### 1.2 Prefetchable 的含义
@@ -86,16 +147,18 @@ BAR的bit3（Prefetchable位）决定了CPU对该地址区域的访问语义：
 | Prefetchable | 含义 | 典型用途 |
 |-------------|------|---------|
 | 0（非预取） | 读取有副作用，CPU不能预取、不能合并访问 | 控制寄存器、状态寄存器、门铃寄存器 |
-| 1（可预取） | 读取无副作用，多次读取返回相同值 | 帧缓冲、显存、ROM |
+| 1（可预取） | 读取无副作用，多次读取返回相同值 | 帧缓冲、显存（Expansion ROM使用独立寄存器0x38，也声明为Prefetchable） |
 
 **为什么区分**：CPU和桥在访问非预取区域时必须严格遵守程序顺序，不能进行读预取（Read Prefetching）或写合并（Write Combining）。对控制寄存器做读预取可能导致状态位被意外清除（如中断状态寄存器读后自动清零）；对帧缓冲做写合并则能显著提升性能。
 
 **规则**：
 - 如果设备的某个Memory区域读取**无副作用**，应声明为Prefetchable
 - Prefetchable BAR通常使用64-bit类型（bit2:1=10），以便映射到4GB以上地址空间
-- 桥窗口分为非预取（Memory Base/Limit）和预取（Prefetchable Base/Limit）两类，分别转发
+- 桥窗口分为非预取（Memory Base/Limit）和预取（Prefetchable Base/Limit）两类，分别转发（详见 [§3.2 桥窗口分配](#32-桥窗口分配)）
 
 ### 1.3 BAR大小探测协议
+
+> **探测时机**：此协议在枚举阶段执行，此时BAR中已有固件（BIOS/UEFI）写入的PCIe地址。写全1**不是**分配地址，而是探测硬件需要多大的地址空间。探测后必须恢复原始地址。
 
 ```mermaid
 %%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
@@ -138,7 +201,7 @@ sequenceDiagram
 
 > I/O BAR与Memory BAR的探测协议相同，区别仅在于掩码：I/O使用`PCI_BASE_ADDRESS_IO_MASK`（bit2-31），Memory使用`PCI_BASE_ADDRESS_MEM_MASK`（bit4-31）。I/O空间在现代系统中已很少使用，x86平台保留`in/out`指令兼容，ARM/RISC-V平台通常不支持I/O空间。
 
-### 1.3 64-bit BAR
+### 1.4 64-bit BAR
 
 64-bit BAR使用两个连续32位寄存器：
 
@@ -153,53 +216,108 @@ BARn+1(高32位): [Base/Mask高32位]
 
 ---
 
-## 2. Linux内核实现
+## 2. Linux内核实现 —— Phase 1: 枚举
 
-### 2.1 BAR探测核心函数
+对应全景中**内核Phase 1**：内核启动后，PCI子系统扫描总线，对每个发现的设备调用 `pci_read_bases()`，读取BAR中的值（可能是固件写入的地址，也可能是空的），同时用"写全1读掩码"的方式探测每个BAR需要多大的地址空间。本阶段**不分配新地址**，只收集信息。
+
+本节按内核实际调用链自顶向下讲解：`pci_read_bases()` → `__pci_size_stdbars()` → `__pci_read_base()` → `decode_bar()` + `pci_size()`。
+
+### 2.1 调用链总览
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
+flowchart TD
+    A["pci_read_bases()<br/>入口：关闭解码、批量探测、逐BAR解析"] --> B["__pci_size_stdbars()<br/>批量写全1读回所有BAR掩码"]
+    B --> C["__pci_read_base()<br/>解析单个BAR为resource"]
+    C --> D["decode_bar()<br/>从BAR原始值提取type/flags"]
+    C --> E["pci_size()<br/>从掩码计算BAR空间大小"]
+    C --> F["pcibios_bus_to_resource()<br/>总线地址转CPU物理地址"]
+
+    classDef entry fill:#d1fae5, stroke:#059669, color:#065f46, stroke-width:2px
+    classDef mask fill:#fef3c7, stroke:#d97706, color:#92400e, stroke-width:2px
+    classDef parse fill:#cffafe, stroke:#0891b2, color:#155e75, stroke-width:2px
+    classDef helper fill:#f1f5f9, stroke:#64748b, color:#334155, stroke-width:2px
+
+    class A entry
+    class B mask
+    class C parse
+    class D,E,F helper
+```
+
+核心思路：先**批量**读掩码（只开关一次 PCI Command 的 Memory/IO 解码位，而非每个BAR各开关一次），再**逐个**解析BAR值，最后将总线地址转换为CPU侧资源地址。
+
+### 2.2 pci_read_bases() —— BAR探测入口
+
+这是BAR探测的顶层函数，在设备枚举阶段被调用。它做四件事：
+
+1. **前置检查**：跳过不合规BAR和SR-IOV VF（VF的BAR由PF定义，见 §3.4）
+2. **关闭解码**：探测期间设备不应响应BAR地址，否则写全1可能产生总线事务
+3. **批量读掩码**：调用 `__pci_size_stdbars()` 一次性获取所有BAR的大小掩码
+4. **逐BAR解析**：对每个BAR调用 `__pci_read_base()` 提取地址和大小
 
 ```c
-// drivers/pci/probe.c
-
-static inline unsigned long decode_bar(struct pci_dev *dev, u32 bar)
+// drivers/pci/probe.c (Linux 6.19)
+static void pci_read_bases(struct pci_dev *dev, unsigned int howmany, int rom)
 {
-    unsigned long flags;
+    u32 stdbars[PCI_STD_NUM_BARS], rombar;
+    u16 orig_cmd;
+    unsigned int pos, reg;
 
-    if ((bar & PCI_BASE_ADDRESS_SPACE) == PCI_BASE_ADDRESS_SPACE_IO) {
-        flags = bar & ~PCI_BASE_ADDRESS_IO_MASK;
-        flags |= IORESOURCE_IO;
-        return flags;
+    if (dev->non_compliant_bars)
+        return;
+    // VF的BAR是只读的，由PF的SR-IOV Capability统一定义
+    if (dev->is_virtfn)
+        return;
+
+    // ① 关闭 Memory/IO 解码（PCI_COMMAND 寄存器的 bit0 和 bit1），
+    //    避免写全1到BAR时设备响应地址0xFFFFFFFF的总线事务
+    if (!dev->mmio_always_on) {
+        pci_read_config_word(dev, PCI_COMMAND, &orig_cmd);
+        if (orig_cmd & PCI_COMMAND_DECODE_ENABLE)
+            pci_write_config_word(dev, PCI_COMMAND,
+                orig_cmd & ~PCI_COMMAND_DECODE_ENABLE);
     }
 
-    flags = bar & ~PCI_BASE_ADDRESS_MEM_MASK;
-    flags |= IORESOURCE_MEM;
-    if (flags & PCI_BASE_ADDRESS_MEM_PREFETCH)
-        flags |= IORESOURCE_PREFETCH;
+    // ② 批量读取所有BAR掩码（__pci_size_stdbars 是 __pci_size_bars 的标准BAR包装）
+    __pci_size_stdbars(dev, howmany, PCI_BASE_ADDRESS_0, stdbars);
+    if (rom)
+        __pci_size_rom(dev, rom, &rombar);  // ROM BAR掩码单独读取
 
-    switch (bar & PCI_BASE_ADDRESS_MEM_TYPE_MASK) {
-    case PCI_BASE_ADDRESS_MEM_TYPE_32:
-        break;
-    case PCI_BASE_ADDRESS_MEM_TYPE_64:
-        flags |= IORESOURCE_MEM_64;
-        break;
+    // ③ 恢复解码
+    if (!dev->mmio_always_on && (orig_cmd & PCI_COMMAND_DECODE_ENABLE))
+        pci_write_config_word(dev, PCI_COMMAND, orig_cmd);
+
+    // ④ 逐个解析标准BAR
+    for (pos = 0; pos < howmany; pos++) {
+        struct resource *res = &dev->resource[pos];
+        reg = PCI_BASE_ADDRESS_0 + (pos << 2);
+        pos += __pci_read_base(dev, pci_bar_unknown, res, reg, &stdbars[pos]);
+        // __pci_read_base 返回1表示64-bit BAR，跳过下一个槽位
     }
-    return flags;
+
+    // ⑤ 解析 Expansion ROM BAR（偏移由 rom 参数指定，通常为 0x38）
+    if (rom) {
+        struct resource *res = &dev->resource[PCI_ROM_RESOURCE];
+        dev->rom_base_reg = rom;
+        res->flags = IORESOURCE_MEM | IORESOURCE_PREFETCH |
+                     IORESOURCE_READONLY | IORESOURCE_SIZEALIGN;
+        __pci_read_base(dev, pci_bar_mem32, res, rom, &rombar);
+    }
 }
 ```
 
-`decode_bar()` 将BAR硬件编码转换为Linux `resource` flags：
+> **`__pci_size_stdbars()` 与 `__pci_size_bars()` 的关系**：前者是后者的薄包装，仅将起始偏移从 `PCI_BASE_ADDRESS_0` 开始、数量限制为 `PCI_STD_NUM_BARS`（6个）。核心逻辑完全在 `__pci_size_bars()` 中。
 
-| BAR编码 | Linux Flag |
-|---------|-----------|
-| bit0=1 | `IORESOURCE_IO` |
-| bit0=0 | `IORESOURCE_MEM` |
-| bit3=1 | `IORESOURCE_PREFETCH` |
-| bit2:1=10 | `IORESOURCE_MEM_64` |
+### 2.3 __pci_size_bars() —— 批量读取掩码
 
-### 2.2 BAR大小读取优化
+此函数对每个BAR执行"保存 → 写全1 → 读回 → 恢复"四步，批量获取大小掩码。
+
+**关键理解**：执行时BAR中已有固件写入的PCIe地址。写全1**不是**为了分配地址，而是为了探测硬件需要多大的地址空间——硬件会把不可写（高位）的位保持为0，可写（低位）的位返回1，这个模式就是大小掩码。探测完后必须恢复原始地址，否则设备会丢失固件分配的地址。
+
+批量处理的原因：① 减少 PCI Command 寄存器的开关次数（只在 `pci_read_bases()` 中开关一次，而非每个BAR各开关一次）；② 虚拟化环境下每次配置空间访问都可能触发VM Exit，批量操作可显著减少开销。
 
 ```c
 // drivers/pci/probe.c
-
 static void __pci_size_bars(struct pci_dev *dev, int count,
                             unsigned int pos, u32 *sizes, bool rom)
 {
@@ -207,48 +325,160 @@ static void __pci_size_bars(struct pci_dev *dev, int count,
     int i;
 
     for (i = 0; i < count; i++, pos += 4, sizes++) {
-        // 保存原始值
-        pci_read_config_dword(dev, pos, &orig);
-        // 写全1读回掩码
-        pci_write_config_dword(dev, pos, mask);
-        pci_read_config_dword(dev, pos, sizes);
-        // 恢复原始值
-        pci_write_config_dword(dev, pos, orig);
+        pci_read_config_dword(dev, pos, &orig);      // 保存固件写入的PCIe地址
+        pci_write_config_dword(dev, pos, mask);       // 写全1，探测大小掩码
+        pci_read_config_dword(dev, pos, sizes);       // 读回掩码（可写位=1）
+        pci_write_config_dword(dev, pos, orig);       // 恢复固件的PCIe地址
     }
 }
 ```
 
-> 优化：`__pci_size_bars()` 一次性读取所有BAR掩码，而非逐个BAR开关解码。在虚拟化环境中，开关解码的开销可能很大。
+**掩码的含义**：读回值中，硬件**可写**的位（即返回1的位）代表BAR的大小编码，不可写（返回0）的位是地址高位。例如1MB的BAR，低20位可写=0，高12位不可写=1，读回 `0xFFF00000`。
 
-### 2.3 __pci_read_base() —— 解析BAR为resource
+### 2.4 decode_bar() —— 解码BAR类型
+
+将BAR原始值中的硬件编码位提取为Linux内部的 `resource` flags，供后续资源管理使用。
+
+```c
+// drivers/pci/probe.c (Linux 6.19)
+static inline unsigned long decode_bar(struct pci_dev *dev, u32 bar)
+{
+    u32 mem_type;
+    unsigned long flags;
+
+    // bit0 = 1 → I/O Space
+    if ((bar & PCI_BASE_ADDRESS_SPACE) == PCI_BASE_ADDRESS_SPACE_IO) {
+        flags = bar & ~PCI_BASE_ADDRESS_IO_MASK;
+        flags |= IORESOURCE_IO;
+        return flags;
+    }
+
+    // bit0 = 0 → Memory Space
+    flags = bar & ~PCI_BASE_ADDRESS_MEM_MASK;
+    flags |= IORESOURCE_MEM;
+    if (flags & PCI_BASE_ADDRESS_MEM_PREFETCH)
+        flags |= IORESOURCE_PREFETCH;
+
+    mem_type = bar & PCI_BASE_ADDRESS_MEM_TYPE_MASK;
+    switch (mem_type) {
+    case PCI_BASE_ADDRESS_MEM_TYPE_32:
+        break;
+    case PCI_BASE_ADDRESS_MEM_TYPE_1M:
+        // ISA设备的1MB以下Memory BAR，按32位处理
+        break;
+    case PCI_BASE_ADDRESS_MEM_TYPE_64:
+        flags |= IORESOURCE_MEM_64;
+        break;
+    default:
+        // 未知类型，按32位处理
+        break;
+    }
+    return flags;
+}
+```
+
+**位编码映射**：
+
+| BAR位 | 含义 | Linux Flag |
+|-------|------|-----------|
+| bit0 = 1 | I/O Space | `IORESOURCE_IO` |
+| bit0 = 0, bit3 = 0 | Memory, Non-Prefetchable | `IORESOURCE_MEM` |
+| bit0 = 0, bit3 = 1 | Memory, Prefetchable | `IORESOURCE_MEM \| IORESOURCE_PREFETCH` |
+| bit2:1 = 00 | 32-bit Memory | 无额外标志 |
+| bit2:1 = 01 | 1MB以下 Memory (ISA) | 按32位处理 |
+| bit2:1 = 10 | 64-bit Memory | 额外设置 `IORESOURCE_MEM_64` |
+
+> `decode_bar()` 只提取**类型标志**，不提取地址——地址提取在 `__pci_read_base()` 中通过掩码运算完成。
+
+### 2.5 pci_size() —— 从掩码计算BAR空间大小
+
+这是BAR大小计算的核心算法。输入是 `__pci_size_bars()` 读回的掩码值，输出是BAR请求的字节大小。
 
 ```c
 // drivers/pci/probe.c
+static u64 pci_size(u64 base, u64 maxbase, u64 mask)
+{
+    u64 size = mask & maxbase;  // 提取大小编码位
+    if (!size)
+        return 0;
+
+    // 取最低有效位 → 对齐粒度 = 空间大小
+    size = size & ~(size - 1);
+
+    // 合法性校验：全0 BAR的低位应全部可写
+    if (base == maxbase && ((base | (size - 1)) & mask) != mask)
+        return 0;
+
+    return size;
+}
+```
+
+**算法推导**（以1MB BAR为例）：
+
+```
+maxbase (读回掩码) = 0xFFF00000
+mask               = 0xFFFFFFF0  (Memory掩码，屏蔽低4位类型标志)
+
+Step 1: size = mask & maxbase
+        = 0xFFFFFFF0 & 0xFFF00000 = 0xFFF00000
+
+Step 2: size & ~(size - 1)   // 提取最低位的1
+        size - 1     = 0xFFEFFFFF
+        ~(size - 1)  = 0x00100000
+        size & ~(size - 1) = 0xFFF00000 & 0x00100000 = 0x00100000
+        → 0x00100000 = 1MB ✓
+```
+
+**为什么 `size & ~(size-1)` 能提取最低位1**：`size-1` 将最低位1及其右侧全部翻转，取反后恰好只有最低位1的位置为1，与原值做AND即得该位。这个技巧在内核中广泛使用（如 `rounddown_pow_of_two`）。
+
+### 2.6 __pci_read_base() —— 解析单个BAR为resource
+
+这是BAR解析的核心函数。此时BAR中已有固件（BIOS/UEFI）写入的PCIe地址，本函数将其读出并转换为 `struct resource`（Linux内部的地址区间表示）。本函数**不分配地址**，只读取固件分配的结果并计算大小。
+
+```c
+// drivers/pci/probe.c (Linux 6.19, 省略部分日志和变量名简化)
 int __pci_read_base(struct pci_dev *dev, enum pci_bar_type type,
                     struct resource *res, unsigned int pos, u32 *sizes)
 {
     u32 l = 0, sz;
     u64 l64, sz64, mask64;
+    struct pci_bus_region region, inverted_region;
 
-    pci_read_config_dword(dev, pos, &l);
-    sz = sizes[0];  // 使用预读的掩码
+    res->name = pci_name(dev);
 
-    // 解码BAR类型
-    res->flags = decode_bar(dev, l);
-    res->flags |= IORESOURCE_SIZEALIGN;
+    // ① 读取BAR当前值（固件写入的PCIe地址），使用预读的掩码
+    pci_read_config_dword(dev, pos, &l);  // l = 固件分配的总线地址
+    sz = sizes[0];  // 掩码，由 __pci_size_stdbars() 批量预读
 
-    // 提取地址和大小掩码
-    if (res->flags & IORESOURCE_IO) {
-        l64 = l & PCI_BASE_ADDRESS_IO_MASK;
-        sz64 = sz & PCI_BASE_ADDRESS_IO_MASK;
-        mask64 = PCI_BASE_ADDRESS_IO_MASK & (u32)IO_SPACE_LIMIT;
+    // ② 无效BAR检查：全0xFFFFFFFF表示设备异常，全0表示BAR未实现
+    if (PCI_POSSIBLE_ERROR(sz))
+        sz = 0;
+    if (PCI_POSSIBLE_ERROR(l))
+        l = 0;
+
+    // ③ 解码类型标志，提取地址和大小编码
+    if (type == pci_bar_unknown) {
+        res->flags = decode_bar(dev, l);
+        res->flags |= IORESOURCE_SIZEALIGN;
+        if (res->flags & IORESOURCE_IO) {
+            l64 = l & PCI_BASE_ADDRESS_IO_MASK;
+            sz64 = sz & PCI_BASE_ADDRESS_IO_MASK;
+            mask64 = PCI_BASE_ADDRESS_IO_MASK & (u32)IO_SPACE_LIMIT;
+        } else {
+            l64 = l & PCI_BASE_ADDRESS_MEM_MASK;
+            sz64 = sz & PCI_BASE_ADDRESS_MEM_MASK;
+            mask64 = (u32)PCI_BASE_ADDRESS_MEM_MASK;
+        }
     } else {
-        l64 = l & PCI_BASE_ADDRESS_MEM_MASK;
-        sz64 = sz & PCI_BASE_ADDRESS_MEM_MASK;
-        mask64 = (u32)PCI_BASE_ADDRESS_MEM_MASK;
+        // ROM BAR: 使用 PCI_ROM_ADDRESS_MASK
+        if (l & PCI_ROM_ADDRESS_ENABLE)
+            res->flags |= IORESOURCE_ROM_ENABLE;
+        l64 = l & PCI_ROM_ADDRESS_MASK;
+        sz64 = sz & PCI_ROM_ADDRESS_MASK;
+        mask64 = PCI_ROM_ADDRESS_MASK;
     }
 
-    // 64-bit BAR: 读取高32位
+    // ④ 64-bit BAR: 合并高32位
     if (res->flags & IORESOURCE_MEM_64) {
         pci_read_config_dword(dev, pos + 4, &l);
         sz = sizes[1];
@@ -257,77 +487,82 @@ int __pci_read_base(struct pci_dev *dev, enum pci_bar_type type,
         mask64 |= ((u64)~0 << 32);
     }
 
-    // 计算大小
-    sz64 = pci_size(l64, sz64, mask64);
+    // ⑤ 校验掩码有效性，计算大小
+    if (!sz64)
+        goto fail;
 
-    // 转换为CPU侧资源地址
+    sz64 = pci_size(l64, sz64, mask64);
+    if (!sz64) {
+        pci_info(dev, FW_BUG "reg 0x%x: invalid BAR (can't size)\n", pos);
+        goto fail;
+    }
+
+    // ⑥ 64-bit BAR 边界检查：32位系统无法处理 >4GB 的BAR
+    if (res->flags & IORESOURCE_MEM_64) {
+        if ((sizeof(pci_bus_addr_t) < 8 || sizeof(resource_size_t) < 8)
+            && sz64 > 0x100000000ULL) {
+            res->flags |= IORESOURCE_UNSET | IORESOURCE_DISABLED;
+            res->start = 0;
+            res->end = 0;
+            goto out;
+        }
+        if ((sizeof(pci_bus_addr_t) < 8) && l) {
+            // 总线地址在4GB以上，标记需要重新分配
+            res->flags |= IORESOURCE_UNSET;
+            res->start = 0;
+            res->end = sz64 - 1;
+            goto out;
+        }
+    }
+
+    // ⑦ 总线地址 → CPU物理地址，设置 resource 的 start/end
+    region.start = l64;
+    region.end = l64 + sz64 - 1;
     pcibios_bus_to_resource(dev->bus, res, &region);
 
+    // ⑧ 往返校验：bus_to_resource(A) → resource_to_bus 应还原为 A
+    //    如果不等，说明 host bridge 映射有误，CPU访问该地址不会被设备响应
+    pcibios_resource_to_bus(dev->bus, &inverted_region, res);
+    if (inverted_region.start != region.start) {
+        res->flags |= IORESOURCE_UNSET;
+        res->start = 0;
+        res->end = region.end - region.start;
+    }
+
+    goto out;
+
+fail:
+    res->flags = 0;
+out:
     return (res->flags & IORESOURCE_MEM_64) ? 1 : 0;
 }
 ```
 
-### 2.4 pci_size() —— 从掩码计算大小
+**关键概念：`pcibios_bus_to_resource()` 与往返校验**
 
-```c
-// drivers/pci/probe.c
-static u64 pci_size(u64 base, u64 maxbase, u64 mask)
-{
-    u64 size = mask & maxbase;
-    if (!size)
-        return 0;
+BAR寄存器中存储的是PCIe总线域地址，但内核的 `struct resource` 需要CPU域地址。两者之间的差异来自Host Bridge的地址映射——RC将一段CPU物理地址空间映射到PCIe总线地址空间。
 
-    // 取最低有效位，得到对齐粒度
-    size = size & ~(size - 1);
-
-    // 验证BAR值合法
-    if (base == maxbase && ((base | (size - 1)) & mask) != mask)
-        return 0;
-
-    return size;
-}
+```
+BAR值 (总线地址)  ──pcibios_bus_to_resource()──>  res->start (CPU物理地址)
+res->start        ──pcibios_resource_to_bus()──>  反推的总线地址
 ```
 
-**算法核心**：`size & ~(size-1)` 提取最低位的1，即对齐粒度，也就是BAR空间大小。
+如果反推结果 != 原始BAR值，说明映射存在不一致（常见于固件配置错误或iATU未正确配置），此时将resource标记为 `IORESOURCE_UNSET`，等待后续重新分配。
 
-### 2.5 BAR读取入口
+在ACPI/UEFI平台，这个映射关系从CRS资源描述符获取；在嵌入式平台，通常由设备树的 `ranges` 属性定义。
 
-```c
-// drivers/pci/probe.c
-static __always_inline void pci_read_bases(struct pci_dev *dev,
-                                           unsigned int howmany, int rom)
-{
-    u32 stdbars[PCI_STD_NUM_BARS];
-    u16 orig_cmd;
-
-    // 关闭解码，避免BAR探测期间产生副作用
-    if (!dev->mmio_always_on) {
-        pci_read_config_word(dev, PCI_COMMAND, &orig_cmd);
-        if (orig_cmd & PCI_COMMAND_DECODE_ENABLE)
-            pci_write_config_word(dev, PCI_COMMAND,
-                orig_cmd & ~PCI_COMMAND_DECODE_ENABLE);
-    }
-
-    // 批量读取所有BAR掩码
-    __pci_size_stdbars(dev, howmany, PCI_BASE_ADDRESS_0, stdbars);
-
-    // 恢复解码
-    if (!dev->mmio_always_on && (orig_cmd & PCI_COMMAND_DECODE_ENABLE))
-        pci_write_config_word(dev, PCI_COMMAND, orig_cmd);
-
-    // 逐个解析BAR
-    for (pos = 0; pos < howmany; pos++) {
-        struct resource *res = &dev->resource[pos];
-        reg = PCI_BASE_ADDRESS_0 + (pos << 2);
-        pos += __pci_read_base(dev, pci_bar_unknown, res, reg, &stdbars[pos]);
-        // 64-bit BAR返回1，跳过下一个槽位
-    }
-}
-```
+> Phase 1 结束后，内核已知道每个BAR的大小，以及是否有固件分配的有效地址。接下来进入 Phase 2 和 Phase 3：计算桥窗口需求，分配或重新分配地址。见 [§3. 资源分配流程](#3-资源分配流程)。
 
 ---
 
-## 3. 资源分配流程
+## 3. 资源分配流程 —— Phase 2 & 3
+
+对应全景中**内核Phase 2和Phase 3**。Phase 1（§2）已收集所有BAR的地址和大小，本章负责：计算桥窗口需求（Phase 2），然后为BAR写入最终地址（Phase 3）。
+
+**什么情况下需要重新分配？**
+- **嵌入式平台**：固件未枚举，BAR为空，内核从零分配所有地址
+- **x86平台**：固件分配的地址可能不满足内核的资源管理需求（如地址对齐、桥窗口约束、Resizable BAR调整后需要更大的地址空间）
+- 标记为 `IORESOURCE_UNSET` 的BAR会在Phase 3被重新分配
 
 ### 3.1 三阶段分配
 
@@ -341,9 +576,13 @@ graph TD
     PHASE2 -->|"桥窗口大小<br/>已确定"| PHASE3
     PHASE3 -->|"BAR和桥窗口<br/>写入配置空间"| DONE["完成"]
 
-    style PHASE1 fill:#e8f5e9
-    style PHASE2 fill:#fff3e0
-    style PHASE3 fill:#e3f2fd
+    classDef enum fill:#d1fae5, stroke:#059669, color:#065f46, stroke-width:2px
+    classDef size fill:#fef3c7, stroke:#d97706, color:#92400e, stroke-width:2px
+    classDef assign fill:#cffafe, stroke:#0891b2, color:#155e75, stroke-width:2px
+
+    class PHASE1 enum
+    class PHASE2 size
+    class PHASE3 assign
 ```
 
 ### 3.2 桥窗口分配
@@ -351,11 +590,14 @@ graph TD
 PCI桥需要为下游设备转发Memory/IO事务，通过桥窗口寄存器配置转发范围：
 
 ```
-Type 1 Header 桥窗口寄存器:
-├── Memory Base/Limit (0x20-0x23)    → 非预取Memory窗口
-├── Prefetchable Base/Limit (0x24-0x2B) → 预取Memory窗口
-├── I/O Base/Limit (0x1C-0x1F)      → I/O窗口
-└── Primary/Secondary/Subordinate Bus → 总线号范围
+Type 1 Header 桥窗口寄存器 (按地址顺序):
+├── I/O Base/Limit (0x1C-0x1F)        → I/O窗口 (含高16位扩展)
+├── Memory Base/Limit (0x20-0x27)     → 非预取Memory窗口 (仅32位)
+└── Prefetchable Base/Limit (0x28-0x2F) → 预取Memory窗口 (支持64位)
+    总线号寄存器:
+    ├── Primary Bus (0x18)
+    ├── Secondary Bus (0x19)
+    └── Subordinate Bus (0x1A)
 ```
 
 **setup-bus.c** 中的分配策略：
@@ -385,6 +627,8 @@ Type 1 Header 桥窗口寄存器:
 4. 递归处理子桥
 
 ### 3.4 pci_std_update_resource() —— 写入BAR
+
+这是Phase 3中实际将地址写入BAR配置空间的函数。`__pci_bus_assign_resources()` 为每个BAR计算好地址后，调用此函数将CPU侧地址转换为总线侧地址并写入BAR寄存器。
 
 ```c
 // drivers/pci/setup-res.c
@@ -439,7 +683,7 @@ static void pci_std_update_resource(struct pci_dev *dev, int resno)
 
 ## 4. iATU与地址转换
 
-BAR分配的是**PCIe总线地址**，CPU使用的是**物理地址**，两者之间的转换由iATU完成。
+§2和§3处理的是**PCIe总线域**的地址分配——BAR里存的是总线地址，桥窗口也是按总线地址配置的。但CPU访问设备时用的是**物理地址**，两者的转换由Host Bridge内的iATU完成。本章解释这个转换机制，以及驱动和DMA如何分别通过Outbound和Inbound窗口访问设备。
 
 ### 4.1 DWC iATU Outbound (CPU → PCIe)
 
@@ -509,38 +753,45 @@ graph TD
     DMA["EP DMA引擎"] -->|"MemWr/MemRd TLP<br/>BA范围"| IN["iATU Inbound<br/>PCIe BA to SoC PA"]
     IN -->|"地址转换"| DDR["DDR物理地址"]
 
-    style OUT fill:#fff3e0
-    style IN fill:#e3f2fd
+    classDef outbound fill:#fef3c7, stroke:#d97706, color:#92400e, stroke-width:2px
+    classDef inbound fill:#cffafe, stroke:#0891b2, color:#155e75, stroke-width:2px
+
+    class OUT outbound
+    class IN inbound
 ```
 
 ---
 
 ## 5. 实战调试
 
-### 5.1 查看BAR分配
+前四章讲解了BAR的规范、内核实现、地址分配和地址转换。本章对应全景中**驱动使用**阶段：如何查看系统中BAR的实际分配结果，以及驱动如何映射和使用BAR。
 
 ```bash
-# 设备资源概览
+# 设备资源概览（显示CPU物理地址，即 pci_resource_start() 的值）
 lspci -v -s 01:00.0
 
-# 原始配置空间 (BAR在0x10-0x24)
+# 原始配置空间 (BAR在0x10-0x27，显示的是PCIe总线地址)
 lspci -xxx -s 01:00.0
 
-# 内核视角的资源
+# 内核视角的资源（CPU物理地址）
 cat /sys/bus/pci/devices/0000:01:00.0/resource
-# 格式: start end flags
+# 格式: start end flags (均为CPU物理地址)
 
-# 查看iomem布局
+# 查看iomem布局（CPU物理地址视角）
 cat /proc/iomem | grep -A5 "PCI"
 ```
+
+> **地址域区分**：`lspci -v` 和 `/sys/.../resource` 显示的是CPU物理地址（经过 `pcibios_bus_to_resource()` 转换）；`lspci -xxx` 读取的原始配置空间中BAR值是PCIe总线地址。
 
 ### 5.2 驱动中使用BAR
 
 ```c
-// 获取BAR信息
-resource_size_t start = pci_resource_start(dev, 0);  // BAR0基地址
+// 获取BAR信息（返回的是CPU物理地址，不是PCIe总线地址）
+// pci_resource_start() 内部返回 dev->resource[0].start，
+// 该值由 __pci_read_base() 中 pcibios_bus_to_resource() 从总线地址转换而来
+resource_size_t start = pci_resource_start(dev, 0);  // BAR0 CPU物理地址
 resource_size_t len   = pci_resource_len(dev, 0);     // BAR0大小
-unsigned int flags     = pci_resource_flags(dev, 0);   // BAR0类型
+unsigned int flags     = pci_resource_flags(dev, 0);   // BAR0类型标志
 
 // 映射BAR到内核虚拟地址
 void __iomem *base = pci_iomap(dev, 0, 0);  // 映射BAR0
@@ -572,7 +823,7 @@ pci_iounmap(dev, base);
 | 顺序 | 文件 | 关注函数 |
 |------|------|----------|
 | 1 | `include/uapi/linux/pci_regs.h` | `PCI_BASE_ADDRESS_*` 宏定义 |
-| 2 | `drivers/pci/probe.c` | `decode_bar()`, `__pci_size_bars()`, `__pci_read_base()`, `pci_read_bases()` |
+| 2 | `drivers/pci/probe.c` | `pci_read_bases()`, `__pci_size_bars()`, `decode_bar()`, `pci_size()`, `__pci_read_base()` |
 | 3 | `drivers/pci/setup-res.c` | `pci_std_update_resource()` |
 | 4 | `drivers/pci/setup-bus.c` | `__pci_bus_size_bridges()`, `__pci_bus_assign_resources()` |
 | 5 | `drivers/pci/controller/dwc/pcie-designware.c` | `dw_pcie_prog_outbound_atu()`, `dw_pcie_prog_inbound_atu()` |
@@ -582,7 +833,7 @@ pci_iounmap(dev, base);
 
 ## 7. Resizable BAR
 
-### 7.1 为什么需要Resizable BAR
+前面各章描述的是传统BAR——大小在制造时固定，运行时不变。Resizable BAR是PCIe的扩展Capability，允许运行时调整BAR大小。它会触发重新走一遍 §3 的分配流程（Phase 2+3），因此本章是前文的自然延伸。
 
 传统BAR大小在设备制造时固定（如GPU固定256MB BAR）。但现代GPU需要更大的MMIO窗口（8GB+），而系统启动时256MB可能已足够。Resizable BAR允许**运行时调整BAR大小**：
 
@@ -600,18 +851,23 @@ Resizable BAR:
 ### 7.2 Resizable BAR Capability
 
 ```
-Resizable BAR Extended Capability (0x100+):
-├── 0x00: Cap ID = 0x1E, Version, Next Ptr
-├── 0x04: Resizable BAR Control
-│   ├── [3:0]  BAR Index (哪个BAR)
-│   ├── [7:4]  Num of Resizable Bits (支持的大小数)
-│   └── [13:8] Current BAR Size (当前大小的索引)
-├── 0x08: Resizable BAR Capability (每个BAR一个)
-│   └── [63:0] Supported Sizes Bitmask
-│        Bit[i]=1 表示支持 2^i 字节
-│        例: Bit[28|29|30|31|32|33] = 1
-│           → 支持 256MB/512MB/1GB/2GB/4GB/8GB
-└── 0x0C: Resizable BAR Capability (下一个BAR)
+Resizable BAR Extended Capability (PCIe Cap偏移 0x100+):
+├── 0x00: Capability Header
+│   └── Cap ID = 0x0015, Version, Next Capability Pointer
+├── 0x04: Resizable BAR Control Register (每个BAR一个，各4字节)
+│   ├── [3:0]  BAR Index (指示此Control关联哪个BAR)
+│   ├── [7:4]  Num of Resizable Bits (支持的大小种数)
+│   └── [13:8] Current BAR Size (当前大小在bitmask中的索引)
+└── 0x08+: Resizable BAR Capability Registers (每个BAR一个，各8字节)
+    ├── 0x08-0x0F: BAR0 Capability — [63:0] Supported Sizes Bitmask
+    ├── 0x10-0x17: BAR1 Capability
+    ├── 0x18-0x1F: BAR2 Capability
+    ├── 0x20-0x27: BAR3 Capability
+    ├── 0x28-0x2F: BAR4 Capability
+    └── 0x30-0x37: BAR5 Capability
+    Bitmask说明: Bit[i]=1 表示支持 2^i 字节
+    例: Bit[28|29|30|31|32|33] = 1
+       → 支持 256MB/512MB/1GB/2GB/4GB/8GB
 ```
 
 ### 7.3 内核实现
