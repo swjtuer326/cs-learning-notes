@@ -69,14 +69,28 @@ Message Data:
   [7:0]   = Delivery Mode | Trigger Mode | Level等
 ```
 
+**x2APIC 64-bit地址格式**：
+
+x2APIC将APIC ID从8位扩展到32位，支持更多CPU核心。对应的MSI地址格式也扩展为64位：
+
 ```
-Message Address (64-bit模式, 支持x2APIC):
-  [63:40] = 0
-  [39:32] = Destination ID [31:8] (x2APIC扩展)
-  [31:20] = 0xFEE
-  [19:12] = Destination ID [7:0]
-  ...同上
+x2APIC MSI Address (64-bit):
+  [63:40] = 0 (保留)
+  [39:32] = Destination ID [31:8]   ← x2APIC扩展的高24位
+  [31:20] = 0xFEE                    ← APIC MMIO基址
+  [19:12] = Destination ID [7:0]     ← 原始8位
+  [11]    = RH (Redirection Hint)
+  [10]    = DM (Delivery Mode)
+  [9:0]   = 0 (保留)
+
+x2APIC MSI Data:
+  [63:32] = 0 (保留, 64-bit Data不使用高32位)
+  [31:16] = 0 (保留)
+  [15:8]  = Vector
+  [7:0]   = Delivery Mode | Trigger Mode | Level等
 ```
+
+> x2APIC要求MSI Capability支持64-bit Address（bit7=1）。如果设备只支持32-bit MSI Address，则Destination ID限制为8位，最多255个CPU目标。Linux内核在x2APIC模式下自动选择64-bit地址格式。
 
 > ARM架构使用GIC ITS，MSI Address指向ITS的GITS_TRANSLATER寄存器，DeviceID由硬件自动附加（从BDF推导）。
 
@@ -106,29 +120,6 @@ ITS的核心是三张表：
 - 典型映射：DeviceID = (Bus << 8) | (Dev << 3) | Func，即BDF的低16位
 
 **LPI分配**：ITS为每个EventID分配一个LPI号（范围8192-2^32-1），LPI号通过Collection Table路由到目标CPU的Redistributor。驱动通过irqdomain API分配LPI，无需手动配置ITS表。
-
-**x2APIC 64-bit地址格式**：
-
-x2APIC将APIC ID从8位扩展到32位，支持更多CPU核心。对应的MSI地址格式也扩展为64位：
-
-```
-x2APIC MSI Address (64-bit):
-  [63:40] = 0 (保留)
-  [39:32] = Destination ID [31:8]   ← x2APIC扩展的高24位
-  [31:20] = 0xFEE                    ← APIC MMIO基址
-  [19:12] = Destination ID [7:0]     ← 原始8位
-  [11]    = RH (Redirection Hint)
-  [10]    = DM (Delivery Mode)
-  [9:0]   = 0 (保留)
-
-x2APIC MSI Data:
-  [63:32] = 0 (保留, 64-bit Data不使用高32位)
-  [31:16] = 0 (保留)
-  [15:8]  = Vector
-  [7:0]   = Delivery Mode | Trigger Mode | Level等
-```
-
-> x2APIC要求MSI Capability支持64-bit Address（bit7=1）。如果设备只支持32-bit MSI Address，则Destination ID限制为8位，最多255个CPU目标。Linux内核在x2APIC模式下自动选择64-bit地址格式。
 
 ---
 
@@ -621,7 +612,7 @@ flowchart TD
 
 ---
 
-上一篇：[设备枚举流程](./enumeration-flow.md) | 下一篇：[SR-IOV虚拟化](./sriov-virtualization.md)
+上一篇：[设备枚举流程](./enumeration-flow.md) | 下一篇：[Hot-Plug机制与pciehp驱动](./hotplug-mechanism.md)
 
 ---
 

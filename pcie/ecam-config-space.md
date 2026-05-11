@@ -47,7 +47,7 @@ CPU发出Memory访问 → Host Bridge地址译码:
   └── 未命中 → 访问本地内存 (DDR)
 ```
 
-Host Bridge不是PCIe设备，它没有配置空间，而是由SoC设计者通过硬件连线或固件（ACPI/DT）配置。
+Host Bridge本身不是PCIe设备，它没有标准的配置空间（不通过ECAM/CfgRd TLP访问）。但Root Port作为PCIe拓扑中的Bridge，拥有Type 1配置空间，通过DBI接口访问（见§3.4）。Host Bridge的地址译码规则由SoC设计者通过硬件连线或固件（ACPI/DT）配置。
 
 ### 0.3 配置空间访问的演进
 
@@ -225,10 +225,10 @@ sequenceDiagram
 
 | 文件 | 作用 |
 |------|------|
-| [ecam.c](file:///home/pbw/2042f/linux/drivers/pci/ecam.c) | ECAM核心：创建/映射/地址计算 |
-| [pci-host-generic.c](file:///home/pbw/2042f/linux/drivers/pci/controller/pci-host-generic.c) | 通用ECAM平台驱动 |
-| [pci-host-common.c](file:///home/pbw/2042f/linux/drivers/pci/controller/pci-host-common.c) | 通用Host Bridge初始化 |
-| [pci-ecam.h](file:///home/pbw/2042f/linux/include/linux/pci-ecam.h) | ECAM数据结构与宏定义 |
+| `drivers/pci/ecam.c` | ECAM核心：创建/映射/地址计算 |
+| `drivers/pci/controller/pci-host-generic.c` | 通用ECAM平台驱动 |
+| `drivers/pci/controller/pci-host-common.c` | 通用Host Bridge初始化 |
+| `include/linux/pci-ecam.h` | ECAM数据结构与宏定义 |
 
 ### 2.4 pci_ecam_create() 详解
 
@@ -460,8 +460,10 @@ CAM是ECAM的前身，使用x86端口I/O访问配置空间，bus_shift=16（只�
 ```c
 // drivers/pci/controller/pci-host-generic.c
 // 简化实现，省略了 pci_generic_ecam_ops 中 add_bus/remove_bus 回调
+// 注意：此结构用于某些将256B配置空间映射到MMIO的控制器（bus_shift=16，每Bus占64KB），
+// 不是x86 CF8/CFC端口I/O方式的CAM。
 static const struct pci_ecam_ops gen_pci_cfg_cam_bus_ops = {
-    .bus_shift = 16,  // CAM: Bus<<16, 无Dev/Func偏移
+    .bus_shift = 16,  // CAM: Bus<<16, 无Dev/Func偏移（每Bus 64KB = 32Dev × 8Func × 256B）
     .pci_ops = {
         .map_bus = pci_ecam_map_bus,
         .read    = pci_generic_config_read,

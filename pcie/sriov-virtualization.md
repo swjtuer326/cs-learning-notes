@@ -314,6 +314,8 @@ sequenceDiagram
 
 ### 2.4 VF BAR的特殊处理
 
+VF BAR的探测和写入不走标准路径：枚举时 `pci_read_bases()` 跳过 VF（`dev->is_virtfn` 直接返回），写入时 `pci_std_update_resource()` 也跳过 VF。VF BAR 由 PF 的 SR-IOV Capability 统一定义和分配（详见 [BAR与资源分配](./bar-resource-allocation.md) §2.2 和 §3.4）。
+
 ```c
 // drivers/pci/probe.c
 // 简化实现，省略了 ROM BAR 处理和 64-bit BAR 的高低位拼接逻辑
@@ -343,11 +345,11 @@ resource_size_t pci_iov_resource_size(struct pci_dev *dev, int resno)
 4. 每个VF的BAR由硬件自动映射到PF BAR空间中的对应偏移
 
 ```
-PF BAR空间:
+PF BAR空间 (必须 >= VF_BAR_size × NumVFs):
 ┌──────────────────────────────────────────────┐
 │ VF0 BAR │ VF1 BAR │ VF2 BAR │ ... │ VFn BAR │
 └──────────────────────────────────────────────┘
-← 每个VF BAR大小 = PF VF_BAR_size / NumVFs →
+← 每个VF BAR大小由SR-IOV VF BAR寄存器定义 →
 ```
 
 ### 2.5 VF配置空间
@@ -786,7 +788,7 @@ flowchart TD
 
 ---
 
-上一篇：[MSI/MSI-X中断机制](./msi-interrupt.md) | 返回：[PCIe核心知识索引](./pcie-learning-resources.md)
+上一篇：[Hot-Plug机制与pciehp驱动](./hotplug-mechanism.md) | 返回：[PCIe核心知识索引](./pcie-learning-resources.md)
 
 ---
 

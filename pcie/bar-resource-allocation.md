@@ -156,7 +156,7 @@ BAR的bit3（Prefetchable位）决定了CPU对该地址区域的访问语义：
 
 ### 1.3 BAR大小探测协议
 
-> **探测时机**：此协议在枚举阶段执行，此时BAR中已有固件（BIOS/UEFI）写入的PCIe地址。写全1**不是**分配地址，而是探测硬件需要多大的地址空间。探测后必须恢复原始地址。
+> **探测时机**：此协议在枚举阶段执行。此时BAR中可能有固件写入的PCIe地址（x86典型），也可能为空（嵌入式典型）。写全1不影响探测结果——无论BAR原始值是什么，硬件可写位都会返回1。探测后必须恢复原始值。
 
 ```mermaid
 %%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "'trebuchet ms', verdana, arial, sans-serif"}}}%%
@@ -601,24 +601,103 @@ Type 1 Header 桥窗口寄存器 (按地址顺序):
     └── Subordinate Bus (0x1A)
 ```
 
-**setup-bus.c** 中的分配策略：
+**窗口粒度约束**（来自 PCIe Spec 与内核 `PCI_IO_RANGE_MASK` / `PCI_PREF_RANGE_MASK` 定义）：
 
-```c
-// drivers/pci/setup-bus.c
+| 窗口类型 | 粒度 | 内核默认对齐 | 来源 |
+|---------|------|------------|------|
+| I/O | 4 KB（部分桥支持 1 KB 扩展） | `SZ_4K` | `PCI_IO_RANGE_MASK = ~0x0f`，A[11:0] 隐含为 0 |
+| 非预取 Memory | 1 MB | `SZ_1M` | `PCI_MEMORY_RANGE_MASK = ~0x0f`，A[19:0] 隐含为 0 |
+| 预取 Memory | 1 MB | `SZ_1M` | `PCI_PREF_RANGE_MASK = ~0x0f`，A[19:0] 隐含为 0 |
 
-// 资源类型掩码
-#define PCI_RES_TYPE_MASK \
-    (IORESOURCE_IO | IORESOURCE_MEM | IORESOURCE_PREFETCH | IORESOURCE_MEM_64)
+**具体示例**：假设 Bus 01 下有两个设备，BAR 需求如下：
+
+```
+Bus 01 设备:
+  01:00.0 NVMe: BAR0 = 16 KB (非预取Memory)
+  01:01.0 NIC:  BAR0 = 64 KB (非预取Memory), BAR2 = 4 MB (预取Memory)
+
+桥窗口计算:
+  非预取Memory: 16KB + 64KB = 80KB → 对齐到1MB → 窗口大小 = 1MB
+    Memory Base = 0xD000, Memory Limit = 0xD000 (1MB窗口: 0xD000_0000-0xD00F_FFFF)
+
+  预取Memory: 4MB → 对齐到1MB → 窗口大小 = 4MB
+    Pref. Mem Base = 0xD010, Pref. Mem Limit = 0xD013 (4MB窗口: 0xD010_0000-0xD013_FFFF)
+
+  I/O: 无需求 → 不分配I/O窗口
 ```
 
 ### 3.3 资源分配算法
 
 `__pci_bus_size_bridges()` 递归计算每个桥需要的窗口大小：
 
-1. 从叶子设备开始，收集所有BAR需求
-2. 按对齐排序（大对齐优先）
-3. 计算所需窗口大小（考虑对齐和间隙）
-4. 向上汇总到父桥
+```c
+// drivers/pci/setup-bus.c
+// 简化实现，省略了 realloc_head 附加资源、CardBus、热插拔额外空间等分支
+void __pci_bus_size_bridges(struct pci_bus *bus, struct list_head *realloc_head)
+{
+    struct pci_dev *dev;
+
+    // 1. 递归处理下游所有子桥（自底向上）
+    list_for_each_entry(dev, &bus->devices, bus_list) {
+        struct pci_bus *b = dev->subordinate;
+        if (!b)
+            continue;
+        __pci_bus_size_bridges(b, realloc_head);
+    }
+
+    // 2. 计算当前总线的三类窗口大小
+    //    pbus_size_io(): 汇总下游I/O BAR需求，计算I/O窗口
+    //    pbus_size_mem(): 汇总下游Memory BAR需求，计算Memory窗口
+    pbus_size_io(bus, additional_io_size, realloc_head);
+
+    b_res = pbus_select_window_for_type(bus, IORESOURCE_MEM |
+                                         IORESOURCE_PREFETCH |
+                                         IORESOURCE_MEM_64);
+    if (b_res && (b_res->flags & IORESOURCE_PREFETCH))
+        pbus_size_mem(bus, b_res, additional_mmio_pref_size, realloc_head);
+
+    b_res = pbus_select_window_for_type(bus, IORESOURCE_MEM);
+    if (b_res)
+        pbus_size_mem(bus, b_res, additional_mmio_size, realloc_head);
+}
+```
+
+**`pbus_size_mem()` 的核心逻辑**——按对齐分组汇总：
+
+```c
+// drivers/pci/setup-bus.c
+// 简化实现，省略了 optional 资源和 realloc 路径
+static void pbus_size_mem(struct pci_bus *bus, struct resource *b_res, ...)
+{
+    resource_size_t aligns[28] = {}; // 按对齐粒度分组: aligns[0]=1MB, aligns[1]=2MB, ...
+    int max_order = 0;
+    resource_size_t size = 0, min_align;
+
+    list_for_each_entry(dev, &bus->devices, bus_list) {
+        pci_dev_for_each_resource(dev, r) {
+            align = pci_resource_alignment(dev, r);
+            // order = log2(align) - log2(1MB)，即对齐粒度在1MB基础上的阶数
+            order = max_t(int, __ffs(align) - __ffs(SZ_1M), 0);
+            aligns[order] += align;
+            if (order > max_order)
+                max_order = order;
+            size += max(resource_size(r), align);
+        }
+    }
+
+    // min_align = 最大对齐要求（保证最大对齐的BAR能放进窗口）
+    min_align = calculate_head_align(aligns, max_order);
+    // 窗口大小 = ALIGN(总大小, min_align)
+    size0 = calculate_memsize(size, ..., win_align);
+    resource_set_range(b_res, min_align, size0);
+}
+```
+
+**关键理解**：
+- **自底向上递归**：先处理最深的子桥，逐层向上汇总，确保父桥窗口能容纳所有下游需求
+- **按对齐分组**：`aligns[]` 数组按 2 的幂分组，`calculate_head_align()` 从高阶向低阶折叠，计算满足所有对齐约束的最小窗口
+- **1MB 最小粒度**：桥 Memory 窗口的 Base/Limit 寄存器只存储 A[31:20]，A[19:0] 隐含为 0，因此窗口粒度至少 1MB
+- **热插拔预留**：如果桥是热插拔桥（`is_hotplug_bridge`），内核会额外添加 `pci_hotplug_mmio_size` 等预留空间
 
 `__pci_bus_assign_resources()` 递归分配具体地址：
 
@@ -761,11 +840,37 @@ flowchart TD
     class IN inbound
 ```
 
+**iATU 与 `pcibios_bus_to_resource()` 的关系**：
+
+iATU 是**配置地址映射的硬件机制**，`pcibios_bus_to_resource()` 是**查询映射关系的软件接口**——两者描述的是同一件事，但视角不同：
+
+| 视角 | 机制 | 作用 | 配置来源 |
+|------|------|------|---------|
+| 硬件 | iATU Outbound 窗口 | 将 CPU PA 翻译为 PCIe BA | 固件/内核驱动写入 iATU 寄存器 |
+| 软件 | `pcibios_bus_to_resource()` | 将 BAR 中的 BA 转换为 CPU PA | ACPI `_CRS` 或 DT `ranges` 属性 |
+
+两者的映射关系**必须一致**：iATU 配置的 `parent_bus_addr → pci_addr` 偏移，就是 `ranges` / `_CRS` 中声明的 offset。如果不一致，`__pci_read_base()` 的往返校验会检测到 `resource_to_bus(bus_to_resource(A)) ≠ A`，将 resource 标记为 `IORESOURCE_UNSET`。
+
+```
+DWC iATU 配置 (固件/内核驱动):
+  parent_bus_addr = 0x8000_0000  (CPU PA)
+  pci_addr        = 0x0000_0000  (PCIe BA)
+  → offset = 0x8000_0000
+
+DT ranges 属性 (软件查询):
+  ranges = <0x82000000 0 0x80000000 0 0x00000000 0 0x10000000>
+  → offset = 0x8000_0000
+
+两者 offset 一致 → pcibios_bus_to_resource() 正确转换
+```
+
 ---
 
 ## 5. 实战调试
 
 前四章讲解了BAR的规范、内核实现、地址分配和地址转换。本章对应全景中**驱动使用**阶段：如何查看系统中BAR的实际分配结果，以及驱动如何映射和使用BAR。
+
+### 5.1 查看BAR分配结果
 
 ```bash
 # 设备资源概览（显示CPU物理地址，即 pci_resource_start() 的值）
@@ -849,7 +954,7 @@ Resizable BAR:
 
 > AMD "Smart Access Memory" (SAM) 和 NVIDIA "Resizable BAR" 是同一技术的不同品牌名。
 
-### 7.2 Resizable BAR Capability
+### 7.1 Resizable BAR Capability
 
 ```
 Resizable BAR Extended Capability (PCIe Cap偏移 0x100+):
@@ -871,7 +976,7 @@ Resizable BAR Extended Capability (PCIe Cap偏移 0x100+):
        → 支持 256MB/512MB/1GB/2GB/4GB/8GB
 ```
 
-### 7.3 内核实现
+### 7.2 内核实现
 
 ```c
 // drivers/pci/resize.c

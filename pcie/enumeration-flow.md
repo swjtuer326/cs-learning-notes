@@ -478,8 +478,8 @@ PCI_PRIMARY_BUS (0x18):
 | Pref. Mem Limit Low | 0x26 [15:4] | A[31:20] | A[19:0]=0 | 1 MB | bit[3:0] 存 Type 编码 |
 | Pref. Mem Base Upper | 0x28 | A[63:32] | — | 1 | 仅在 64-bit 模式下有效 |
 | Pref. Mem Limit Upper | 0x2C | A[63:32] | — | 1 | 仅在 64-bit 模式下有效 |
-| I/O Base Low | 0x1C [7:0] | A[15:2] | A[1:0]=0 | 4 B | bit[0]=0 为 16-bit 模式；=1 启用 32-bit |
-| I/O Limit Low | 0x1D [7:0] | A[15:2] | A[1:0]=0 | 4 B | |
+| I/O Base Low | 0x1C [7:4] | A[15:12] | A[11:0]=0 | 4 KB | bit[3:1]保留；bit[0]=0为16-bit模式；=1启用32-bit |
+| I/O Limit Low | 0x1D [7:4] | A[15:12] | A[11:0]=0 | 4 KB | |
 | I/O Base Upper | 0x30 | A[31:16] | — | 1 | 仅在 32-bit I/O 模式下有效 |
 | I/O Limit Upper | 0x32 | A[31:16] | — | 1 | 仅在 32-bit I/O 模式下有效 |
 
@@ -516,7 +516,7 @@ flowchart TD
 | Bus 号 ∈ [Secondary, Subordinate] | Type 1 | 转发到下游，若 Bus == Secondary 则转换成 Type 0 |
 | Bus 号 ∉ [Secondary, Subordinate] | Type 1 | 忽略（不转发） |
 
-**Type 0 的终结**：设备收到 Type 0 配置事务时，检查 TLP Header 中的 Device/Function 号是否与自己匹配。匹配则响应，否则忽略。这样就实现了"逐总线、逐设备"的精确定址。整个 PCIe 树的最末量一层桥（离目标设备最近的桥）负责把 Type 1 转换为 Type 0。
+**Type 0 的终结**：设备收到 Type 0 配置事务时，检查 TLP Header 中的 Device/Function 号是否与自己匹配。匹配则响应，否则忽略。这样就实现了"逐总线、逐设备"的精确定址。整个 PCIe 树的最后一层桥（离目标设备最近的桥）负责把 Type 1 转换为 Type 0。
 
 > Type 0 / Type 1 的区分与 §3.1 中的 Primary/Secondary/Subordinate Bus 编号直接关联。如果桥的 Bus 号配置错误，配置事务无法到达目标设备——这就是 `pci_scan_bridge()` 必须正确分配 Bus 号的原因。
 
@@ -592,7 +592,7 @@ void pcibios_resource_to_bus(struct pci_bus *bus,
 
 **BAR掩码批量读取**：`pci_read_bases()` 先关闭解码，一次性调用`__pci_size_stdbars()`读取所有BAR掩码，再恢复解码，最后逐个解析。这比逐个BAR开关解码减少了N次Command寄存器写入（N=BAR数量）。在虚拟化环境中，每次配置空间写操作可能触发VM Exit，批量读取的开销降低更为显著。
 
-**CRS超时机制**：`pci_bus_read_dev_vendor_id()` 对未就绪设备最多等待60秒，但使用`msleep(100)`轮询而非忙等，避免占用CPU。
+**CRS超时机制**：`pci_bus_read_dev_vendor_id()` 对未就绪设备最多等待60秒，使用指数退避轮询（初始延迟1ms，每次翻倍，上限1s）而非忙等。
 
 **两遍桥扫描**：Pass 0只扫描固件已配置的桥（快速路径），Pass 1才分配新Bus号。大多数系统在Pass 0就能完成大部分工作。
 
@@ -685,7 +685,7 @@ echo 1 > /sys/bus/pci/devices/0000:00:01.0/rescan
 
 ### 6.4 Hot-Plug枚举
 
-服务器热插拔场景（如NVMe背板、GPU热替换）的枚举流程与启动时不同：
+服务器热插拔场景（如NVMe背板、GPU热替换）的枚举流程与启动时不同，完整的热插拔机制（Slot寄存器、pciehp状态机、中断处理）详见 [Hot-Plug机制与pciehp驱动](./hotplug-mechanism.md)，本节仅聚焦枚举侧的差异。
 
 ```mermaid
 %%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "'trebuchet ms', verdana, arial, sans-serif"}}}%%

@@ -35,7 +35,8 @@
 | 2   | BAR  | [BAR与资源分配](./bar-resource-allocation.md) | BAR探测协议、资源分配三阶段、iATU地址转换    | 4h   |
 | 3   | 枚举   | [设备枚举流程](./enumeration-flow.md)          | 深度优先扫描、桥配置递归、Capability发现   | 4h   |
 | 4   | 中断   | [MSI/MSI-X中断机制](./msi-interrupt.md)      | MSI/MSI-X结构、irqdomain集成、亲和性 | 3h   |
-| 5   | 虚拟化  | [SR-IOV虚拟化](./sriov-virtualization.md)   | PF/VF架构、ATS缓存、ACS隔离、VFIO    | 4h   |
+| 5   | 热插拔  | [Hot-Plug机制与pciehp驱动](./hotplug-mechanism.md) | Slot寄存器、pciehp状态机、中断处理、DPC交互 | 3h   |
+| 6   | 虚拟化  | [SR-IOV虚拟化](./sriov-virtualization.md)   | PF/VF架构、ATS缓存、ACS隔离、VFIO    | 4h   |
 
 ***
 
@@ -50,6 +51,7 @@ flowchart TD
     P3["Phase 3<br/>数据传输与路由<br/>TLP/事务类型/路由"]
     P4["Phase 4<br/>链路层与物理层<br/>LTSSM/链路训练/电源管理"]
     P5["Phase 5<br/>中断机制<br/>INTx/MSI/MSI-X"]
+    P5b["Phase 5b<br/>热插拔<br/>Slot寄存器/pciehp/状态机"]
     P6["Phase 6<br/>虚拟化与隔离<br/>SR-IOV/ACS/ATS"]
     P7["Phase 7<br/>错误处理与可靠性<br/>AER"]
     P8["Phase 8<br/>现代扩展<br/>P2P/Resizable BAR/CXL/FLIT"]
@@ -61,10 +63,13 @@ flowchart TD
     P3 -->|"TLP交给链路层打包"| P4
     P4 -->|"链路就绪后才能传TLP"| P3
     P3 -->|"MSI即MemWr TLP"| P5
-    P5 -->|"VF需独立中断向量"| P6
+    P5 -->|"热插拔中断复用MSI"| P5b
+    P2 -->|"热插拔触发重新枚举"| P5b
+    P5b -->|"VF需独立中断向量"| P6
     P2 -->|"VF是独立BDF"| P6
     P6 -->|"VF错误需独立报告"| P7
     P4 -->|"物理层错误上报"| P7
+    P5b -->|"DPC与热插拔交互"| P7
     P6 -->|"ACS控制P2P"| P8
     P7 -->|"FEC纠正物理层错误"| P8
     P1 -->|"Resizable BAR扩展BAR"| P8
@@ -75,6 +80,7 @@ flowchart TD
     style P3 fill:#e8f5e9,stroke:#4caf50
     style P4 fill:#fff3e0,stroke:#ff9800
     style P5 fill:#e3f2fd,stroke:#2196f3
+    style P5b fill:#e3f2fd,stroke:#2196f3
     style P6 fill:#e3f2fd,stroke:#2196f3
     style P7 fill:#e3f2fd,stroke:#2196f3
     style P8 fill:#fce4ec,stroke:#e91e63
@@ -85,7 +91,8 @@ flowchart TD
 | Phase 0   | 🟣 前置 | 理解PCIe是什么、由哪些组件构成、地址空间如何划分 |
 | Phase 1-3 | 🟢 基础 | 配置设备、读写寄存器、DMA——日常工作的核心    |
 | Phase 4   | 🟠 硬件 | 理解链路为何降速、设备为何消失            |
-| Phase 5-7 | 🔵 系统 | 中断子系统、虚拟化、可靠性              |
+| Phase 5-5b | 🔵 系统 | 中断子系统、热插拔事件处理              |
+| Phase 6-7 | 🔵 系统 | 虚拟化、可靠性                    |
 | Phase 8   | 🔴 前沿 | 数据中心和高性能计算的现代扩展            |
 
 ***
@@ -209,7 +216,7 @@ x16链路: TX[0:15] → RX[0:15]
 | x8  | 8 bit/方向  | 25G/40G网卡      |
 | x16 | 16 bit/方向 | GPU、100G网卡     |
 
-**带宽计算**：`有效带宽 = 速率 × 宽度 × 128/130 ÷ 8`（128b/130b编码开销）
+**带宽计算**：`有效带宽 = 速率 × 宽度 × 编码效率 ÷ 8`。Gen1/2 使用 8b/10b 编码（效率 80%），Gen3+ 使用 128b/130b 编码（效率 ≈98.5%）。上表数值均按对应代际编码效率计算。
 
 | 速率             | x1         | x4        | x8        | x16       |
 | -------------- | ---------- | --------- | --------- | --------- |
@@ -218,6 +225,9 @@ x16链路: TX[0:15] → RX[0:15]
 | 8.0 GT/s (3.0) | \~1 GB/s   | \~4 GB/s  | \~8 GB/s  | \~16 GB/s |
 | 16 GT/s (4.0)  | \~2 GB/s   | \~8 GB/s  | \~16 GB/s | \~32 GB/s |
 | 32 GT/s (5.0)  | \~4 GB/s   | \~16 GB/s | \~32 GB/s | \~64 GB/s |
+| 64 GT/s (6.0)  | \~8 GB/s   | \~32 GB/s | \~64 GB/s | \~128 GB/s |
+
+> **待确认**：PCIe 7.0 目标速率为 128 GT/s，规范尚未正式发布，最终数值可能调整
 
 ### 0.6 数据传输模型 —— TLP与DLLP
 
@@ -225,15 +235,23 @@ PCIe事务在三层之间传递：
 
 ```mermaid
 %%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "'trebuchet ms', verdana, arial, sans-serif"}}}%%
-flowchart LR
-    TLP["TLP<br/>Transaction Layer Packet<br/>承载业务数据"]
-    DLLP["DLLP<br/>Data Link Layer Packet<br/>链路管理/ACK"]
-    SEQ["Sequence Number<br/>序列号"]
-    LCRC["LCRC<br/>链路层CRC"]
-    SYM["Symbol<br/>8b/10b或128b/130b编码"]
-    STP["START/END帧定界"]
-    TLP --> DLLP
+flowchart TD
+    subgraph "事务层"
+        TLP["TLP<br/>Transaction Layer Packet<br/>承载业务数据"]
+    end
+    subgraph "数据链路层"
+        DLLP["DLLP<br/>Data Link Layer Packet<br/>链路管理/ACK"]
+        SEQ["Sequence Number<br/>序列号"]
+        LCRC["LCRC<br/>链路层CRC"]
+    end
+    subgraph "物理层"
+        SYM["Symbol<br/>8b/10b或128b/130b编码"]
+        STP["START/END帧定界"]
+    end
+    TLP -->|"加SEQ+LCRC"| SEQ
+    SEQ --> LCRC
     DLLP --> SYM
+    LCRC --> SYM
 
     style TLP fill:#e8f5e9
     style DLLP fill:#fff3e0
@@ -422,7 +440,7 @@ timeline
 
 ```c
 // 关键技术动作
-pci_ecam_create(cfg);                      // 分配 cfg->win (MMIO 基址) + cfg->pci_ops
+pci_ecam_create(dev, cfgres, busr, ops);        // 分配 cfg->win (MMIO 基址) + cfg->pci_ops
 dw_pcie_prog_outbound_atu(pci, outbound);  // 配置 iATU: CPU 地址 → PCIe 总线地址
                                           //   region.select = IATU_REGION_CTRL_CFG;
 ```
@@ -524,7 +542,7 @@ pci_alloc_irq_vectors(dev, 1, 16, PCI_IRQ_MSI | PCI_IRQ_MSIX);
 | PASID | `pci_pasid_init()` | 发现 PASID Capability，记录最大 PASID 宽度 |
 | ACS | `pci_acs_init()` | 发现 ACS Capability，用于 P2P 隔离和 VF 间隔离 |
 
-#### Stage 6 — 交付 OS ([ECAM与配置空间](./ecam-config-space.md) §4)
+#### Stage 6 — 交付 OS ([ECAM与配置空间](./ecam-config-space.md) §1.3)
 
 固件完成所有初始化后，通过固件-OS 接口将拓扑和资源配置传递给内核：
 
