@@ -3,6 +3,30 @@
 > 定位：系统软件工程师的PCIe核心概念速查与深度指引
 > 原则：不摊大饼，每个主题触及核心机制，指向关键规范章节与代码
 
+### 关键术语
+
+| 缩写 | 全称 | 含义 |
+|------|------|------|
+| RC | Root Complex | PCIe 树的根节点，连接 CPU 和 PCIe 总线 |
+| ECAM | Enhanced Configuration Access Mechanism | 增强配置访问机制，通过 MMIO 访问配置空间 |
+| BAR | Base Address Register | 基地址寄存器，声明设备的地址空间需求 |
+| TLP | Transaction Layer Packet | 事务层数包，PCIe 数据传输的基本单元 |
+| LTSSM | Link Training and Status State Machine | 链路训练状态机，控制链路初始化和恢复 |
+| AER | Advanced Error Reporting | 高级错误报告机制 |
+| SR-IOV | Single Root I/O Virtualization | 单根 I/O 虚拟化，将物理设备拆分为多个虚拟功能 |
+| ATS | Address Translation Service | 地址翻译服务，设备侧缓存 IOMMU 翻译结果 |
+| ACS | Access Control Services | 访问控制服务，控制 P2P 和 VF 间隔离 |
+| CXL | Compute Express Link | 计算互连协议，基于 PCIe 物理层 |
+| BDF | Bus/Device/Function | PCIe 设备的三级寻址编码 |
+| MCFG | Memory-mapped Configuration | ACPI 表，描述 ECAM 基地址 |
+| iATU | Internal Address Translation Unit | DWC 控制器内部地址转换单元 |
+| MSI | Message Signaled Interrupt | 基于内存写入的中断信号机制 |
+| ASPM | Active State Power Management | 链路级活动状态电源管理 |
+| VF | Virtual Function | SR-IOV 虚拟功能，轻量级 PCIe Function |
+| PF | Physical Function | SR-IOV 物理功能，管理 VF 的主 Function |
+
+***
+
 ### 专题文档
 
 | 序号 | 主题   | 文档                                       | 核心内容                        | 建议学时 |
@@ -18,8 +42,8 @@
 ## 学习路径
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
-graph TD
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "'trebuchet ms', verdana, arial, sans-serif"}}}%%
+flowchart TD
     P0["Phase 0<br/>基础概念<br/>拓扑/地址空间/Lane"]
     P1["Phase 1<br/>地址空间与访问机制<br/>ECAM/BAR/iATU"]
     P2["Phase 2<br/>设备枚举与拓扑发现<br/>BDF/枚举算法/桥配置"]
@@ -72,7 +96,7 @@ graph TD
 
 ### 0.1 从PCI到PCIe —— 为什么需要PCIe
 
-| <br /> | ISA (1981)    | PCI (1992) | PCI-X (1998) | PCIe (2003)         |
+| 对比维度 | ISA (1981)    | PCI (1992) | PCI-X (1998) | PCIe (2003)         |
 | ------ | ------------- | ---------- | ------------ | ------------------- |
 | 总线宽度   | 8/16-bit      | 32/64-bit  | 64-bit       | 串行Lane              |
 | 时钟     | 4.77-8.33 MHz | 33/66 MHz  | 66-133 MHz   | 2.5-64 GT/s         |
@@ -85,8 +109,8 @@ graph TD
 ### 0.2 PCIe拓扑组件
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
-graph TD
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "'trebuchet ms', verdana, arial, sans-serif"}}}%%
+flowchart TD
     CPU["CPU"] --> RC["Root Complex<br/>根联合体"]
     RC --> RP1["Root Port 0"]
     RC --> RP2["Root Port 1"]
@@ -141,8 +165,8 @@ Linux中BDF完整表示为 `Segment:Bus:Device.Function`，如 `0000:01:00.0`。
 PCIe定义了三种独立的地址空间，每种有不同的访问方式：
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
-graph LR
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "'trebuchet ms', verdana, arial, sans-serif"}}}%%
+flowchart LR
     CFG["Configuration Space<br/>配置空间<br/>4KB/Function<br/>通过ECAM访问"]
     MEM["Memory Space<br/>存储空间<br/>BAR映射的区域<br/>通过Memory R/W访问"]
     IO["I/O Space<br/>IO空间<br/>传统兼容<br/>通过IO R/W访问"]
@@ -200,8 +224,8 @@ x16链路: TX[0:15] → RX[0:15]
 PCIe事务在三层之间传递：
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
-graph LR
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "'trebuchet ms', verdana, arial, sans-serif"}}}%%
+flowchart LR
     TLP["TLP<br/>Transaction Layer Packet<br/>承载业务数据"]
     DLLP["DLLP<br/>Data Link Layer Packet<br/>链路管理/ACK"]
     SEQ["Sequence Number<br/>序列号"]
@@ -250,8 +274,8 @@ DMA的关键问题：
 理解PCIe的第一步是看清CPU地址空间与PCIe总线地址空间之间的映射关系：
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
-graph TD
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "'trebuchet ms', verdana, arial, sans-serif"}}}%%
+flowchart TD
     CPU["CPU"] -->|"Memory R/W<br/>(BAR地址范围)"| iATU_O["iATU Outbound"]
     CPU -->|"Memory R/W<br/>(ECAM地址范围)"| ECAM["ECAM区域<br/>256MB/Segment"]
     iATU_O -->|"MemRd/MemWr TLP"| BAR["设备BAR空间"]
@@ -296,7 +320,7 @@ ECAM地址 = 基址 + (Bus << 20) + (Dev << 15) + (Func << 12) + Offset
 **协商过程**：
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "'trebuchet ms', verdana, arial, sans-serif"}}}%%
 sequenceDiagram
     participant SW as 软件(枚举)
     participant DEV as 设备BAR
@@ -344,8 +368,8 @@ sequenceDiagram
 **双向映射**：
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
-graph TD
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "'trebuchet ms', verdana, arial, sans-serif"}}}%%
+flowchart TD
     PA["CPU物理地址"] -->|"iATU Window"| BA["PCIe总线地址"]
     BA2["PCIe总线地址"] -->|"iATU Window"| PA2["SoC本地地址"]
     PA -.->|"Outbound: CPU发起访问"| BA
@@ -369,15 +393,164 @@ graph TD
 
 ***
 
-## Phase 2: 设备枚举与拓扑发现
+## Phase 2: PCIe 初始化的完整图景
 
-> 系统启动时如何发现所有PCIe设备并分配资源？
+> EFI/UEFI 固件（或内核自己）如何在一个尚不可见的拓扑中发现所有 PCIe 设备、为它们分配资源、初始化中断？这是一个层层递进的工程流程。
 
-### 2.1 枚举算法 —— 深度优先扫描
+本节站在**固件/内核开发工程师**的角度，将零散的知识串联成一条可执行的初始化时间线。每个环节对应的详细机制在后续文档中展开。
+
+### 2.1 初始化时间线
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
-graph TD
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "'trebuchet ms', verdana, arial, sans-serif"}}}%%
+timeline
+    title PCIe 初始化时间线 (EFI/UEFI 固件视角)
+    Stage 0 : ECAM 配置 : 固件初始化 Host Bridge<br/>创建 ECAM MMIO 窗口<br/>配置 iATU (Outbound)
+    Stage 1 : 拓扑发现 : 深度优先扫描 Bus/Dev/Func<br/>通过 Vendor ID 发现设备<br/>分配 Bus 号 (Primary/Secondary/Sub)
+    Stage 2 : BAR 探测 : 读回 BAR 寄存器值<br/>写全1探测大小<br/>为每个设备计算资源需求
+    Stage 3 : 资源分配 : 汇总桥下游所有 BAR 需求<br/>自底向上计算桥窗口大小<br/>自顶向下分配地址<br/>写入 Bridge Window / BAR 寄存器
+    Stage 4 : 中断初始化 : 发现 MSI/MSI-X Capability<br/>分配中断向量<br/>配置 MSI Address/Data
+    Stage 5 : 能力初始化 : AER, SR-IOV, ATS, Resizable BAR<br/>链路训练与宽度协商
+    Stage 6 : 交付 OS : 构造 ACPI MCFG / DSDT 表<br/>或 DT pcie-controller 节点<br/>内核接管或重建资源
+```
+
+### 2.2 各阶段的核心要素
+
+#### Stage 0 — ECAM 配置（[ECAM与配置空间](./ecam-config-space.md)）
+
+这是所有后续操作的前提：固件必须先让 CPU 能"看到"设备配置空间。
+
+```c
+// 关键技术动作
+pci_ecam_create(cfg);                      // 分配 cfg->win (MMIO 基址) + cfg->pci_ops
+dw_pcie_prog_outbound_atu(pci, outbound);  // 配置 iATU: CPU 地址 → PCIe 总线地址
+                                          //   region.select = IATU_REGION_CTRL_CFG;
+```
+
+- **FDT 平台**：`pci-host-ecam-generic` 驱动从设备树 `reg` 属性获取 ECAM 基址
+- **ACPI 平台**：内核从 MCFG 表获取 ECAM 基址，由固件在 Stage 6 填好
+- **结果**：`pci_generic_config_read/write()` 可用，枚举可以开始
+
+#### Stage 1 — 拓扑发现（[枚举流程](./enumeration-flow.md)）
+
+从 Bus 0 开始深度优先遍历：
+
+```
+pci_host_probe()
+  └─ pci_scan_root_bus()           // Bus 0 作为根总线
+       └─ pci_scan_child_bus(bus)
+            └─ for devnr = 0..31:
+                 └─ pci_scan_slot(bus, PCI_DEVFN(devnr, 0))
+                      └─ for func = 0..7 (或至多255, ARI):
+                           └─ pci_scan_single_device(bus, PCI_DEVFN(devnr, func))
+                           ├─ pci_scan_device()        // 读 Vendor ID
+                           │    └─ pci_bus_read_dev_vendor_id()  // CRS 等待最多 60s
+                           │    └─ pci_alloc_dev()
+                           │    └─ pci_setup_device()   // 读 hdr_type, class, BAR, capabilities
+                           └─ pci_device_add()
+            └─ for 每个桥设备:
+                 └─ pci_scan_bridge_extend()
+                      ├─ 读 Primary/Secondary/Subordinate Bus
+                      ├─ Pass 0: 固件已配置 → 直接递归
+                      └─ Pass 1: 固件未配置 → 分配 Bus 号 → 递归
+```
+
+**关键状态转移**：枚举过程中`pci_setup_device()` 会调用 `pci_init_capabilities()`，在此处初始化 MSI、MSI-X、SR-IOV、AER、Resizable BAR 等——这些能力在后面的 Stage 4-5 中才会被实际激活。
+
+#### Stage 2 — BAR 探测（[BAR资源分配](./bar-resource-allocation.md) §2）
+
+枚举中的 `pci_setup_device()` 调用 `pci_read_bases()`，这是 BAR 探测的入口：
+
+```c
+// 知识要点，详见 bar-resource-allocation.md §2.2-2.6
+pci_read_bases(dev, PCI_STD_NUM_BARS, PCI_ROM_ADDRESS);
+  // ① 关闭 Memory/IO 解码 (PCI_COMMAND)
+  // ② __pci_size_stdbars() → __pci_size_bars()
+  //      对每个 BAR: 保存原始值 → 写全1 → 读回掩码 → 恢复原始值
+  // ③ 恢复解码
+  // ④ for each BAR:
+  //      __pci_read_base() → decode_bar() + pci_size()
+  //      从掩码提取类型 (IO/MEM/64bit/Prefetchable) + 大小
+  //      将 PCIe 总线地址转换为 CPU 物理地址 (pcibios_bus_to_resource)
+```
+
+**关键**：此阶段不分配地址。BAR 中保留的是固件写入的值（或者 0），内核只读取它和探测大小。如果固件已分配有效地址且 resource 正确，后续 Stage 3 会直接复用；否则从零分配。
+
+#### Stage 3 — 资源分配（[BAR资源分配](./bar-resource-allocation.md) §3-4）
+
+内核走"汇总 → 计算 → 写入"三步：
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "'trebuchet ms', verdana, arial, sans-serif"}}}%%
+flowchart TD
+    A["__pci_bus_size_bridges()<br/>自底向上：汇总所有设备 BAR 和桥窗口"] --> B["__pci_bus_assign_resources()<br/>自顶向下：在父窗口内分配设备地址"]
+    B --> C["pci_std_update_resource()<br/>写入 BAR 寄存器<br/>关闭解码→写入BAR→读回校验→恢复解码"]
+
+    style A fill:#d1fae5
+    style B fill:#fef3c7
+    style C fill:#cffafe
+```
+
+- **Step 1 `__pci_bus_size_bridges()`**：遍历每个桥，将其下游所有设备的 BAR 需求汇总到桥的 I/O、Memory、Prefetchable Memory 三类窗口
+- **Step 2 `__pci_bus_assign_resources()`**：从 Root 往下，在每层桥的窗口范围内为设备分配具体地址（最简单的策略：顺序分配 + 对齐）
+- **Step 3 `pci_std_update_resource()`**：将 CPU 物理地址转换为 PCIe 总线地址（`pcibios_resource_to_bus()`），写入 BAR 寄存器并读回校验
+
+**iATU 的角色**：iATU 是 Host Bridge 内部的地址转换单元。Outbound iATU 将 CPU 物理地址映射到 PCIe 总线地址（设备侧看到的地址），Inbound iATU 将 PCIe 总线地址映射到 CPU 物理地址（设备 DMA 数据写入的内存位置）。正确配置 iATU 是固件的核心职责之一。
+
+#### Stage 4 — 中断初始化（[MSI中断](./msi-interrupt.md)）
+
+枚举中 `pci_init_capabilities()` 调用了 `pci_msi_init()` / `pci_msix_init()` 来禁用 MSI/MSI-X。驱动加载时才会真正启用：
+
+```c
+pci_alloc_irq_vectors(dev, 1, 16, PCI_IRQ_MSI | PCI_IRQ_MSIX);
+  // → 分配中断向量，设置 MSI address/data
+  // → __pci_write_msi_msg() 写入 MSI Capability 寄存器
+```
+
+- **MSI**：3 个关键寄存器 —— Message Address (64-bit)、Message Data (16-bit)、Multiple Message Enable
+- **MSI-X**：独立的 BAR 空间，每个向量有独立的 Address + Data 对，支持 per-vector mask
+- **x86**：MSI Address 编码目标 APIC ID 和中断模式；**ARM GICv3**：通过 ITS 表将 MSI 的 `(DeviceID, EventID)` 映射到 LPI 中断号
+
+#### Stage 5 — 能力初始化
+
+`pci_init_capabilities()` 触发的其他能力：
+
+| 能力 | 初始化函数 | 作用 |
+|------|-----------|------|
+| SR-IOV | `pci_iov_init()` | 读取 TotalVFs，记录 PF/VF 关系 |
+| AER | `pci_aer_init()` | 发现 AER Capability，准备错误上报路径 |
+| ATS | `pci_ats_init()` | 发现 ATC (Address Translation Cache)，记录 STU 页大小 |
+| Resizable BAR | `pci_rebar_init()` | 发现 REBAR Capability，记录支持的 BAR 大小列表 |
+| PASID | `pci_pasid_init()` | 发现 PASID Capability，记录最大 PASID 宽度 |
+| ACS | `pci_acs_init()` | 发现 ACS Capability，用于 P2P 隔离和 VF 间隔离 |
+
+#### Stage 6 — 交付 OS ([ECAM与配置空间](./ecam-config-space.md) §4)
+
+固件完成所有初始化后，通过固件-OS 接口将拓扑和资源配置传递给内核：
+
+**ACPI 平台**：
+
+```
+MCFG 表 → ECAM MMIO 基址 (每段 Bus 范围一个 entry)
+DSDT/SSDT → _CRS (设备资源/BAR/桥窗口) + _PRT (中断路由)
+```
+
+**Device Tree 平台**：
+
+```dts
+pcie@40000000 {
+    compatible = "pci-host-ecam-generic";
+    reg = <0x0 0x40000000 0x0 0x10000000>;     // ECAM 窗口
+    ranges = <0x81000000 0 0 0x0 0x30000000 0 0x00010000>,  // IO
+             <0x82000000 0 0x48000000 0x0 0x48000000 0 0x08000000>; // MEM
+};
+```
+
+### 2.3 枚举算法 —— 深度优先扫描
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "'trebuchet ms', verdana, arial, sans-serif"}}}%%
+flowchart TD
     START["扫描 Bus 0"] --> SCAN["遍历 Device 0..31"]
     SCAN --> CHECK{"Vendor ID<br/>== 0xFFFF?"}
     CHECK -->|是| NEXT["下一个Device"]
@@ -397,29 +570,23 @@ graph TD
 
 **桥的关键寄存器**：
 
-| 寄存器             | 含义          |
+| 寄存器 | 含义 |
 | --------------- | ----------- |
-| Primary Bus     | 桥的上游总线号     |
-| Secondary Bus   | 桥的直接下游总线号   |
+| Primary Bus | 桥的上游总线号 |
+| Secondary Bus | 桥的直接下游总线号 |
 | Subordinate Bus | 桥下游所有总线的最大号 |
 
-**Type 0 vs Type 1配置周期**：Type 0用于目标设备（BDF匹配），Type 1用于穿透桥接（转发到下游）
+**Type 0 vs Type 1 配置周期**：Type 0 用于到达目标设备（BDF 匹配），Type 1 用于穿透桥接（转发到下游）。
 
-> 枚举通过ECAM（Phase 1）执行配置读写；完成后BAR已分配、路由路径已建立（Phase 3）
+> 枚举通过 ECAM（Phase 1）执行配置读写；完成后 BAR 已分配、路由路径已建立。
 
-**规范**：PCIe Base Spec §7.3-7.4
-
-**Linux**：`pci_scan_child_bus()` · `pci_scan_single_device()` · `pci_setup_bridge()`
-
-***
-
-### 2.2 BDF —— 设备寻址
+### 2.4 BDF —— 设备寻址
 
 ```
 Bus (8bit, 0-255) : Device (5bit, 0-31) : Function (3bit, 0-7, ARI扩展至0-255)
 ```
 
-Linux表示：`0000:01:00.0` = Segment 0, Bus 1, Dev 0, Func 0
+Linux 表示：`0000:01:00.0` = Segment 0, Bus 1, Dev 0, Func 0
 
 > TLP Header中的Requester ID / Completer ID就是BDF（Phase 3）
 
@@ -449,7 +616,7 @@ DW3: [Address[63:32]] (仅64-bit地址)
 
 | 字段 | 位宽 | 作用 |
 |------|------|------|
-| Fmt+Type | 5+5 | 事务类型（MRd/MWr/CfgRd/CfgWr/Msg/Cpl） |
+| Fmt+Type | 2+5 | 事务类型（MRd/MWr/CfgRd/CfgWr/Msg/Cpl） |
 | TC | 3 | Traffic Class（QoS优先级） |
 | Attr | 2 | Relaxed Ordering / No Snoop |
 | Length | 10 | 数据长度（1-1024 DW） |
@@ -539,8 +706,8 @@ PCIe在多个层次检测传输错误：
 ### 4.1 LTSSM —— 链路生命周期
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
-graph TD
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "'trebuchet ms', verdana, arial, sans-serif"}}}%%
+flowchart TD
     DET["Detect<br/>检测对端"] --> POL["Polling<br/>速率协商"]
     POL --> CFG["Configuration<br/>宽度协商"]
     CFG --> L0["L0<br/>正常工作"]
@@ -599,7 +766,7 @@ Gen3 (8 GT/s) 及以上速率需要**链路均衡**补偿高频信号损耗：
 
 **常见现象**：x16插槽协商到x8/x4 → 通常是物理连接问题
 
-### 4.3 电源管理
+### 4.4 电源管理
 
 **ASPM**：L0 → L0s (微秒唤醒) → L1 (毫秒唤醒)
 
@@ -607,7 +774,7 @@ Gen3 (8 GT/s) 及以上速率需要**链路均衡**补偿高频信号损耗：
 
 > 低功耗唤醒需要PME Message（Phase 5）
 
-### 4.4 LTSSM关键状态详解
+### 4.5 LTSSM关键状态详解
 
 | 状态 | 触发条件 | 行为 | 延迟 |
 |------|---------|------|------|
@@ -662,8 +829,8 @@ Config Space
 ### 虚拟化栈全景
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
-graph TD
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "'trebuchet ms', verdana, arial, sans-serif"}}}%%
+flowchart TD
     VM1["VM 1"] --> VF1["VF 1"]
     VM2["VM 2"] --> VF2["VF 2"]
     VF1 -->|"DMA"| IOMMU["IOMMU<br/>VT-d / AMD-Vi"]
@@ -691,7 +858,7 @@ graph TD
 
 **PF/VF结构**：
 
-| <br /> | PF         | VF       |
+| 对比维度 | PF         | VF       |
 | ------ | ---------- | -------- |
 | 配置空间   | 完整         | 轻量(部分只读) |
 | BAR    | 独立         | 独立       |
@@ -725,7 +892,7 @@ graph TD
 ### 6.3 ATS —— IOMMU的缓存
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "'trebuchet ms', verdana, arial, sans-serif"}}}%%
 sequenceDiagram
     participant EP as Endpoint
     participant RC as RC/IOMMU
@@ -751,8 +918,8 @@ sequenceDiagram
 ### AER —— 分级报警系统
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
-graph TD
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "'trebuchet ms', verdana, arial, sans-serif"}}}%%
+flowchart TD
     AER["AER Extended Capability"]
 
     AER --> UE["Uncorrectable Errors"]
@@ -875,8 +1042,8 @@ static void dpc_handler(struct irq_desc *desc)
 ### 8.3 CXL —— 超越I/O的互联
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
-graph TD
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "'trebuchet ms', verdana, arial, sans-serif"}}}%%
+flowchart TD
     IO["CXL.io<br/>兼容PCIe I/O"] --> PCIE["PCIe 5.0/6.0 PHY"]
     CACHE["CXL.cache<br/>缓存一致性"] --> PCIE
     MEM["CXL.memory<br/>内存扩展"] --> PCIE
@@ -898,7 +1065,7 @@ graph TD
 
 ### 8.4 PCIe 6.0/7.0 —— FLIT模式
 
-| <br /> | 5.0及以前          | 6.0+          |
+| 对比维度 | 5.0及以前          | 6.0+          |
 | ------ | --------------- | ------------- |
 | 数据单元   | TLP/DLLP (可变长度) | FLIT (固定256B) |
 | 编码     | 128b/130b       | PAM4 + FEC    |

@@ -72,8 +72,8 @@ SR-IOV将一个物理设备（PF）拆分为多个虚拟功能（VF），每个V
 ### 1.1 SR-IOV架构
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
-graph TD
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "'trebuchet ms', verdana, arial, sans-serif"}}}%%
+flowchart TD
     PF_CFG["PF完整配置空间<br/>0x00-0xFFF"]
     PF_BAR["PF独立BAR"]
     PF_MSI["PF独立MSI-X"]
@@ -165,6 +165,7 @@ VF[i].BDF = PF.BDF + Offset + Stride × i
 
 ```c
 // drivers/pci/iov.c
+// 简化实现，省略了 ARI (Alternative Routing-ID) 模式下的 Functon 号扩展处理
 int pci_iov_virtfn_bus(struct pci_dev *dev, int vf_id)
 {
     return dev->bus->number +
@@ -186,12 +187,29 @@ int pci_iov_virtfn_devfn(struct pci_dev *dev, int vf_id)
 
 ```c
 // drivers/pci/iov.c (简化)
+// 简化实现，省略了: dep_link sysfs 创建、错误恢复路径(disable+remove link)、kobject_uevent 事件通知
 static int sriov_enable(struct pci_dev *dev, int nr_virtfn)
 {
+    int rc, i, nres, bus, bars = 0;
+    u16 initial;
+    struct resource *res;
+    struct pci_dev *pdev;
     struct pci_sriov *iov = dev->sriov;
 
-    // 1. 验证VF数量
-    if (nr_virtfn < 0 || nr_virtfn > iov->total_VFs)
+    // 0. 保护: VF已启用或请求0个
+    if (!nr_virtfn)
+        return 0;
+    if (iov->num_VFs)
+        return -EINVAL;
+
+    // 1. 读取并验证Initial VF (考虑 VF Migration 模式)
+    pci_read_config_word(dev, iov->pos + PCI_SRIOV_INITIAL_VF, &initial);
+    if (initial > iov->total_VFs ||
+        (!(iov->cap & PCI_SRIOV_CAP_VFM) && (initial != iov->total_VFs)))
+        return -EIO;
+
+    if (nr_virtfn < 0 || nr_virtfn > iov->total_VFs ||
+        (!(iov->cap & PCI_SRIOV_CAP_VFM) && (nr_virtfn > initial)))
         return -EINVAL;
 
     // 2. 检查VF BAR资源是否足够
@@ -203,7 +221,7 @@ static int sriov_enable(struct pci_dev *dev, int nr_virtfn)
         bars |= (1 << idx);
         res = &dev->resource[idx];
         if (vf_bar_sz * nr_virtfn > resource_size(res))
-            continue;  // BAR空间不够分配给所有VF
+            continue;
         if (res->parent)
             nres++;
     }
@@ -215,8 +233,8 @@ static int sriov_enable(struct pci_dev *dev, int nr_virtfn)
     // 3. 检查Bus号范围
     bus = pci_iov_virtfn_bus(dev, nr_virtfn - 1);
     if (bus > dev->bus->busn_res.end) {
-        pci_err(dev, "can't enable %d VFs (bus %02x out of range)\n",
-                nr_virtfn, bus);
+        pci_err(dev, "can't enable %d VFs (bus %02x out of range of %pR)\n",
+                nr_virtfn, bus, &dev->bus->busn_res);
         return -ENOMEM;
     }
 
@@ -226,31 +244,46 @@ static int sriov_enable(struct pci_dev *dev, int nr_virtfn)
         return -ENOMEM;
     }
 
-    // 5. 调用架构特定使能
+    // 5. 架构特定回调
+    iov->initial_VFs = initial;
+    if (nr_virtfn < initial)
+        initial = nr_virtfn;
     rc = pcibios_sriov_enable(dev, initial);
+    if (rc)
+        return rc;
 
-    // 6. 逐个创建VF设备
-    for (i = 0; i < initial; i++) {
-        // 分配pci_dev, 设置is_virtfn=1, physfn=PF
-        rc = virtfn_add(dev, i, 0);
-    }
-
-    // 7. 写入NumVFs寄存器
+    // 6. 写入NumVFs并启用VFE/MSE (需 cfg_access_lock 保护)
     pci_iov_set_numvfs(dev, nr_virtfn);
+    iov->ctrl |= PCI_SRIOV_CTRL_VFE | PCI_SRIOV_CTRL_MSE;
+    pci_cfg_access_lock(dev);
+    pci_write_config_word(dev, iov->pos + PCI_SRIOV_CTRL, iov->ctrl);
+    msleep(100);
+    pci_cfg_access_unlock(dev);
 
-    // 8. 启用VF MSE
-    pci_write_config_word(dev, iov->pos + PCI_SRIOV_CTRL,
-                          ctrl | PCI_SRIOV_CTRL_VFE | PCI_SRIOV_CTRL_MSE);
+    // 7. 创建VF设备 (sriov_add_vfs → pci_iov_add_virtfn)
+    rc = sriov_add_vfs(dev, initial);
+    if (rc)
+        goto err_pcibios;
 
     iov->num_VFs = nr_virtfn;
     return 0;
+
+err_pcibios:
+    iov->ctrl &= ~(PCI_SRIOV_CTRL_VFE | PCI_SRIOV_CTRL_MSE);
+    pci_cfg_access_lock(dev);
+    pci_write_config_word(dev, iov->pos + PCI_SRIOV_CTRL, iov->ctrl);
+    ssleep(1);
+    pci_cfg_access_unlock(dev);
+    pcibios_sriov_disable(dev);
+    pci_iov_set_numvfs(dev, 0);
+    return rc;
 }
 ```
 
 ### 2.3 VF创建流程
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "'trebuchet ms', verdana, arial, sans-serif"}}}%%
 sequenceDiagram
     participant USER as 用户/sysfs
     participant IOV as iov.c
@@ -283,14 +316,18 @@ sequenceDiagram
 
 ```c
 // drivers/pci/probe.c
+// 简化实现，省略了 ROM BAR 处理和 64-bit BAR 的高低位拼接逻辑
 static __always_inline void pci_read_bases(struct pci_dev *dev, ...)
 {
     // VF的BAR是只读零，跳过
     if (dev->is_virtfn)
         return;
 }
+```
 
+```c
 // drivers/pci/iov.c
+// 简化实现，省略了 pci_resource_num_to_vf_bar 的索引转换细节
 resource_size_t pci_iov_resource_size(struct pci_dev *dev, int resno)
 {
     if (!dev->is_physfn)
@@ -317,6 +354,7 @@ PF BAR空间:
 
 ```c
 // drivers/pci/iov.c
+// 简化实现，省略了 VF 配置空间的完整同步列表 (Revision ID, Cache Line Size 等寄存器)
 static void pci_read_vf_config_common(struct pci_dev *virtfn)
 {
     struct pci_dev *physfn = virtfn->physfn;
@@ -369,7 +407,7 @@ VM访问VF配置空间:
 ### 3.1 ATS机制
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "'trebuchet ms', verdana, arial, sans-serif"}}}%%
 sequenceDiagram
     participant VF as VF/Endpoint
     participant RC as RC/IOMMU
@@ -396,10 +434,15 @@ sequenceDiagram
 
 ```c
 // drivers/pci/ats.c
+// 简化实现，省略了 pci_ats_disabled() 的全局开关检查
 void pci_ats_init(struct pci_dev *dev)
 {
-    // 枚举时发现ATS Capability
-    int pos = pci_find_ext_capability(dev, PCI_EXT_CAP_ID_ATS);
+    int pos;
+
+    if (pci_ats_disabled())
+        return;
+
+    pos = pci_find_ext_capability(dev, PCI_EXT_CAP_ID_ATS);
     if (!pos)
         return;
     dev->ats_cap = pos;
@@ -407,17 +450,32 @@ void pci_ats_init(struct pci_dev *dev)
 
 int pci_enable_ats(struct pci_dev *dev, int ps)
 {
+    u16 ctrl;
+    struct pci_dev *pdev;
+
+    if (!pci_ats_supported(dev))
+        return -EINVAL;
+
+    if (WARN_ON(dev->ats_enabled))
+        return -EBUSY;
+
     // ps = IOMMU页大小 (以4K为单位, 最小0=4KB)
     if (ps < PCI_ATS_MIN_STU)
         return -EINVAL;
 
-    // VF继承PF的ATS设置
-    if (dev->is_virtfn)
-        return 0;
-
-    dev->ats_stu = ps;
-    ctrl = PCI_ATS_CTRL_STU(dev->ats_stu - PCI_ATS_MIN_STU);
-    ctrl |= PCI_ATS_CTRL_ENABLE;
+    /*
+     * VF不能独立启用ATS, 必须PF先设置相同的STU
+     * VF只写CTRL_ENABLE, PF还写CTRL_STU
+     */
+    ctrl = PCI_ATS_CTRL_ENABLE;
+    if (dev->is_virtfn) {
+        pdev = pci_physfn(dev);
+        if (pdev->ats_stu != ps)
+            return -EINVAL;
+    } else {
+        dev->ats_stu = ps;
+        ctrl |= PCI_ATS_CTRL_STU(dev->ats_stu - PCI_ATS_MIN_STU);
+    }
     pci_write_config_word(dev, dev->ats_cap + PCI_ATS_CTRL, ctrl);
     dev->ats_enabled = 1;
     return 0;
@@ -433,8 +491,8 @@ int pci_enable_ats(struct pci_dev *dev, int ps)
 ### 4.1 ACS控制点
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
-graph TD
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "'trebuchet ms', verdana, arial, sans-serif"}}}%%
+flowchart TD
     SV["Source Validation<br/>验证请求者身份"]
     TB["Translation Blocking<br/>阻止已转换地址P2P"]
     RR["P2P Request Redirect<br/>P2P请求重定向到Upstream"]
@@ -461,22 +519,24 @@ graph TD
 ### 4.2 ACS对P2P DMA的影响
 
 ```c
-// drivers/pci/p2pdma.c
-static bool pci_upstream_bridge_acs_redir(struct pci_dev *pdev)
+// drivers/pci/p2pdma.c — 以内核源码为准
+// 注意：此函数只检查单个桥的 ACS 位，遍历上游桥的逻辑在上层调用者 calc_map_type_and_dist() 中
+static int pci_bridge_has_acs_redir(struct pci_dev *pdev)
 {
-    // 检查ACS是否阻止P2P
-    for (bridge = pci_upstream_bridge(pdev); bridge;
-         bridge = pci_upstream_bridge(bridge)) {
-        if (!bridge->acs_cap)
-            return false;  // 无ACS, 不阻止
+    int pos;
+    u16 ctrl;
 
-        // 检查ACS控制位
-        pci_read_config_word(bridge, bridge->acs_cap + PCI_ACS_CTRL, &ctrl);
-        if (!(ctrl & PCI_ACS_RR) || !(ctrl & PCI_ACS_CR) ||
-            !(ctrl & PCI_ACS_UF))
-            return false;  // ACS未完全启用, 不阻止
-    }
-    return true;  // ACS完全启用, P2P被重定向
+    pos = pdev->acs_cap;
+    if (!pos)
+        return 0;
+
+    pci_read_config_word(pdev, pos + PCI_ACS_CTRL, &ctrl);
+
+    // 检查 ACS 重定向相关位：RR (Request Redirect), CR (Completion Redirect), EC (Error Control/Cut-through)
+    if (ctrl & (PCI_ACS_RR | PCI_ACS_CR | PCI_ACS_EC))
+        return 1;
+
+    return 0;
 }
 ```
 
@@ -487,8 +547,8 @@ static bool pci_upstream_bridge_acs_redir(struct pci_dev *pdev)
 ### 5.1 VFIO架构
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
-graph TD
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "'trebuchet ms', verdana, arial, sans-serif"}}}%%
+flowchart TD
     VM["QEMU / 用户态驱动"]
     VFIO_LIB["libvfio"]
     VFIO_PCI["vfio-pci<br/>drivers/vfio/pci/"]
@@ -696,13 +756,13 @@ cat /sys/kernel/iommu_groups/26/devices
 |------|------|----------|
 | 1 | `drivers/pci/iov.c` | `sriov_enable()`, `sriov_disable()`, `virtfn_add()`, `pci_iov_virtfn_bus/devfn()` |
 | 2 | `drivers/pci/ats.c` | `pci_ats_init()`, `pci_enable_ats()`, `pci_prepare_ats()` |
-| 3 | `drivers/pci/vfio/pci/vfio_pci_core.c` | VFIO核心: 设备打开/映射/中断 |
-| 4 | `drivers/pci/vfio/pci/vfio_pci_config.c` | VFIO配置空间虚拟化 |
+| 3 | `drivers/vfio/pci/vfio_pci_core.c` | VFIO核心: 设备打开/映射/中断 |
+| 4 | `drivers/vfio/pci/vfio_pci_config.c` | VFIO配置空间虚拟化 |
 | 5 | `drivers/pci/p2pdma.c` | P2P DMA与ACS交互 |
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
-graph TD
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "'trebuchet ms', verdana, arial, sans-serif"}}}%%
+flowchart TD
     A["iov.c<br/>SR-IOV核心"] --> B["probe.c<br/>VF枚举"]
     A --> C["ats.c<br/>ATS缓存"]
     A --> D["vfio_pci_core.c<br/>用户态驱动"]

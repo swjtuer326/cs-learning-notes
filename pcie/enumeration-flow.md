@@ -19,7 +19,7 @@
 
 ### 0.1 什么是枚举
 
-PCIe是**热插拔不友好的发现式总线**——系统启动时，软件必须主动扫描每个可能的设备位置，判断是否有设备存在。这个过程叫**枚举（Enumeration）**。
+PCIe是**发现式总线**——系统启动时，软件必须主动扫描每个可能的设备位置，判断是否有设备存在。这个过程叫**枚举（Enumeration）**。
 
 与USB等总线不同，PCIe没有"设备插入通知"机制（Hot-Plug除外）。软件必须：
 1. 遍历所有可能的Bus/Device/Function组合
@@ -66,8 +66,8 @@ pci_host_bridge (Segment 0)
 ## 1. 枚举全流程
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
-graph TD
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "'trebuchet ms', verdana, arial, sans-serif"}}}%%
+flowchart TD
     START["系统启动"] --> HB["创建Host Bridge<br/>pci_alloc_host_bridge()"]
     HB --> SCAN0["扫描Bus 0<br/>pci_scan_child_bus()"]
     SCAN0 --> SCAN_SLOT["扫描每个Slot<br/>pci_scan_slot()"]
@@ -214,23 +214,25 @@ struct pci_dev *pci_scan_single_device(struct pci_bus *bus, int devfn)
 ### 2.4 pci_scan_device() —— 发现并初始化设备
 
 ```c
-// drivers/pci/probe.c
+// drivers/pci/probe.c — 以内核源码为准，保留核心逻辑
 static struct pci_dev *pci_scan_device(struct pci_bus *bus, int devfn)
 {
     struct pci_dev *dev;
     u32 l;
 
-    // 读取Vendor ID / Device ID (等待设备就绪, 最多60秒)
+    // 读取 Vendor ID（含 CRS 等待，最多 60 秒）
     if (!pci_bus_read_dev_vendor_id(bus, devfn, &l, 60*1000))
         return NULL;
 
-    // 分配pci_dev
+    // 分配 pci_dev 并设置 devfn/vendor/device
     dev = pci_alloc_dev(bus);
+    if (!dev)
+        return NULL;
     dev->devfn = devfn;
     dev->vendor = l & 0xffff;
     dev->device = (l >> 16) & 0xffff;
 
-    // 完整配置设备
+    // 完整配置设备（读 Header Type、BAR、Capabilities、fixup）
     if (pci_setup_device(dev)) {
         pci_bus_put(dev->bus);
         kfree(dev);
@@ -262,27 +264,48 @@ CRS Software Visibility机制：
 - 软件据此判断设备存在但未就绪，应重试
 
 ```c
-// drivers/pci/probe.c
-int pci_bus_read_dev_vendor_id(struct pci_bus *bus, int devfn,
-                                u32 *l, int crs_timeout)
+// drivers/pci/probe.c — 以内核源码为准，添加注释说明
+// pci_bus_read_dev_vendor_id() 是 pci_bus_generic_read_dev_vendor_id() 的薄包装
+bool pci_bus_read_dev_vendor_id(struct pci_bus *bus, int devfn, u32 *l,
+                                int timeout)
 {
-    // 循环读取，处理CRS
-    while (1) {
-        pci_bus_read_config_dword(bus, devfn, PCI_VENDOR_ID, l);
-        if (*l == 0xffffffff || *l == 0x00000000)
-            return 0;  // 设备不存在
+    return pci_bus_generic_read_dev_vendor_id(bus, devfn, l, timeout);
+}
 
-        if (*l == 0x0000ffff) {
-            // CRS可见: Vendor ID=0x0001 → 设备忙，重试
-            if (crs_timeout <= 0)
-                return 0;
-            msleep(100);
-            crs_timeout -= 100;
-            continue;
-        }
+// 实际工作函数
+bool pci_bus_generic_read_dev_vendor_id(struct pci_bus *bus, int devfn,
+                                        u32 *l, int timeout)
+{
+    if (pci_bus_read_config_dword(bus, devfn, PCI_VENDOR_ID, l))
+        return false;
 
-        return 1;  // 正常响应
+    // 空槽位返回 0xFFFFFFFF 或 0，损坏设备可能返回其他异常值
+    if (PCI_POSSIBLE_ERROR(*l) || *l == 0x00000000 ||
+        *l == 0x0000ffff || *l == 0xffff0000)
+        return false;
+
+    // RRS (CRS Software Visibility): Vendor ID=0x0001 表示设备存在但未就绪
+    if (pci_bus_rrs_vendor_id(*l))
+        return pci_bus_wait_rrs(bus, devfn, l, timeout);
+
+    return true;
+}
+
+// CRS 等待：指数退避重试，延迟 1ms, 2ms, 4ms, ... 直到 1s
+static bool pci_bus_wait_rrs(struct pci_bus *bus, int devfn, u32 *l,
+                             int timeout)
+{
+    int delay = 1;
+    if (!pci_bus_rrs_vendor_id(*l))
+        return true;
+    while (pci_bus_rrs_vendor_id(*l)) {
+        if (delay > timeout) { /* 超时后放弃 */ return false; }
+        msleep(delay);
+        delay *= 2;                              // 指数退避
+        if (pci_bus_read_config_dword(bus, devfn, PCI_VENDOR_ID, l))
+            return false;
     }
+    return true;
 }
 ```
 
@@ -291,86 +314,132 @@ int pci_bus_read_dev_vendor_id(struct pci_bus *bus, int devfn,
 ### 2.5 pci_setup_device() —— 设备配置
 
 ```c
-// drivers/pci/probe.c (简化)
+// drivers/pci/probe.c — 简化实现，省略了 fixup/quirk/电源/class检测 等非核心逻辑
 int pci_setup_device(struct pci_dev *dev)
 {
-    // 读取Header Type确定设备类型
-    pci_read_config_byte(dev, PCI_HEADER_TYPE, &hdr_type);
+    u32 class;
+    u8 hdr_type;
 
+    hdr_type = pci_hdr_type(dev);  // VF 时从 PF 的 SR-IOV Cap 读取
+
+    dev->hdr_type = FIELD_GET(PCI_HEADER_TYPE_MASK, hdr_type);
+    dev->multifunction = FIELD_GET(PCI_HEADER_TYPE_MFD, hdr_type);
+    set_pcie_port_type(dev);
+
+    dev_set_name(&dev->dev, "%04x:%02x:%02x.%d", pci_domain_nr(dev->bus),
+                 dev->bus->number, PCI_SLOT(dev->devfn),
+                 PCI_FUNC(dev->devfn));
+
+    class = pci_class(dev);          // VF 时从 PF 继承 Class Code
+    dev->revision = class & 0xff;
+    dev->class = class >> 8;
+
+    dev->cfg_size = pci_cfg_space_size(dev);  // 256B 或 4KB
+
+    /* 早期 fixup，在 BAR 探测之前执行 */
+    pci_fixup_device(pci_fixup_early, dev);
+
+    // ── 以下为设备结构相关部分 ──
     switch (dev->hdr_type) {
-    case PCI_HEADER_TYPE_NORMAL:   // 普通设备
-        pci_read_bases(dev, 6, PCI_ROM_ADDRESS);  // 6个BAR + ROM
+    case PCI_HEADER_TYPE_NORMAL:
+        pci_read_irq(dev);                                           // 中断引脚
+        pci_read_bases(dev, PCI_STD_NUM_BARS, PCI_ROM_ADDRESS);      // 6个BAR
+        pci_subsystem_ids(dev, &dev->subsystem_vendor, &dev->subsystem_device);
         break;
-    case PCI_HEADER_TYPE_BRIDGE:   // PCI桥
-        pci_read_bases(dev, 2, PCI_ROM_ADDRESS_1); // 2个BAR + ROM
+    case PCI_HEADER_TYPE_BRIDGE:
+        pci_read_irq(dev);                                           // 中断引脚
+        pci_read_bases(dev, 2, PCI_ROM_ADDRESS_1);                   // 2个BAR
+        pci_read_config_word(dev, PCI_CB_SUBSYSTEM_VENDOR_ID,
+                             &dev->subsystem_vendor);
+        pci_read_config_word(dev, PCI_CB_SUBSYSTEM_ID,
+                             &dev->subsystem_device);
         break;
-    case PCI_HEADER_TYPE_CARDBUS:  // CardBus桥
-        pci_read_bases(dev, 1, 0);
+    case PCI_HEADER_TYPE_CARDBUS:
+        pci_read_irq(dev);                                           // 中断引脚
+        pci_read_bases(dev, 1, 0);                                   // 1个BAR
+        pci_read_config_word(dev, PCI_CB_SUBSYSTEM_VENDOR_ID,
+                             &dev->subsystem_vendor);
+        pci_read_config_word(dev, PCI_CB_SUBSYSTEM_ID,
+                             &dev->subsystem_device);
         break;
+    default:
+        goto bad;
     }
 
-    // 读取中断信息
-    pci_read_irq(dev);
-
-    // 发现Capabilities
-    pci_read_config_word(dev, PCI_STATUS, &status);
-    if (status & PCI_STATUS_CAP_LIST)
-        pci_read_capabilities(dev);
-
+    pci_init_capabilities(dev);     // MSI, MSI-X, SR-IOV, AER, Resizable BAR 等
     return 0;
+
+bad:
+    return -EIO;
 }
 ```
 
-### 2.6 pci_scan_bridge() —— 桥扫描与递归
+### 2.6 pci_scan_bridge_extend() —— 桥扫描与递归
 
 ```c
-// drivers/pci/probe.c (简化)
-int pci_scan_bridge_extend(struct pci_bus *bus, struct pci_dev *dev,
-                           int max, unsigned int available_buses, int pass)
+// drivers/pci/probe.c — 简化实现，省略了 CardBus、热插拔总线分配、固件总线验证等分支
+static int pci_scan_bridge_extend(struct pci_bus *bus, struct pci_dev *dev,
+                                  int max, unsigned int available_buses,
+                                  int pass)
 {
+    struct pci_bus *child;
     u32 buses;
     u8 primary, secondary, subordinate;
 
-    // 读取当前桥配置
     pci_read_config_dword(dev, PCI_PRIMARY_BUS, &buses);
-    primary = (buses >>  0) & 0xff;
-    secondary = (buses >>  8) & 0xff;
-    subordinate = (buses >> 16) & 0xff;
+    primary     = FIELD_GET(PCI_PRIMARY_BUS_MASK, buses);
+    secondary   = FIELD_GET(PCI_SECONDARY_BUS_MASK, buses);
+    subordinate = FIELD_GET(PCI_SUBORDINATE_BUS_MASK, buses);
 
-    if (pass == 0) {
-        // Pass 0: 固件已配置的桥，直接扫描下游
-        if (secondary != 0 && secondary > bus->number) {
-            child = pci_find_bus(pci_domain_nr(bus), secondary);
-            if (!child) {
-                child = pci_add_new_bus(bus, dev, secondary);
-            }
-            // 递归扫描子总线
-            cmax = pci_scan_child_bus_extend(child, available_buses);
-        }
-    } else {
-        // Pass 1: 未配置的桥，分配新Bus号
-        if (!pcibios_assign_all_busses())
+    // Pass 0: 验证固件配置有效性 (Primary 必须 == 当前 Bus, Secondary > 当前 Bus)
+    if (!pass && (primary != bus->number || secondary <= bus->number ||
+                  secondary > subordinate))
+        broken = 1;  // 固件配置无效，需要在 Pass 1 中重新分配
+
+    if ((secondary || subordinate) && !pcibios_assign_all_busses() && !broken) {
+        // 固件已配置且有效: 直接扫描下游
+        if (pass)
             goto out;
 
-        // 分配下一个可用的Bus号
+        child = pci_find_bus(pci_domain_nr(bus), secondary);
+        if (!child)
+            child = pci_add_new_bus(bus, dev, secondary);
+
+        // 递归扫描 (available_buses=0 表示已配置，不再分配额外总线)
+        cmax = pci_scan_child_bus_extend(child, 0);
+        max = max(max, cmax);
+    } else {
+        // 固件未配置或配置无效: 在 Pass 1 中分配总线号并扫描
+        if (pass != 1)
+            goto out;
+
         secondary = max + 1;
-        subordinate = secondary + available_buses - 1;
+        subordinate = secondary;
+
+        // 分配总线号: 普通桥 1 个总线, 热插拔桥可分配更多
+        // 实际代码会计算 hotplug_buses 分配量, 这里简化为一个总线
+        child = pci_add_new_bus(bus, dev, secondary);
+        if (!child)
+            goto out;
 
         // 写入桥寄存器
-        buses = secondary << 8 | subordinate << 16 | primary;
-        pci_write_config_dword(dev, PCI_PRIMARY_BUS, buses);
-
-        // 创建子总线并递归扫描
-        child = pci_add_new_bus(bus, dev, secondary);
-        cmax = pci_scan_child_bus_extend(child, buses_available);
-
-        // 更新Subordinate Bus号
-        subordinate = (u8)cmax;
         pci_write_config_dword(dev, PCI_PRIMARY_BUS,
-                               primary | (secondary << 8) | (subordinate << 16));
+                               (subordinate << 16) | (secondary << 8) | primary);
+
+        cmax = pci_scan_child_bus_extend(child, 0);  // 递归扫描
+
+        // 扫描完成后更新 Subordinate 为实际发现的最大总线号
+        subordinate = cmax;
+        pci_write_config_dword(dev, PCI_PRIMARY_BUS,
+                               (subordinate << 16) | (secondary << 8) | primary);
+        max = cmax;
     }
+out:
+    return max;
 }
 ```
+
+> **注意**：`pci_scan_bridge_extend()` 是完整的桥扫描实现。`pci_scan_bridge()` 直接调用 `pci_scan_bridge_extend(bus, dev, max, 0, pass)`，即将 `available_buses` 固定为 0，用于兼容旧调用者。
 
 ---
 
@@ -397,43 +466,59 @@ PCI_PRIMARY_BUS (0x18):
 
 ### 3.2 桥窗口寄存器
 
-```
-Memory Base/Limit (0x20-0x23):
-┌──────────────┬──────────────┐
-│ 31:16        │ 15:0         │
-│ Memory Limit │ Memory Base  │
-│ (高16位)     │ (高16位)     │
-└──────────────┴──────────────┘
-低16位固定为0, 粒度1MB
+桥需要三类窗口寄存器来分别转发 Memory、Prefetchable Memory、I/O 事务。每种窗口由一对 Base/Limit 寄存器定义"转发范围"：下游设备地址落在 [Base, Limit] 内的事务才被转发；超出范围的被桥忽略（不上行也不下行）。
 
-Prefetchable Memory Base/Limit (0x24-0x2B):
-├── Base Low (0x24): 高16位 + Type标志
-├── Limit Low (0x26): 高16位 + Type标志
-├── Base Upper (0x28): 高32位 (64-bit时)
-└── Limit Upper (0x2C): 高32位 (64-bit时)
+**寄存器只存储地址的高位**，低位隐含为 0，因此窗口粒度是 2 的幂。三种窗口的编码规则如下：
 
-I/O Base/Limit (0x1C-0x1F):
-├── Base Low: 高8/16位 + Type标志
-├── Limit Low: 高8/16位 + Type标志
-├── Base Upper (0x30): 高16位 (32-bit时)
-└── Limit Upper (0x32): 高16位 (32-bit时)
-```
+| 寄存器 | 偏移 | 存储的地址位 | 隐含零位 | 粒度 | 说明 |
+|--------|------|-------------|---------|------|------|
+| Memory Base | 0x20 [15:0] | A[31:20] | A[19:0]=0 | 1 MB | 非预取 Memory 只支持 32-bit |
+| Memory Limit | 0x22 [15:0] | A[31:20] | A[19:0]=0 | 1 MB | |
+| Pref. Mem Base Low | 0x24 [15:4] | A[31:20] | A[19:0]=0 | 1 MB | bit[3:0] 存 Type 编码 |
+| Pref. Mem Limit Low | 0x26 [15:4] | A[31:20] | A[19:0]=0 | 1 MB | bit[3:0] 存 Type 编码 |
+| Pref. Mem Base Upper | 0x28 | A[63:32] | — | 1 | 仅在 64-bit 模式下有效 |
+| Pref. Mem Limit Upper | 0x2C | A[63:32] | — | 1 | 仅在 64-bit 模式下有效 |
+| I/O Base Low | 0x1C [7:0] | A[15:2] | A[1:0]=0 | 4 B | bit[0]=0 为 16-bit 模式；=1 启用 32-bit |
+| I/O Limit Low | 0x1D [7:0] | A[15:2] | A[1:0]=0 | 4 B | |
+| I/O Base Upper | 0x30 | A[31:16] | — | 1 | 仅在 32-bit I/O 模式下有效 |
+| I/O Limit Upper | 0x32 | A[31:16] | — | 1 | 仅在 32-bit I/O 模式下有效 |
+
+**关键理解**：
+
+- Memory 窗口的粒度是 1 MB。例如 Base = 0xFFF0、Limit = 0xFFF4，实际窗口为 [0xFFF0_0000, 0xFFF4_FFFF]，大小 5 MB（5 个对齐到 1 MB 的区间）。
+- Prefetchable Memory 的 `Type 编码`（bit[3:0]）指示 Base/Limit 按 32-bit 还是 64-bit 解释。Type=0 表示 32-bit（Base Upper / Limit Upper 无效），Type=1 表示 64-bit（合并四字节形成 64-bit 地址）。颗粒度同样是 1 MB。
+- I/O 窗口的 `Type 标志`（Base Low 的 bit[0]）区分 16-bit 和 32-bit 模式。16-bit 模式下地址高 4 bit 在 Base/Limit Low 的 bit[7:4]，低 12 bit 为 0（粒度 4 KB）；32-bit 模式下使用 Base/Limit Upper 寄存器提供 A[31:16]。
+- 这三种窗口在 `__pci_bus_size_bridges()` 中按下游设备的 BAR 需求汇总计算大小，在 `__pci_bus_assign_resources()` 中确定具体 Base 值并写入寄存器（见 [§4.1 分配顺序](#41-分配顺序)）。
 
 ### 3.3 Type 0 vs Type 1 配置事务
 
-```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
-graph TD
-    RC["Root Complex"] -->|"Type 0 Config<br/>Bus=目标Bus"| EP["Endpoint<br/>BDF匹配"]
-    RC2["Root Complex"] -->|"Type 1 Config<br/>Secondary<=Bus<=Subordinate"| BR["Bridge"]
-    BR -->|"转换为Type 0"| EP2["下游设备"]
+配置事务分为两种类型，区别在于：**Type 0 到达目标设备，Type 1 穿透桥向下游转发**。
 
-    style EP fill:#e8f5e9
-    style BR fill:#fff3e0
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "'trebuchet ms', verdana, arial, sans-serif"}}}%%
+flowchart TD
+    RC["Root Complex<br/>发起 Config Request"] -->|"Type 1<br/>Bus=01, 落在 RP 的<br/>Secondary-Subordinate 范围"| RP["Root Port<br/>(Bus 00, Secondary=01, Subordinate=05)"]
+    RP -->|"Type 1 → 转发到 Bus 01"| SW_US["Switch Upstream Port<br/>(Bus 01:00.0, Secondary=02, Subordinate=05)"]
+    SW_US -->|"Type 1 → 转发到 Bus 03<br/>(Bus=03 落在 Subordinate 范围)"| SW_DS["Switch Downstream Port<br/>(Bus 03:01.0, Secondary=04, Subordinate=04)"]
+    SW_DS -->|"转换为 Type 0<br/>(Bus=04 == 目标 Bus)"| EP["Endpoint<br/>Bus 04, Dev 0, Func 0<br/>该设备 Dev=0, Func=0 匹配"]
+
+    style RC fill:#e8f5e9
+    style SW_US fill:#fff3e0
+    style SW_DS fill:#fff3e0
+    style EP fill:#e3f2fd
 ```
 
-- **Type 0**：当Bus号等于目标Bus时，Switch/桥将TLP转换为Type 0，设备按BDF匹配
-- **Type 1**：当Bus号在桥的Secondary-Subordinate范围内时，桥转发TLP到下游
+**转发规则**：
+
+| 场景 | 桥收到的事务类型 | 桥的行为 |
+|------|----------------|---------|
+| Bus 号 == 桥所在 Bus | 无关（不会收到） | — |
+| Bus 号 ∈ [Secondary, Subordinate] | Type 1 | 转发到下游，若 Bus == Secondary 则转换成 Type 0 |
+| Bus 号 ∉ [Secondary, Subordinate] | Type 1 | 忽略（不转发） |
+
+**Type 0 的终结**：设备收到 Type 0 配置事务时，检查 TLP Header 中的 Device/Function 号是否与自己匹配。匹配则响应，否则忽略。这样就实现了"逐总线、逐设备"的精确定址。整个 PCIe 树的最末量一层桥（离目标设备最近的桥）负责把 Type 1 转换为 Type 0。
+
+> Type 0 / Type 1 的区分与 §3.1 中的 Primary/Secondary/Subordinate Bus 编号直接关联。如果桥的 Bus 号配置错误，配置事务无法到达目标设备——这就是 `pci_scan_bridge()` 必须正确分配 Bus 号的原因。
 
 ---
 
@@ -442,8 +527,8 @@ graph TD
 ### 4.1 分配顺序
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
-graph TD
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "'trebuchet ms', verdana, arial, sans-serif"}}}%%
+flowchart TD
     A["pci_host_probe()"] --> B["pci_scan_child_bus()"]
     B --> C["pci_bus_size_bridges()"]
     C --> D["pci_bus_assign_resources()"]
@@ -460,7 +545,23 @@ graph TD
 
 ### 4.2 pcibios_resource_to_bus() / pcibios_bus_to_resource()
 
-这两个函数是CPU物理地址与PCIe总线地址之间的桥梁：
+这两个函数是 CPU 物理地址与 PCIe 总线地址之间的桥梁。之所以需要转换，是因为 Host Bridge 可以将一段 CPU 物理地址**偏移地**映射到 PCIe 总线地址空间。
+
+**转换公式**：`PCIe总线地址 = CPU物理地址 - offset`
+
+其中 offset 由 Host Bridge 的 `windows` 列表（即 `pci_host_bridge->windows`）定义——每个 window 描述一段 CPU 物理地址范围对应的 offset 值。
+
+**具体示例**：假设 SoC 的 DDR 从 0x8000_0000 开始，RC 将 CPU 地址 [0x8000_0000, 0x8FFF_FFFF] 映射到 PCIe 总线地址 [0x0000_0000, 0x0FFF_FFFF]：
+
+```
+window->res  = [0x8000_0000, 0x8FFF_FFFF]  (CPU物理地址范围)
+window->offset = 0x8000_0000                  (偏移量)
+
+转换:
+  res->start = 0x8002_0000  (CPU 物理地址)
+  → region->start = 0x8002_0000 - 0x8000_0000 = 0x0002_0000  (PCIe 总线地址)
+  → 写入BAR的值为 0x0002_0000
+```
 
 ```c
 // CPU物理地址 → PCIe总线地址 (写入BAR时使用)
@@ -470,7 +571,7 @@ void pcibios_resource_to_bus(struct pci_bus *bus,
 {
     struct pci_host_bridge *bridge = find_pci_host_bridge(bus);
 
-    // 应用offset (由iATU映射决定)
+    // 遍历 windows 列表，找到包含该 resource 的 window
     resource_list_for_each_entry(window, &bridge->windows) {
         if (resource_contains(window->res, res)) {
             offset = window->offset;
@@ -483,7 +584,7 @@ void pcibios_resource_to_bus(struct pci_bus *bus,
 }
 ```
 
-> offset = CPU物理地址 - PCIe总线地址，由DT/ACPI中的`dma-ranges`属性定义。
+> offset = CPU物理地址 - PCIe总线地址。在 ACPI/UEFI 平台，windows 列表从 Host Bridge 的 `_CRS` 资源描述符获取；在嵌入式平台（设备树），由 `ranges` 属性定义。如果 Host Bridge 没有做地址偏移（CPU 物理地址 == PCIe 总线地址），offset = 0，两个函数简单地拷贝地址值。
 
 ### 4.3 枚举性能优化
 
@@ -526,8 +627,8 @@ void pcibios_resource_to_bus(struct pci_bus *bus,
 枚举过程中，`pci_read_capabilities()` 扫描设备的Capability链表：
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
-graph LR
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "'trebuchet ms', verdana, arial, sans-serif"}}}%%
+flowchart LR
     CAP_PTR["Cap Pointer<br/>0x34"] --> C1["Cap ID=0x10<br/>PCIe<br/>Next=0x40"]
     C1 --> C2["Cap ID=0x05<br/>MSI<br/>Next=0x00"]
     C2 -.->|"偏移0x100"| E1["Ext Cap ID=0x01<br/>AER<br/>Next=0x150"]
@@ -587,7 +688,7 @@ echo 1 > /sys/bus/pci/devices/0000:00:01.0/rescan
 服务器热插拔场景（如NVMe背板、GPU热替换）的枚举流程与启动时不同：
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "'trebuchet ms', verdana, arial, sans-serif"}}}%%
 sequenceDiagram
     participant HP as Hot-Plug Controller
     participant RP as Root Port
@@ -644,8 +745,8 @@ echo 0 > /sys/bus/pci/slots/1/power  # 下电
 | 5 | `drivers/pci/pci-driver.c` | `pci_bus_add_devices()`, `__pci_device_probe()` |
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
-graph TD
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "'trebuchet ms', verdana, arial, sans-serif"}}}%%
+flowchart TD
     A["pci_host_probe()"] --> B["pci_scan_child_bus()"]
     B --> C["pci_scan_slot()"]
     C --> D["pci_scan_single_device()"]

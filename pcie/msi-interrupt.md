@@ -137,8 +137,8 @@ x2APIC MSI Data:
 ### 1.1 中断演进
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
-graph LR
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "'trebuchet ms', verdana, arial, sans-serif"}}}%%
+flowchart LR
     INTx["INTx<br/>引脚中断<br/>4线共享"] --> MSI["MSI<br/>1-32向量<br/>无Per-Vector Mask"] --> MSIX["MSI-X<br/>1-2048向量<br/>Per-Vector Mask"]
 ```
 
@@ -246,16 +246,20 @@ bool pci_msi_enable = true;  // 可通过 pci=nomsi 关闭
 
 ```c
 // drivers/pci/msi/msi.c
+// 简化实现，省略了内核源码中的英文注释和 pci_msi_mask_irq 等回调函数
 static int pci_msi_supported(struct pci_dev *dev, int nvec)
 {
+    struct pci_bus *bus;
+
     if (!pci_msi_enable)
         return 0;
+
     if (!dev || dev->no_msi)
         return 0;
+
     if (nvec < 1)
         return 0;
 
-    // 检查整条路径上的桥是否支持MSI
     for (bus = dev->bus; bus; bus = bus->parent)
         if (bus->bus_flags & PCI_BUS_FLAGS_NO_MSI)
             return 0;
@@ -267,8 +271,8 @@ static int pci_msi_supported(struct pci_dev *dev, int nvec)
 ### 2.4 驱动API演进
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
-graph TD
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "'trebuchet ms', verdana, arial, sans-serif"}}}%%
+flowchart TD
     OLD_MSI["旧API<br/>pci_enable_msi()<br/>pci_enable_msix_range()"] --> NEW["新API<br/>pci_alloc_irq_vectors()"]
     OLD_MSI -->|"单向量MSI"| DEV_IRQ["dev->irq"]
     NEW -->|"统一MSI/MSI-X"| RANGE["minvec..maxvec<br/>自动选择MSI或MSI-X"]
@@ -297,31 +301,23 @@ pci_free_irq_vectors(dev);
 
 ```c
 // drivers/pci/msi/msi.c
+// 简化实现，省略了 pci_write_msg_msix() 和 pci_write_msg_msi() 的内部实现细节
 void __pci_write_msi_msg(struct msi_desc *entry, struct msi_msg *msg)
 {
     struct pci_dev *dev = msi_desc_to_pci_dev(entry);
 
-    if (entry->pci.msi_attrib.is_msix) {
-        // MSI-X: 写入MMIO表
-        void __iomem *base = pci_msix_desc_addr(entry);
-        writel(msg->address_lo, base + PCI_MSIX_ENTRY_LOWER_ADDR);
-        writel(msg->address_hi, base + PCI_MSIX_ENTRY_UPPER_ADDR);
-        writel(msg->data, base + PCI_MSIX_ENTRY_DATA);
+    if (dev->current_state != PCI_D0 || pci_dev_is_disconnected(dev)) {
+        /* Don't touch the hardware now */
+    } else if (entry->pci.msi_attrib.is_msix) {
+        pci_write_msg_msix(entry, msg);
     } else {
-        // MSI: 写入Config Space
-        int pos = dev->msi_cap;
-        pci_write_config_dword(dev, pos + PCI_MSI_ADDRESS_LO,
-                               msg->address_lo);
-        if (entry->pci.msi_attrib.is_64) {
-            pci_write_config_dword(dev, pos + PCI_MSI_ADDRESS_HI,
-                                   msg->address_hi);
-            pci_write_config_word(dev, pos + PCI_MSI_DATA_64,
-                                  msg->data);
-        } else {
-            pci_write_config_word(dev, pos + PCI_MSI_DATA_32,
-                                  msg->data);
-        }
+        pci_write_msg_msi(dev, entry, msg);
     }
+
+    entry->msg = *msg;
+
+    if (entry->write_msi_msg)
+        entry->write_msi_msg(entry, entry->write_msi_msg_data);
 }
 ```
 
@@ -329,10 +325,12 @@ void __pci_write_msi_msg(struct msi_desc *entry, struct msi_msg *msg)
 
 ```c
 // drivers/pci/msi/msi.c
+// 简化实现，省略了 pci_msi_mask_irq 回调函数和 irq_chip 集成
 void pci_msi_update_mask(struct msi_desc *desc, u32 clear, u32 set)
 {
     struct pci_dev *dev = msi_desc_to_pci_dev(desc);
     raw_spinlock_t *lock = &dev->msi_lock;
+    unsigned long flags;
 
     if (!desc->pci.msi_attrib.can_mask)
         return;
@@ -344,13 +342,27 @@ void pci_msi_update_mask(struct msi_desc *desc, u32 clear, u32 set)
     raw_spin_unlock_irqrestore(lock, flags);
 }
 
-// MSI-X的Per-Vector Mask
-void __pci_msix_mask_desc(struct msi_desc *desc, u32 mask)
+// MSI-X的Per-Vector Mask (实际路径: pci_msix_mask → pci_msix_write_vector_ctrl)
+// drivers/pci/msi/msi.h
+// 简化实现，省略了 desc->pci.msix_ctrl 的缓存同步和 readl 刷新
+void pci_msix_mask(struct msi_desc *desc)
 {
-    void __iomem *addr = pci_msix_desc_addr(desc);
-    u32 ctrl = readl(addr + PCI_MSIX_ENTRY_VECTOR_CTRL);
-    ctrl |= PCI_MSIX_ENTRY_CTRL_MASKBIT;
-    writel(ctrl, addr + PCI_MSIX_ENTRY_VECTOR_CTRL);
+    desc->pci.msix_ctrl |= PCI_MSIX_ENTRY_CTRL_MASKBIT;
+    pci_msix_write_vector_ctrl(desc, desc->pci.msix_ctrl);
+}
+
+void pci_msix_unmask(struct msi_desc *desc)
+{
+    desc->pci.msix_ctrl &= ~PCI_MSIX_ENTRY_CTRL_MASKBIT;
+    pci_msix_write_vector_ctrl(desc, desc->pci.msix_ctrl);
+}
+
+static inline void pci_msix_write_vector_ctrl(struct msi_desc *desc, u32 ctrl)
+{
+    void __iomem *desc_addr = pci_msix_desc_addr(desc);
+
+    if (desc->pci.msi_attrib.can_mask)
+        writel(ctrl, desc_addr + PCI_MSIX_ENTRY_VECTOR_CTRL);
 }
 ```
 
@@ -358,23 +370,23 @@ void __pci_msix_mask_desc(struct msi_desc *desc, u32 mask)
 
 ```c
 // drivers/pci/msi/irqdomain.c
+// 简化实现，省略了 pci_msi_teardown_msi_irqs 和架构特定的 irqdomain 回调链
 int pci_msi_setup_msi_irqs(struct pci_dev *dev, int nvec, int type)
 {
-    struct irq_domain *domain = dev_get_msi_domain(&dev->dev);
+    struct irq_domain *domain;
 
+    domain = dev_get_msi_domain(&dev->dev);
     if (domain && irq_domain_is_hierarchy(domain))
-        // 现代路径: 通过irqdomain分配
         return msi_domain_alloc_irqs_all_locked(&dev->dev,
                                                  MSI_DEFAULT_DOMAIN, nvec);
 
-    // 传统路径: 架构特定实现
     return pci_msi_legacy_setup_msi_irqs(dev, nvec, type);
 }
 ```
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
-graph TD
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "'trebuchet ms', verdana, arial, sans-serif"}}}%%
+flowchart TD
     DRV["驱动调用<br/>pci_alloc_irq_vectors()"] --> CORE["MSI Core<br/>msi.c"]
     CORE --> CHECK["pci_msi_supported()"]
     CHECK --> DOMAIN{"有irqdomain?"}
@@ -583,8 +595,8 @@ done
 | 5 | `include/uapi/linux/pci_regs.h` | `PCI_MSI_*`, `PCI_MSIX_*` 寄存器定义 |
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
-graph TD
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "'trebuchet ms', verdana, arial, sans-serif"}}}%%
+flowchart TD
     A["api.c<br/>驱动入口"] --> B["msi.c<br/>核心逻辑"]
     B --> C["irqdomain.c<br/>IRQ分配"]
     B --> D["legacy.c<br/>传统路径"]

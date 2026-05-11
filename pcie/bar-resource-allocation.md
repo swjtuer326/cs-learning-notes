@@ -8,8 +8,6 @@
 |------|------|------|
 | BAR | Base Address Register | 基地址寄存器，设备声明地址需求的机制 |
 | iATU | Internal Address Translation Unit | 内部地址转换单元，RC中CPU地址与PCIe地址的桥梁 |
-| NP | Non-Prefetchable | 不可预取内存，读取有副作用 |
-| PF | Prefetchable | 可预取内存，读取无副作用 |
 | VF | Virtual Function | SR-IOV虚拟功能，轻量级PCIe Function |
 | PCIe | Peripheral Component Interconnect Express | 高速外设互连标准 |
 
@@ -52,7 +50,7 @@ BAR分配的是**PCIe总线地址**，但CPU使用的是**物理地址**。两�
 BAR地址的分配有**两条路径**，取决于固件是否做了枚举：
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "'trebuchet ms', verdana, arial, sans-serif"}}}%%
 flowchart TD
     BOOT["上电"] --> CHK{"固件是否枚举PCI?"}
 
@@ -147,7 +145,7 @@ BAR的bit3（Prefetchable位）决定了CPU对该地址区域的访问语义：
 | Prefetchable | 含义 | 典型用途 |
 |-------------|------|---------|
 | 0（非预取） | 读取有副作用，CPU不能预取、不能合并访问 | 控制寄存器、状态寄存器、门铃寄存器 |
-| 1（可预取） | 读取无副作用，多次读取返回相同值 | 帧缓冲、显存（Expansion ROM使用独立寄存器0x38，也声明为Prefetchable） |
+| 1（可预取） | 读取无副作用，多次读取返回相同值 | 帧缓冲、显存（Expansion ROM使用独立寄存器，Type 0偏移0x30/Type 1偏移0x38，也声明为Prefetchable） |
 
 **为什么区分**：CPU和桥在访问非预取区域时必须严格遵守程序顺序，不能进行读预取（Read Prefetching）或写合并（Write Combining）。对控制寄存器做读预取可能导致状态位被意外清除（如中断状态寄存器读后自动清零）；对帧缓冲做写合并则能显著提升性能。
 
@@ -161,7 +159,7 @@ BAR的bit3（Prefetchable位）决定了CPU对该地址区域的访问语义：
 > **探测时机**：此协议在枚举阶段执行，此时BAR中已有固件（BIOS/UEFI）写入的PCIe地址。写全1**不是**分配地址，而是探测硬件需要多大的地址空间。探测后必须恢复原始地址。
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "'trebuchet ms', verdana, arial, sans-serif"}}}%%
 sequenceDiagram
     participant SW as 枚举软件
     participant BAR as 设备BAR寄存器
@@ -225,7 +223,7 @@ BARn+1(高32位): [Base/Mask高32位]
 ### 2.1 调用链总览
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "'trebuchet ms', verdana, arial, sans-serif"}}}%%
 flowchart TD
     A["pci_read_bases()<br/>入口：关闭解码、批量探测、逐BAR解析"] --> B["__pci_size_stdbars()<br/>批量写全1读回所有BAR掩码"]
     B --> C["__pci_read_base()<br/>解析单个BAR为resource"]
@@ -257,7 +255,7 @@ flowchart TD
 
 ```c
 // drivers/pci/probe.c (Linux 6.19)
-static void pci_read_bases(struct pci_dev *dev, unsigned int howmany, int rom)
+static __always_inline void pci_read_bases(struct pci_dev *dev, unsigned int howmany, int rom)
 {
     u32 stdbars[PCI_STD_NUM_BARS], rombar;
     u16 orig_cmd;
@@ -295,7 +293,9 @@ static void pci_read_bases(struct pci_dev *dev, unsigned int howmany, int rom)
         // __pci_read_base 返回1表示64-bit BAR，跳过下一个槽位
     }
 
-    // ⑤ 解析 Expansion ROM BAR（偏移由 rom 参数指定，通常为 0x38）
+    // ⑤ 解析 Expansion ROM BAR
+    //     Type 0 设备: rom = PCI_ROM_ADDRESS (0x30)
+    //     Type 1 桥:   rom = PCI_ROM_ADDRESS_1 (0x38)
     if (rom) {
         struct resource *res = &dev->resource[PCI_ROM_RESOURCE];
         dev->rom_base_reg = rom;
@@ -341,7 +341,7 @@ static void __pci_size_bars(struct pci_dev *dev, int count,
 
 ```c
 // drivers/pci/probe.c (Linux 6.19)
-static inline unsigned long decode_bar(struct pci_dev *dev, u32 bar)
+static unsigned long decode_bar(struct pci_dev *dev, u32 bar)
 {
     u32 mem_type;
     unsigned long flags;
@@ -436,7 +436,8 @@ Step 2: size & ~(size - 1)   // 提取最低位的1
 这是BAR解析的核心函数。此时BAR中已有固件（BIOS/UEFI）写入的PCIe地址，本函数将其读出并转换为 `struct resource`（Linux内部的地址区间表示）。本函数**不分配地址**，只读取固件分配的结果并计算大小。
 
 ```c
-// drivers/pci/probe.c (Linux 6.19, 省略部分日志和变量名简化)
+// drivers/pci/probe.c (Linux 6.19)
+// 简化实现，省略了 pci_resource_name() 日志、D3cold 设备检测、ROM 使能位处理
 int __pci_read_base(struct pci_dev *dev, enum pci_bar_type type,
                     struct resource *res, unsigned int pos, u32 *sizes)
 {
@@ -567,8 +568,8 @@ res->start        ──pcibios_resource_to_bus()──>  反推的总线地址
 ### 3.1 三阶段分配
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
-graph TD
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "'trebuchet ms', verdana, arial, sans-serif"}}}%%
+flowchart TD
     PHASE1["Phase 1: 枚举<br/>pci_scan_child_bus()"] --> PHASE2["Phase 2: 大小计算<br/>__pci_bus_size_bridges()"]
     PHASE2 --> PHASE3["Phase 3: 地址分配<br/>__pci_bus_assign_resources()"]
 
@@ -746,8 +747,8 @@ int dw_pcie_prog_inbound_atu(struct dw_pcie *pci, int index, int type,
 ### 4.3 地址转换全景
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": ""trebuchet ms", verdana, arial, sans-serif"}}}%%
-graph TD
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "'trebuchet ms', verdana, arial, sans-serif"}}}%%
+flowchart TD
     CPU["CPU物理地址"] -->|"Memory R/W<br/>PA范围"| OUT["iATU Outbound<br/>CPU PA to PCIe BA"]
     OUT -->|"MemRd/MemWr TLP<br/>BA范围"| BAR["设备BAR<br/>PCIe总线地址"]
     DMA["EP DMA引擎"] -->|"MemWr/MemRd TLP<br/>BA范围"| IN["iATU Inbound<br/>PCIe BA to SoC PA"]

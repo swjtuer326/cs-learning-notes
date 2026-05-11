@@ -85,7 +85,7 @@ ECAM (Enhanced Configuration Access Mechanism) 将整个配置空间映射到MMI
 
 ```mermaid
 %%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "'trebuchet ms', verdana, arial, sans-serif"}}}%%
-graph LR
+flowchart LR
     BASE["ECAM基址<br/>MCFG表"] --> ADD["+ Bus<<20"]
     ADD --> ADD2["+ Dev<<15"]
     ADD2 --> ADD3["+ Func<<12"]
@@ -156,6 +156,7 @@ MCFG表 (多Segment示例):
 
 ```c
 // include/linux/pci-ecam.h
+// 简化实现，省略了 pci_config_window 中 busr 资源管理和 pci_ecam_ops 中 enable_device/disable_device 等回调
 
 struct pci_config_window {
     struct resource         res;     // ECAM MMIO区域
@@ -233,10 +234,12 @@ sequenceDiagram
 
 ```c
 // drivers/pci/ecam.c
+// 简化实现，省略了错误处理 goto err_exit 路径、bus_range 截断逻辑、request_resource_conflict 冲突检查、dev_info 日志输出
 struct pci_config_window *pci_ecam_create(struct device *dev,
         struct resource *cfgres, struct resource *busr,
         const struct pci_ecam_ops *ops)
 {
+    unsigned int bus_shift = ops->bus_shift;
     // 1. 分配 pci_config_window
     cfg = kzalloc_obj(*cfg);
 
@@ -244,11 +247,25 @@ struct pci_config_window *pci_ecam_create(struct device *dev,
     if (!bus_shift)
         bus_shift = PCIE_ECAM_BUS_SHIFT;
 
-    // 3. 请求MMIO资源
+    // 3. 设置cfg各字段
+    cfg->parent = dev;
+    cfg->ops = ops;
+    cfg->busr.start = busr->start;
+    cfg->busr.end = busr->end;
+    cfg->busr.flags = IORESOURCE_BUS;
+    cfg->bus_shift = bus_shift;
+    bus_range = resource_size(&cfg->busr);
+    bsz = 1 << bus_shift;
+
+    cfg->res.start = cfgres->start;
+    cfg->res.end = cfgres->end;
     cfg->res.flags = IORESOURCE_MEM | IORESOURCE_BUSY;
+    cfg->res.name = "PCI ECAM";
+
+    // 4. 请求MMIO资源
     conflict = request_resource_conflict(&iomem_resource, &cfg->res);
 
-    // 4. 映射配置空间
+    // 5. 映射配置空间
     if (per_bus_mapping) {
         // 32位系统: 逐Bus映射
         cfg->winp = kzalloc_objs(*cfg->winp, bus_range);
@@ -257,22 +274,28 @@ struct pci_config_window *pci_ecam_create(struct device *dev,
         cfg->win = pci_remap_cfgspace(cfgres->start, bus_range * bsz);
     }
 
-    // 5. 调用控制器特定初始化
+    // 6. 调用控制器特定初始化
     if (ops->init)
         ops->init(cfg);
 }
 ```
 
-> 64位系统一次性映射整个ECAM区域（可能高达256MB），32位系统按Bus逐个映射（每个4KB×32=128KB）
+> 64位系统一次性映射整个ECAM区域（可能高达256MB），32位系统按Bus逐个映射（每个Bus 1MB = 32 Dev × 8 Func × 4KB）
 
 ### 2.5 pci_ecam_map_bus() —— 配置空间访问的入口
 
 ```c
 // drivers/pci/ecam.c
-void __iomem *pci_ecam_map_bus(struct pci_bus *bus, unsigned int devfn, int where)
+// 简化实现，省略了 per_bus_mapping 的逐 Bus ioremap 说明、pci_ecam_add_bus/remove_bus 生命周期
+void __iomem *pci_ecam_map_bus(struct pci_bus *bus, unsigned int devfn,
+                               int where)
 {
     struct pci_config_window *cfg = bus->sysdata;
+    unsigned int bus_shift = cfg->ops->bus_shift;
+    unsigned int devfn_shift = cfg->ops->bus_shift - 8;
     unsigned int busn = bus->number;
+    void __iomem *base;
+    u32 bus_offset, devfn_offset;
 
     // 1. Bus号范围检查
     if (busn < cfg->busr.start || busn > cfg->busr.end)
@@ -284,11 +307,18 @@ void __iomem *pci_ecam_map_bus(struct pci_bus *bus, unsigned int devfn, int wher
     if (per_bus_mapping) {
         base = cfg->winp[busn];  // 32位: 使用该Bus的映射
         busn = 0;
-    } else {
+    } else
         base = cfg->win;          // 64位: 使用全局映射
+
+    // 3. 计算ECAM偏移 (支持非标准bus_shift)
+    if (cfg->ops->bus_shift) {
+        bus_offset = (busn & PCIE_ECAM_BUS_MASK) << bus_shift;
+        devfn_offset = (devfn & PCIE_ECAM_DEVFN_MASK) << devfn_shift;
+        where &= PCIE_ECAM_REG_MASK;
+
+        return base + (bus_offset | devfn_offset | where);
     }
 
-    // 3. 计算ECAM偏移
     return base + PCIE_ECAM_OFFSET(busn, devfn, where);
 }
 ```
@@ -297,7 +327,7 @@ void __iomem *pci_ecam_map_bus(struct pci_bus *bus, unsigned int devfn, int wher
 
 ```mermaid
 %%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "'trebuchet ms', verdana, arial, sans-serif"}}}%%
-graph TD
+flowchart TD
     DRIVER["驱动调用<br/>pci_read_config_dword()"] --> BUS_OP["pci_bus_read_config_dword()<br/>drivers/pci/access.c"]
     BUS_OP --> LOCK["pci_lock_config()<br/>获取自旋锁"]
     LOCK --> OPS_READ["bus->ops->read()"]
@@ -315,17 +345,24 @@ graph TD
 
 ```c
 // drivers/pci/access.c
+// 简化实现，省略了 pci_lock_config 保护、pci_generic_config_read32 路径、pci_generic_config_write32 RMW 路径
 int pci_generic_config_read(struct pci_bus *bus, unsigned int devfn,
                             int where, int size, u32 *val)
 {
-    void __iomem *addr = bus->ops->map_bus(bus, devfn, where);
+    void __iomem *addr;
+
+    addr = bus->ops->map_bus(bus, devfn, where);
     if (!addr)
         return PCIBIOS_DEVICE_NOT_FOUND;
 
-    if (size == 1)      *val = readb(addr);
-    else if (size == 2) *val = readw(addr);
-    else                *val = readl(addr);
-    return 0;
+    if (size == 1)
+        *val = readb(addr);
+    else if (size == 2)
+        *val = readw(addr);
+    else
+        *val = readl(addr);
+
+    return PCIBIOS_SUCCESSFUL;
 }
 ```
 
@@ -335,6 +372,7 @@ int pci_generic_config_read(struct pci_bus *bus, unsigned int devfn,
 
 ```c
 // drivers/pci/access.c
+// 简化实现，省略了 spin_lock_irqsave 的 flags 参数管理和中断状态保存
 static DEFINE_SPINLOCK(pci_lock);
 
 void pci_lock_config(void)
@@ -361,6 +399,7 @@ void pci_lock_config(void)
 
 ```c
 // drivers/pci/controller/pci-host-generic.c
+// 简化实现，省略了英文源码注释和 pci_dw_ecam_map_bus 包装函数
 static bool pci_dw_valid_device(struct pci_bus *bus, unsigned int devfn)
 {
     struct pci_config_window *cfg = bus->sysdata;
@@ -420,6 +459,7 @@ CAM是ECAM的前身，使用x86端口I/O访问配置空间，bus_shift=16（只�
 
 ```c
 // drivers/pci/controller/pci-host-generic.c
+// 简化实现，省略了 pci_generic_ecam_ops 中 add_bus/remove_bus 回调
 static const struct pci_ecam_ops gen_pci_cfg_cam_bus_ops = {
     .bus_shift = 16,  // CAM: Bus<<16, 无Dev/Func偏移
     .pci_ops = {
@@ -432,9 +472,11 @@ static const struct pci_ecam_ops gen_pci_cfg_cam_bus_ops = {
 
 ### 3.4 DBI —— 控制器内部配置空间访问
 
-ECAM用于访问**下游设备**的配置空间（生成CfgRd/CfgWr TLP），但**Root Complex自身**也有配置空间（Root Port的Type 1 Header、Link Capability等）。这部分配置空间不通过TLP访问，而是通过控制器的**DBI (Doorbell Interface)** 直接MMIO访问。
+ECAM用于访问**下游设备**的配置空间（生成CfgRd/CfgWr TLP），但**Root Complex自身**也有配置空间（Root Port的Type 1 Header、Link Capability等）。这部分配置空间不通过TLP访问，而是通过控制器的**DBI (Data Bus Interface)** 直接MMIO访问。
 
 #### 为什么需要DBI
+
+DBI (Data Bus Interface) 是 DWC 控制器的内部寄存器访问接口。
 
 ```
 ECAM访问路径:
@@ -469,6 +511,8 @@ DBI空间布局 (典型):
 
 ```c
 // drivers/pci/controller/dwc/pcie-designware.h
+// 简化实现，省略了 dw_pcie 结构体中 clock/reset/edma/msi/iatu_unroll 等大量字段
+
 struct dw_pcie {
     void __iomem *dbi_base;       // DBI寄存器基址
     void __iomem *dbi_base2;      // DBI2 (EP模式)
@@ -487,6 +531,7 @@ void dw_pcie_writel_dbi(struct dw_pcie *pci, u32 reg, u32 val);
 
 ```c
 // drivers/pci/controller/dwc/pcie-designware.h
+// 简化实现，省略了 DBI_RO_WR_EN 在 MISC_CONTROL_1_OFF 寄存器的完整位定义上下文
 #define PCIE_DBI_RO_WR_EN  BIT(0)
 
 static inline void dw_pcie_dbi_ro_wr_en(struct dw_pcie *pci)
@@ -504,19 +549,15 @@ static inline void dw_pcie_dbi_ro_wr_dis(struct dw_pcie *pci)
 }
 ```
 
-典型用法——限制链路速度：
+典型用法——清除 ASPM L0s 支持（Link Capability 寄存器是 RO 的，需 DBI 写使能）：
 
 ```c
 // drivers/pci/controller/dwc/pcie-qcom.c
-static void qcom_pcie_config_link_speed(struct qcom_pcie *pcie, int speed)
-{
-    dw_pcie_dbi_ro_wr_en(pci);
-    val = readl(pci->dbi_base + offset + PCI_EXP_LNKCAP);
-    val &= ~PCI_EXP_LNKCAP_SLS;           // 清除速度字段
-    val |= speed;                          // 设置目标速度
-    writel(val, pci->dbi_base + offset + PCI_EXP_LNKCAP);
-    dw_pcie_dbi_ro_wr_dis(pci);
-}
+// DBI RO 写使能的实际使用：清除 ASPM L0s
+dw_pcie_dbi_ro_wr_en(pci);
+pcie_capability_clear_word(pci->dev, PCI_EXP_LNKCAP,
+                           PCI_EXP_LNKCAP_ASPM_L0s);
+dw_pcie_dbi_ro_wr_dis(pci);
 ```
 
 #### DBI vs ECAM 对比
@@ -571,7 +612,7 @@ ECAM at [mem 0x4010000000-0x401fffffff] for [bus 00-ff]
 
 ```mermaid
 %%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "'trebuchet ms', verdana, arial, sans-serif"}}}%%
-graph TD
+flowchart TD
     A["pci-ecam.h<br/>数据结构与宏"] --> B["ecam.c<br/>核心实现"]
     B --> C["pci-host-common.c<br/>通用初始化"]
     C --> D["pci-host-generic.c<br/>平台驱动"]
