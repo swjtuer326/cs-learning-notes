@@ -70,10 +70,17 @@
 - FP8 训练 → 需要模型算法（缩放因子设计）+ 编译器（量化图插入）+ 芯片支持（HMMA/Transformer Engine）三层配合
 - 推理服务架构的 Disaggregated Serving → 改变了 Prefill/Decode 的硬件资源配比（芯片层+互联层）
 
-**已有文档的覆盖关系**：
-- [03-LLM注意力机制发展与演进.md](./03-LLM注意力机制发展与演进.md) → 覆盖第一层（注意力算法深入）
-- [11-NVIDIA-GPU架构演进与LLM.md](./11-NVIDIA-GPU架构演进与LLM.md) → 覆盖第四层（GPU微架构演进）
-- **本文档** → 填补第〇层、第1.5层、第二、三、3.5、五层及端到端串联，形成完整拼图
+**已有文档的覆盖关系**（按知识分层排列）：
+
+| 层级 | 核心文档 | 进阶延伸 (deep-dive/) |
+|------|---------|----------------------|
+| Layer 1: 数据 | [01-数据工程](./01-LLM数据工程：从采集到Tokenization.md) | — |
+| Layer 2: 模型架构 | [02-Transformer结构](./02-Transformer完整结构与训练算法.md) / [03-注意力机制](./03-LLM注意力机制发展与演进.md) / [04-MoE架构](./04-LLM%20MoE架构：路由、负载均衡与专家并行.md) | [FlashAttention论文精读](./deep-dive/06-FlashAttention论文精读与Triton实践.md) / [算子与编译器](./deep-dive/07-算子与编译器：Triton到torch.compile.md) |
+| Layer 3: 分布式训练 | [05-分布式训练](./05-LLM分布式训练：并行策略与ZeRO.md) / [06-训练系统与稳定性](./06-LLM训练系统与稳定性.md) | — |
+| Layer 4: 后训练 | [07-Post-Training基础](./07-LLM%20Post-Training基础：SFT、RLHF与DPO.md) / [08-Post-Training进阶](./08-LLM%20Post-Training进阶：GRPO与多阶段RL.md) | — |
+| Layer 5: 压缩与部署 | [09-量化技术](./09-LLM量化技术：PTQ、QAT到FP8推理.md) / [10-蒸馏与模型压缩](./10-LLM蒸馏与模型压缩.md) | — |
+| Layer 6: 推理 | [11-推理资源分析](./11-LLM推理资源分析.md) / [12-推理引擎](./12-LLM推理引擎：vLLM到TensorRT-LLM.md) / [13-推理服务架构](./13-LLM推理服务架构：调度、缓存与投机解码.md) | [GPU集群互联](./deep-dive/10-GPU集群互联：NVLink到InfiniBand.md) / [NVIDIA-GPU架构演进](./deep-dive/11-NVIDIA-GPU架构演进与LLM.md) |
+| Layer 7: 应用 | [14-多模态LLM](./14-LLM多模态架构.md) / [15-Agent系统设计](./15-LLM%20Agent系统设计.md) | — |
 
 ---
 
@@ -176,7 +183,7 @@
 
 | 注意力变体 | 对训练的影响 | 对推理的影响 |
 |-----------|-------------|-------------|
-| **MHA** | 标准基准；QKV 全量计算，显存峰值高 | KV Cache 占用 = 2×n_heads×d_head×L，长序列瓶颈 |
+| **MHA** | 标准基准；QKV 全量计算，显存峰值高 | KV Cache 占用 = $2 \times n_{\text{heads}} \times d_{\text{head}} \times L$，长序列瓶颈 |
 | **GQA** | KV 头数减少，TP 切分策略不同 | KV Cache 显著减小（n_kv_heads/n_heads 倍），Llama-2/3 标配 |
 | **MQA** | 极致压缩 KV，可能影响收敛 | KV Cache 最小，但输出质量有损 |
 | **MLA (DeepSeek)** | 低秩压缩 KV，训练时需解压矩阵 | KV Cache 仅存压缩后的 latent，推理极省显存 |
@@ -191,7 +198,7 @@
 | **DeepSeekMoE** | Shared Expert + Fine-grained Routed Experts | 共享专家常驻激活，减少 All-to-All 压力；细粒度专家降低负载不均 | DeepSeek-V2/V3 |
 | **Mamba / SSM** | 线性复杂度，RNN 风格状态更新 | 无 KV Cache，但缺少成熟的 TP/PP 策略；硬件适配仍在早期 | Mamba, Mamba-2 |
 | **Jamba (Mamba-Transformer Hybrid)** | 交替使用 Mamba 层和 Attention 层 | 兼顾长序列效率和注意力质量；每层计算模式不同，调度复杂 | Jamba (AI21 Labs) |
-| **Linear Attention** | 将 softmax 替换为 kernel 分解，O(N) 复杂度 | 训练吞吐高但可能有收敛质量损失；KV 存储形式不同 | RWKV, RetNet |
+| **Linear Attention** | 将 softmax 替换为 kernel 分解，$O(N)$ 复杂度 | 训练吞吐高但可能有收敛质量损失；KV 存储形式不同 | RWKV, RetNet |
 | **Multi-Token Prediction (MTP)** | 每个位置预测未来 N 个 token | 训练时增加 N 个独立输出头；推理时可做 speculative decoding 的 draft model | Meta MTP, DeepSeek-V3 MTP |
 | **Diffusion LLM** | 用扩散模型替代自回归生成 | 非自回归生成，可并行解码；训练和推理的计算模式完全不同 | LLaDA, dLLM |
 
@@ -246,7 +253,7 @@ MoE 层的计算流程：
 
 | 技术 | 原理 | 效果 |
 |------|------|------|
-| **Activation Checkpointing** | 不存储中间激活，反向时重算 | 用 ~33% 额外计算换 ~4x 激活显存节省 |
+| **Activation Checkpointing** | 不存储中间激活，反向时重算 | 用 ~33% 额外计算换约 $4\times$ 激活显存节省 |
 | **Selective Activation Ckpt** | 只重算 attention 部分，保留 MLP 激活 | 比全量重算更快，显存节省略少 |
 | **Gradient Accumulation** | 多步 micro-batch 累积再更新 | 增加有效 batch size，不增加显存峰值 |
 | **ZeRO-Offload** | 将优化器状态/梯度 offload 到 CPU/NVMe | 用 PCIe 带宽换 GPU 显存 |
@@ -320,7 +327,6 @@ Pre-trained Base Model
 
 ### 1.5.3 RLHF：基于人类反馈的强化学习
 
-```
 RLHF 三阶段：
 
 阶段 1: Reward Model (RM) 训练
@@ -335,11 +341,10 @@ RLHF 三阶段：
   ┌──────────────────────────────────────────────┐
   │  Policy: SFT 后的模型（Actor）                │
   │  Reward: RM 打分 + KL penalty（防偏离太远）   │
-  │  目标: max E[reward - β × KL(π||π_ref)]      │
+  │  目标: $\max \mathbb{E}[\text{reward} - \beta \cdot \text{KL}(\pi \parallel \pi_{\text{ref}})]$      │
   │  需要同时维护: Actor, Reference, RM, Critic   │
   │  → 4 个模型在 GPU 上，显存压力极大            │
   └──────────────────────────────────────────────┘
-```
 
 ### 1.5.4 DPO 及其变体：无需 Reward Model 的对齐
 
@@ -403,7 +408,7 @@ RLHF 三阶段：
 
 | 并行策略 | 切分维度 | 通信模式 | 通信量 | 适用场景 |
 |---------|---------|---------|-------|---------|
-| **DP (Data Parallel)** | Batch 维 | All-Reduce (梯度) | ~2Φ (参数量的 2 倍) | 基础策略，必须组合使用 |
+| **DP (Data Parallel)** | Batch 维 | All-Reduce (梯度) | $\approx 2\Phi$（$\Phi$ 为模型参数量，以字节计） | 基础策略，必须组合使用 |
 | **TP (Tensor Parallel)** | 参数矩阵的行/列 | All-Reduce + All-Gather | 每层多次小通信，对带宽敏感 | 层内切分，需 NVLink 高带宽 |
 | **PP (Pipeline Parallel)** | 模型深度（层） | P2P Send/Recv (激活) | 低（仅传递激活） | 跨节点友好，但 bubble 问题 |
 | **SP (Sequence Parallel)** | 序列长度维 | All-Reduce / All-Gather | 与 TP 结合时复用通信 | 长序列训练必备 |
@@ -465,7 +470,6 @@ RLHF 三阶段：
 
 ### 2.6 ZeRO 系列深入
 
-```
 ZeRO 的三个优化级别：
 
 ZeRO-1: 优化器状态分片 (Optimizer State Partitioning)
@@ -487,17 +491,16 @@ ZeRO-3: + 参数分片
   │  每个 GPU 只存 1/N 的模型参数                         │
   │  前向/反向时需要 All-Gather 收集完整参数              │
   │  显存节省: ~N× (线性随 GPU 数扩展)                    │
-  │  通信量: ~1.5Φ per step (比 DP 的 2Φ 略少)           │
+  │  通信量: $\approx 1.5\Phi$ per step (比 DP 的 $2\Phi$ 略少)           │
   │  代价: 通信频率极高，对带宽敏感                       │
   └──────────────────────────────────────────────────────┘
-```
 
-| 配置 | 单卡显存占用 (Φ=参数量, N=GPU数, Ψ=优化器状态因子) | 通信量/step |
+| 配置 | 单卡显存占用（$\Phi$=参数量, $N$=GPU 数, $\Psi$=优化器状态因子） | 通信量/step |
 |------|---------------------------------------------------|------------|
-| **无 ZeRO (纯 DP)** | Φ × (2 + 2 + 12) = 16Φ bytes (FP16) | 2Φ |
-| **ZeRO-1** | Φ × (2 + 2) + 12Φ/N | ~2Φ |
-| **ZeRO-2** | Φ × 2 + (2Φ + 12Φ)/N | ~2Φ |
-| **ZeRO-3** | (2Φ + 2Φ + 12Φ)/N = 16Φ/N | ~1.5Φ |
+| **无 ZeRO (纯 DP)** | $\Phi \times (2 + 2 + 12) = 16\Phi$ bytes (FP16) | $2\Phi$ |
+| **ZeRO-1** | $\Phi \times (2 + 2) + 12\Phi/N$ | $\approx 2\Phi$ |
+| **ZeRO-2** | $\Phi \times 2 + (2\Phi + 12\Phi)/N$ | $\approx 2\Phi$ |
+| **ZeRO-3** | $(2\Phi + 2\Phi + 12\Phi)/N = 16\Phi/N$ | $\approx 1.5\Phi$ |
 
 ### 2.7 通信-计算 Overlap 策略
 
@@ -550,7 +553,7 @@ ZeRO-3: + 参数分片
 
 | 技术 | 解决的问题 | 核心思想 | 典型实现 |
 |------|-----------|---------|---------|
-| **FlashAttention-1/2/3** | Attention 的 HBM 读写带宽瓶颈 | 分块计算（tiling）+ Online Softmax；Forward 只用 O(N²d) 次 HBM 读写而非 O(N²dM) | Dao-AILab; `flash_attn` |
+| **FlashAttention-1/2/3** | Attention 的 HBM 读写带宽瓶颈 | 分块计算（tiling）+ Online Softmax；Forward 只用 $O(N^2 d)$ 次 HBM 读写而非 $O(N^2 d M)$ | Dao-AILab; `flash_attn` |
 | **FlashAttention-3** | Hopper 架构利用率不足 | 利用 WGMMA 指令 + TMA 异步拷贝，warp-group 级调度 | Dao-AILab (2024) |
 | **FlexAttention** | 不同 Attention 变体需要不同 kernel | PyTorch 2.5+ 的可组合 Attention API，在 Python 层定义 score_mod | PyTorch 官方 |
 | **Flash-Decoding** | Decode 阶段长 KV Cache | 将 KV Cache 沿 sequence 维度分块并行，最后的 softmax reduction | FlashInfer / vLLM |
@@ -832,7 +835,7 @@ Speculative Decoding:
 
 > 软件优化的极限受限于硬件能力边界。这一层回答"芯片上到底发生了什么"。
 
-> 📎 **已有深度覆盖**：[11-NVIDIA-GPU架构演进与LLM.md](./11-NVIDIA-GPU架构演进与LLM.md) 从 Tesla 到 Blackwell 的完整架构演进，包含 SM、Tensor Core、TMA、Cluster 等关键概念
+> 📎 **已有深度覆盖**：[11-NVIDIA-GPU架构演进与LLM.md](./deep-dive/11-NVIDIA-GPU架构演进与LLM.md) 从 Tesla 到 Blackwell 的完整架构演进，包含 SM、Tensor Core、TMA、Cluster 等关键概念
 
 在训练推理全景中需要的补充视角：
 
@@ -953,17 +956,16 @@ Speculative Decoding:
 
 ### 5.2 通信对 LLM 训练的约束
 
-```
 问题: 为什么大模型训练不能无限扩展 DP？
 
-  DP 做 All-Reduce 梯度同步，通信量为每步 ~2×Φ (Φ=参数量)
+  DP 做 All-Reduce 梯度同步，通信量为每步 $\approx 2 \times \Phi$（$\Phi = 350\text{GB}$）
 
   以 175B 模型, FP16 为例:
-    参数量 Φ = 350 GB
-    All-Reduce 通信量 = 700 GB / step
+    参数量 $\Phi = 350\text{GB}$
+    All-Reduce 通信量 = $700\text{GB / step}$
 
   假设 InfiniBand 400 Gbps × 8 链路 (有效 200 GB/s):
-    通信时间 ≥ 3.5s / step
+    通信时间 $\geq 3.5\text{s}$ / step
     如果单步计算时间为 10s → 通信占比 35% (可接受)
     如果优化后单步 2s → 通信占比 175% (完全不可接受!)
 
@@ -971,7 +973,6 @@ Speculative Decoding:
   - 通信和计算需要 overlap (分布式优化器, async All-Reduce)
   - DP 不能无限增加，需要 TP/PP 补充
   - 网络拓扑 (rail-optimized, dragonfly) 比绝对带宽更重要
-```
 
 ### 5.3 网内计算（SHARP / In-Network Computing）
 
@@ -1066,8 +1067,8 @@ Speculative Decoding:
 
 | 定律 | 核心结论 | 实践意义 |
 |------|---------|---------|
-| **Kaplan et al. (2020)** | Loss ∝ N^(-0.076) × D^(-0.095) × C^(-0.057) | 模型大小比数据量更重要 |
-| **Chinchilla (2022)** | 最优: tokens ≈ 20× parameters | 数据量比之前认为的更重要；70B 模型需要 1.4T tokens |
+| **Kaplan et al. (2020)** | $$\text{Loss} \propto N^{-0.076} \cdot D^{-0.095} \cdot C^{-0.057}$$ 其中 $N$ 是参数量，$D$ 是数据量，$C$ 是计算量 | 模型大小比数据量更重要 |
+| **Chinchilla (2022)** | 最优: $\text{tokens} \approx 20 \times \text{parameters}$ | 数据量比之前认为的更重要；70B 模型需要 1.4T tokens |
 | **Emergent Abilities** | 某些能力在模型达到一定规模后突然涌现 | 不能仅从小模型实验推断大模型行为 |
 | **Scaling Laws for MoE** | MoE 的 scaling 规律与 Dense 不同 | 需要独立的 scaling 实验 |
 
@@ -1198,21 +1199,52 @@ Speculative Decoding:
 
 ```
 LLM/
-├── 00-LLM训练推理全景学习框架.md                ✅ 总索引+框架
-├── 01-LLM数据工程：从采集到Tokenization.md       ✅ 第〇层
-├── 02-Transformer完整结构与训练算法.md           ✅ 第一层-补充
-├── 03-LLM注意力机制发展与演进.md                 ✅ 第一层-深入
-├── 04-LLM Post-Training：SFT、RLHF与DPO.md       ✅ 第1.5层
-├── 05-LLM分布式训练：并行策略与ZeRO.md           ✅ 第二层
-├── 06-FlashAttention论文精读与Triton实践.md      ✅ 第三层
-├── 07-LLM量化技术：PTQ、QAT到FP8推理.md          ✅ 第三层
-├── 08-LLM推理引擎：vLLM到TensorRT-LLM.md         ✅ 推理引擎
-├── 09-LLM推理服务架构：调度、缓存与投机解码.md    ✅ 第3.5层
-├── 10-GPU集群互联：NVLink到InfiniBand.md         ✅ 第五层
-├── 11-NVIDIA-GPU架构演进与LLM.md                 ✅ 第四层-深入
-├── 12-非NVIDIA AI芯片与软件栈对比.md             ✅ 第五层-补充
-├── 13-LLM评估体系与Scaling Laws.md               ✅ 评估
-└── 14-LLM推理性能调优实战.md                     ✅ 端到端
+├── 00-LLM训练推理全景学习框架.md              ✅ 总索引+框架
+
+│   ═══ Layer 1: 数据 ═══
+├── 01-LLM数据工程：从采集到Tokenization.md    ✅ 数据采集/清洗/配比/Tokenizer
+
+│   ═══ Layer 2: 模型架构 ═══
+├── 02-Transformer完整结构与训练算法.md        ✅ MLP/Norm/位置编码/优化器
+├── 03-LLM注意力机制发展与演进.md               ✅ MHA→GQA→MLA→CSA/HCA/GDN
+├── 04-LLM MoE架构：路由、负载均衡与专家并行.md  🆕 MoE 专题
+
+│   ═══ Layer 3: 分布式训练 ═══
+├── 05-LLM分布式训练：并行策略与ZeRO.md         ✅ DP/TP/PP/SP/EP/ZeRO
+├── 06-LLM训练系统与稳定性.md                   🆕 DualPipe/弹性训练/故障诊断
+
+│   ═══ Layer 4: 后训练 ═══
+├── 07-LLM Post-Training基础：SFT、RLHF与DPO.md ✅ SFT/RLHF/DPO 基础
+├── 08-LLM Post-Training进阶：GRPO与多阶段RL.md  🆕 GRPO/MIS-PO/Toggle/多阶段流水线
+
+│   ═══ Layer 5: 压缩与部署 ═══
+├── 09-LLM量化技术：PTQ、QAT到FP8推理.md        ✅ GPTQ/AWQ/SmoothQuant/FP8
+├── 10-LLM蒸馏与模型压缩.md                      🆕 Cascade/OPD/弹性训练/FP4 QAT
+
+│   ═══ Layer 6: 推理 ═══
+├── 11-LLM推理资源分析.md                        🆕 显存/KV/FLOPs/延迟量化分解
+├── 12-LLM推理引擎：vLLM到TensorRT-LLM.md        ✅ PagedAttention/Continuous Batching
+├── 13-LLM推理服务架构：调度、缓存与投机解码.md   ✅ Disaggregated/Prefix Cache/Spec Decode
+
+│   ═══ Layer 7: 应用 ═══
+├── 14-LLM多模态架构.md                          🆕 Thinker-Talker/MoonViT/早期融合
+├── 15-LLM Agent系统设计.md                      🆕 Swarm/HCM/沙箱/RL训练
+
+├── deep-dive/                                   ← 技术延伸（底层专题）
+│   ├── FlashAttention论文精读与Triton实践.md    (原06)
+│   ├── GPU集群互联：NVLink到InfiniBand.md       (原10)
+│   └── NVIDIA-GPU架构演进与LLM.md               (原11)
+
+└── refs/                                        ← 技术报告
+    ├── DeepSeek_V4_Technical_Report.pdf
+    ├── ERNIE_5.0_Technical_Report.pdf
+    ├── GLM-5_Technical_Report.pdf
+    ├── Kimi_K2.5_Technical_Report.pdf
+    ├── Ministral_3_Technical_Report.pdf
+    ├── Qwen3_Technical_Report.pdf
+    ├── Qwen3.5-Omni_Technical_Report.pdf
+    ├── Step3.5-Flash-Technical-Report.pdf
+    └── GLM-4.5V_Technical_Report.pdf
 ```
 
 ---
@@ -1223,6 +1255,15 @@ LLM/
 > 3. **跨层关联**：软件优化（GQA）→ 硬件（HBM 读少了）→ 系统（TP 切分变了），形成三维关联
 > 4. **动手优先**：概念看懂 30% 就开始动手跑代码，benchmark 数据比理论讨论更有说服力
 > 5. **全链路思维**：从数据采集 → Pre-training → Post-Training → 推理部署，理解每个环节的输入输出和瓶颈
+
+---
+
+## 参考资料
+
+- [Scaling Laws for Neural Language Models](https://arxiv.org/abs/2001.08361) — Kaplan Scaling Laws
+- [Chinchilla](https://arxiv.org/abs/2203.15556) — 最优计算分配
+- [Megatron-LM](https://arxiv.org/abs/1909.08053) — 3D 并行策略
+- [ZeRO](https://arxiv.org/abs/1910.02054) — 零冗余优化器
 </parameter>
 </invoke>
 </tool_calls>

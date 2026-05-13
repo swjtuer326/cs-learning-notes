@@ -2,6 +2,27 @@
 
 > **核心命题**：单个 GPU 的显存和算力永远不够。分布式训练的本质是在多个 GPU 之间分配模型、数据和计算，同时最小化通信开销。理解并行策略 = 理解 LLM 训练的物理约束。
 
+### 关键术语
+
+| 缩写 | 全称 | 含义 |
+|------|------|------|
+| DP | Data Parallelism | 数据并行，每个 GPU 持有完整模型副本，处理不同数据 |
+| TP | Tensor Parallelism | 张量并行，将单层权重切分到多个 GPU |
+| PP | Pipeline Parallelism | 流水线并行，将模型层切分到不同 GPU 流水线执行 |
+| SP | Sequence Parallelism | 序列并行，将序列长度维度切分到多个 GPU |
+| EP | Expert Parallelism | 专家并行，将 MoE 专家分布到不同 GPU |
+| ZeRO | Zero Redundancy Optimizer | 零冗余优化器，分片优化器状态/梯度/参数以节省显存 |
+| NCCL | NVIDIA Collective Communications Library | NVIDIA 集合通信库，GPU 间 All-Reduce 等通信的实现 |
+| FSDP | Fully Sharded Data Parallel | PyTorch 原生的全分片数据并行，类似 ZeRO-3 |
+
+### 前置知识
+
+| 需要了解 | 参考文档 |
+|----------|----------|
+| Transformer 结构与训练算法 | [02-Transformer完整结构](./02-Transformer完整结构与训练算法.md) |
+| MoE 架构与专家并行 | [04-LLM MoE架构](./04-LLM%20MoE架构：路由、负载均衡与专家并行.md) |
+| GPU 集群互联技术 | [deep-dive: GPU集群互联](./deep-dive/10-GPU集群互联：NVLink到InfiniBand.md) |
+
 ## 目录
 
 1. [分布式训练全景](#分布式训练全景)
@@ -64,17 +85,15 @@
 
 ### 2.1 原理
 
-```
 数据并行:
   每个 GPU 持有完整的模型副本
   每个 GPU 处理不同的 mini-batch 数据
   梯度通过 All-Reduce 同步
 
-前向: y_i = Model(x_i)           # 各 GPU 独立计算
-反向: g_i = ∂L_i/∂θ              # 各 GPU 独立计算梯度
-同步: g = (1/N) × Σ g_i          # All-Reduce 平均梯度
-更新: θ = θ - η × g              # 各 GPU 独立更新 (梯度相同)
-```
+前向: $y_i = \text{Model}(x_i)$           # 第 $i$ 个 GPU 的输出
+反向: $g_i = \frac{\partial L_i}{\partial \theta}$              # 局部梯度
+同步: $g = \frac{1}{N} \sum_{i=1}^{N} g_i$          # All-Reduce 平均梯度
+更新: $\theta = \theta - \eta \cdot g$              # 各 GPU 独立更新
 
 ### 2.2 DP vs DDP
 
@@ -88,20 +107,18 @@
 
 ### 2.3 DP 的显存问题
 
-```
 DP 的显存占用 (每个 GPU):
-  - 模型参数: Φ bytes
-  - 梯度: Φ bytes
-  - 优化器状态 (AdamW): 2Φ bytes (m + v)
-  - 激活值: A bytes (取决于 batch_size × seq_len)
+  - 模型参数: $\Phi$ bytes (模型参数量，以字节计)
+  - 梯度: $\Phi$ bytes
+  - 优化器状态 (AdamW): $2\Phi$ bytes (m + v)
+  - 激活值: $A$ bytes (取决于 batch_size × seq_len)
   
-  总计: 4Φ + A
+  总计: $4\Phi + A$
 
-问题: 每个 GPU 都需要完整的 4Φ + A
-  → 对于 70B 模型 (Φ=140GB in FP16):
-    4Φ = 560GB → 远超单卡显存 (H100 80GB)
+问题: 每个 GPU 都需要完整的 $4\Phi + A$
+  → 对于 70B 模型 ($\Phi$=140GB in FP16):
+    $4\Phi$ = 560GB → 远超单卡显存 (H100 80GB)
   → DP 无法单独训练大模型!
-```
 
 ---
 
@@ -109,7 +126,6 @@ DP 的显存占用 (每个 GPU):
 
 ### 3.1 ZeRO 的三个阶段
 
-```
 ZeRO (Zero Redundancy Optimizer) 核心思想:
   去除 DP 中的数据并行冗余，将优化器状态、梯度、参数分布到各 GPU
 
@@ -120,7 +136,7 @@ ZeRO-1: 分片优化器状态
   │full θ│ │full θ│ │full θ│ │full θ│
   └──────┘ └──────┘ └──────┘ └──────┘
   
-  显存节省: 2Φ → 2Φ/N (优化器状态)
+  显存节省: $2\Phi \to 2\Phi/N$ (优化器状态)
   通信: All-Reduce 梯度 (与 DP 相同)
 
 ZeRO-2: 分片优化器状态 + 梯度
@@ -131,7 +147,7 @@ ZeRO-2: 分片优化器状态 + 梯度
   │full θ│ │full θ│ │full θ│ │full θ│
   └──────┘ └──────┘ └──────┘ └──────┘
   
-  显存节省: 3Φ → 3Φ/N (优化器状态 + 梯度)
+  显存节省: $3\Phi \to 3\Phi/N$ (优化器状态 + 梯度)
   通信: Reduce-Scatter 梯度 (代替 All-Reduce)
 
 ZeRO-3: 分片优化器状态 + 梯度 + 参数
@@ -142,14 +158,12 @@ ZeRO-3: 分片优化器状态 + 梯度 + 参数
   │θ0    │ │θ1    │ │θ2    │ │θ3    │  每个 GPU 只存 1/N 的参数!
   └──────┘ └──────┘ └──────┘ └──────┘
   
-  显存节省: 4Φ → 4Φ/N (全部)
+  显存节省: $4\Phi \to 4\Phi/N$ (全部)
   通信: 前向需要 All-Gather 参数, 反向需要 Reduce-Scatter 梯度
-```
 
 ### 3.2 ZeRO 显存分析
 
-```
-70B 模型 (Φ=140GB FP16), N=64 GPU:
+70B 模型 ($\Phi$=140GB FP16), $N$=64 GPU:
 
             DP      ZeRO-1   ZeRO-2   ZeRO-3
 参数:       140GB   140GB    140GB    2.2GB
@@ -160,33 +174,29 @@ ZeRO-3: 分片优化器状态 + 梯度 + 参数
 
 → ZeRO-3 将 560GB 压缩到 8.8GB!
 → 但通信量增加了 (前向 All-Gather 参数)
-```
 
 ### 3.3 ZeRO-3 通信分析
 
-```
 ZeRO-3 每次 forward 的通信:
 
 1. All-Gather 参数: 
-   通信量 = Φ × (N-1)/N ≈ Φ (大 N 时)
+   通信量 = $\Phi \cdot \frac{N-1}{N} \approx \Phi$ (大 $N$ 时)
    
 2. 计算 forward
 
 3. All-Gather 参数 (反向):
-   通信量 ≈ Φ
+   通信量 $\approx \Phi$
 
 4. Reduce-Scatter 梯度:
-   通信量 ≈ Φ
+   通信量 $\approx \Phi$
 
-总通信量: ~3Φ per step
+总通信量: $\approx 3\Phi$ per step
 
-对于 70B 模型: 3 × 140GB = 420GB per step
+对于 70B 模型: $3 \times 140\text{GB} = 420\text{GB}$ per step
   → 需要高带宽互联 (InfiniBand 400GB/s+)
-```
 
 ### 3.4 ZeRO-Offload 和 ZeRO-Infinity
 
-```
 ZeRO-Offload: 将优化器状态和梯度 offload 到 CPU 内存
   GPU: 参数 + 激活
   CPU: 优化器状态 + 梯度
@@ -197,7 +207,6 @@ ZeRO-Infinity: Offload 到 NVMe SSD
   CPU: 优化器状态
   NVMe: 部分参数
   → 单卡可训练 1T 参数模型 (极慢)
-```
 
 ---
 
@@ -205,36 +214,33 @@ ZeRO-Infinity: Offload 到 NVMe SSD
 
 ### 4.1 原理
 
-```
 张量并行: 将单个层的权重矩阵切分到多个 GPU
 
 列并行 (Column Parallel):
-  将 W ∈ R^{d×4d} 按列切分:
-  GPU 0: W[:, :2d], GPU 1: W[:, 2d:]
+  将 $W \in \mathbb{R}^{d \times 4d}$ 按列切分:
+  GPU 0: $W[:, {:}2d]$, GPU 1: $W[:, 2d{:}]$
   
   前向: 
-    y_0 = X × W_0  (GPU 0)
-    y_1 = X × W_1  (GPU 1)
-    y = [y_0, y_1]  (All-Gather)
+    $y_0 = X \times W_0$  (GPU 0)
+    $y_1 = X \times W_1$  (GPU 1)
+    $y = [y_0, y_1]$  (All-Gather)
   
   通信: All-Gather (前向), Reduce-Scatter (反向)
 
 行并行 (Row Parallel):
-  将 W ∈ R^{4d×d} 按行切分:
-  GPU 0: W[:2d, :], GPU 1: W[2d:, :]
+  将 $W \in \mathbb{R}^{4d \times d}$ 按行切分:
+  GPU 0: $W[{:}2d, {:}]$, GPU 1: $W[2d{:}, {:}]$
   
   前向:
-    X 先按列切分 (来自上一个列并行)
-    y_0 = X_0 × W_0  (GPU 0)
-    y_1 = X_1 × W_1  (GPU 1)
-    y = y_0 + y_1    (All-Reduce)
+    $X$ 先按列切分 (来自上一个列并行)
+    $y_0 = X_0 \times W_0$  (GPU 0)
+    $y_1 = X_1 \times W_1$  (GPU 1)
+    $y = y_0 + y_1$    (All-Reduce)
   
   通信: All-Reduce (前向), Identity (反向)
-```
 
 ### 4.2 Megatron-LM 的 TP 方案
 
-```
 Megatron-LM 的 Transformer 层 TP 切分:
 
 Attention:
@@ -258,32 +264,29 @@ FFN:
     All-Reduce
 
 每层通信: 2 × All-Reduce (前向) + 2 × All-Reduce (反向)
-```
 
 ### 4.3 TP 的通信瓶颈
 
-```
 TP 通信量分析 (每层, 每个 token):
 
-设: b=batch, s=seq_len, d=d_model
+设 $b$ 为 batch size，$s$ 为序列长度，$d$ 为隐藏维度（d_model）：
 
 Attention:
-  f (All-Reduce O): 2 × b × s × d × 2 bytes = 4bsd bytes
-  b (All-Reduce grad): 4bsd bytes
+  f (All-Reduce O): $2 \times b \times s \times d \times 2\text{ bytes} = 4bsd \text{ bytes}$
+  b (All-Reduce grad): $4bsd \text{ bytes}$
 
 FFN:
-  f (All-Reduce): 4bsd bytes
-  b (All-Reduce grad): 4bsd bytes
+  f (All-Reduce): $4bsd \text{ bytes}$
+  b (All-Reduce grad): $4bsd \text{ bytes}$
 
-总计: 16bsd bytes per layer per step
+总计: $16bsd \text{ bytes per layer per step}$
 
-对于 Llama-3-8B (d=4096, b=1, s=4096):
-  16 × 1 × 4096 × 4096 = 256MB per layer
+对于 Llama-3-8B ($d$=4096, $b$=1, $s$=4096):
+  $$16 \times 1 \times 4096 \times 4096 = 256\text{MB} \text{ per layer}$$
   × 32 layers = 8.2GB per step
   
 → TP 通信量极大，必须在 NVLink 域内 (同一节点)
 → 跨节点 TP 不可行 (带宽不够)
-```
 
 ---
 
@@ -291,7 +294,6 @@ FFN:
 
 ### 5.1 原理
 
-```
 流水线并行: 将模型层切分到不同 GPU，按顺序流水线执行
 
 GPU 0: Layers 0-7
@@ -303,13 +305,11 @@ GPU 3: Layers 24-31
 反向: GPU 3 → GPU 2 → GPU 1 → GPU 0
 
 通信: 只在切分边界传输激活值 (前向) 和梯度 (反向)
-  通信量 = b × s × d × 2 bytes (FP16)
+  通信量 = $b \times s \times d \times 2\text{ bytes (FP16)}$
   → 远小于 TP!
-```
 
 ### 5.2 GPipe vs 1F1B
 
-```
 GPipe (朴素流水线):
   ┌────────────────────────────────────┐
   │ F0 │     │     │     │             │  GPU 0 空闲等待
@@ -322,7 +322,7 @@ GPipe (朴素流水线):
   │     │ B0  │     │     │     │       │
   └────────────────────────────────────┘
   
-  Bubble 比例: (P-1)/(P+M-1)  (P=stage数, M=micro-batch数)
+  Bubble 比例: $\frac{P-1}{P+M-1}$  ($P$ 是 pipeline stage 数, $M$ 是 micro-batch 数)
   → M 越大，bubble 越小
 
 1F1B (One-Forward-One-Backward, PipeDream):
@@ -338,28 +338,25 @@ GPipe (朴素流水线):
   └────────────────────────────────────┘
   
   → 交替执行前向和反向，减少空闲
-  → Bubble 比例: (P-1)/(P+M-1) (与 GPipe 相同)
+  → Bubble 比例: $\frac{P-1}{P+M-1}$ (与 GPipe 相同)
   → 但显存占用更均衡
-```
 
 ### 5.3 PP 的显存分析
 
-```
 PP 显存占用 (每个 GPU):
 
-1. 模型参数: Φ/P (只存 P 分之一的层)
-2. 优化器状态: 2Φ/P
-3. 梯度: Φ/P
+1. 模型参数: $\Phi/P$ (只存 $P$ 分之一的层)
+2. 优化器状态: $2\Phi/P$
+3. 梯度: $\Phi/P$
 4. 激活值: 取决于 micro-batch 数和 1F1B 调度
 
 激活值显存 (1F1B):
-  峰值激活 = (P + M) × A_per_microbatch
+  峰值激活 = $(P + M) \times A_{\text{per\_microbatch}}$
   
-  其中 A_per_microbatch 是一个 micro-batch 的激活值
+  其中 $A_{\text{per\_microbatch}}$ 是一个 micro-batch 的激活值
 
-→ PP 的显存优势: 参数/优化器/梯度都除以 P
+→ PP 的显存优势: 参数/优化器/梯度都除以 $P$
 → 但激活值可能较大 (需要存多个 micro-batch 的激活)
-```
 
 ---
 
@@ -367,21 +364,18 @@ PP 显存占用 (每个 GPU):
 
 ### 6.1 为什么需要 SP
 
-```
 问题: 长序列训练时，即使 TP+PP+ZeRO，激活值显存仍然不够
 
 例如: Llama-3-8B, seq_len=128K, TP=4
-  Attention 激活: b × s × h × d_h = 1 × 128K × 32 × 128 = 524M floats
+  Attention 激活: $b \times s \times h \times d_h = 1 \times 128\text{K} \times 32 \times 128 = 524\text{M floats}$，其中 $d_h$ 是 head_dim
   → 2GB (FP32) → 可接受
   
   但 Dropout mask, LayerNorm 中间结果等累积:
   → 总激活值可能 > 40GB
   → 超出单卡显存!
-```
 
 ### 6.2 SP-Ulysses vs SP-Ring
 
-```
 SP-Ulysses (DeepSpeed Ulysses):
   将序列按 head 维度切分:
   
@@ -393,7 +387,7 @@ SP-Ulysses (DeepSpeed Ulysses):
   Attention 后: All-to-All → 恢复
   
   通信: 2 × All-to-All per layer
-  通信量: 2 × b × s × d × 2 bytes
+  通信量: $2 \times b \times s \times d \times 2\text{ bytes}$
 
 SP-Ring (Ring Attention):
   将序列按位置切分:
@@ -406,8 +400,7 @@ SP-Ring (Ring Attention):
   → 通过 Ring 通信传递 K, V chunks
   
   通信: 2 × P2P send/recv per layer
-  通信量: 2 × b × s × d × 2 bytes (与 Ulysses 相同)
-```
+  通信量: $2 \times b \times s \times d \times 2\text{ bytes}$ (与 Ulysses 相同)
 
 ### 6.3 SP 对比
 
@@ -426,7 +419,6 @@ SP-Ring (Ring Attention):
 
 ### 7.1 MoE 的并行需求
 
-```
 MoE 层结构:
   Router: 选择 top-k 专家
   Experts: 每个 token 只激活 k 个专家 (k << E)
@@ -437,11 +429,9 @@ MoE 层结构:
 专家并行:
   将专家分布到不同 GPU
   Token 通过 All-to-All 路由到对应 GPU
-```
 
 ### 7.2 EP 通信分析
 
-```
 EP 通信 (All-to-All):
 
 1. Token Dispatch (前向):
@@ -461,7 +451,6 @@ EP 通信 (All-to-All):
   - 容量因子 (Capacity Factor): 限制每个专家处理的 token 数
   - 辅助损失 (Load Balancing Loss): 鼓励 token 均匀分布
   - DeepSeek-V2 的 Shared Expert: 减少路由 token 数
-```
 
 ---
 
@@ -469,7 +458,6 @@ EP 通信 (All-to-All):
 
 ### 8.1 为什么需要组合
 
-```
 单一并行策略的局限:
 
 DP: 显存放不下大模型 (需要完整模型副本)
@@ -478,11 +466,9 @@ PP: 有 bubble，GPU 利用率不高
 ZeRO-3: 通信量大，大规模时成为瓶颈
 
 → 组合多种策略，取长补短
-```
 
 ### 8.2 典型 3D 并行配置
 
-```
 3D 并行 = DP × TP × PP
 
 GPU 拓扑:
@@ -501,16 +487,14 @@ GPU 拓扑:
   总 GPU: 2 × 2 × 4 = 16
 
 配置公式:
-  N_gpu = DP × TP × PP
-  
+  $N_{\text{gpu}} = DP \times TP \times PP$
+
   TP: 限制在 NVLink 域内 (通常 ≤ 8)
   PP: 可以跨节点 (通信量小)
   DP: 可以跨节点 (ZeRO 优化)
-```
 
 ### 8.3 配置搜索
 
-```
 给定模型大小和 GPU 数量，搜索最优 (DP, TP, PP):
 
 约束:
@@ -522,12 +506,14 @@ GPU 拓扑:
 目标: 最大化吞吐 (tokens/s)
 
 搜索空间:
-  for tp in [1, 2, 4, 8]:
+
+```python
+for tp in [1, 2, 4, 8]:
     for pp in [1, 2, ..., num_layers]:
-      dp = N_gpu / (tp × pp)
-      if dp is integer and memory_ok(tp, pp, dp):
-        throughput = estimate_throughput(tp, pp, dp)
-        best = max(best, throughput)
+        dp = N_gpu / (tp × pp)
+        if dp is integer and memory_ok(tp, pp, dp):
+            throughput = estimate_throughput(tp, pp, dp)
+            best = max(best, throughput)
 ```
 
 ---
@@ -538,16 +524,15 @@ GPU 拓扑:
 
 | 原语 | 操作 | 通信量 | 用途 |
 |------|------|--------|------|
-| **All-Reduce** | Σ x_i → 所有 GPU | 2(N-1)/N × data | DP 梯度同步, TP 输出合并 |
-| **All-Gather** | 收集所有 GPU 的数据 | (N-1)/N × data | ZeRO-3 参数收集 |
-| **Reduce-Scatter** | Σ x_i → 每个 GPU 一部分 | (N-1)/N × data | ZeRO-2/3 梯度同步 |
+| **All-Reduce** | $\sum x_i \to$ 所有 GPU | $\frac{2(N-1)}{N} \cdot \text{data}$ | DP 梯度同步, TP 输出合并 |
+| **All-Gather** | 收集所有 GPU 的数据 | $\frac{N-1}{N} \cdot \text{data}$ | ZeRO-3 参数收集 |
+| **Reduce-Scatter** | $\sum x_i \to$ 每个 GPU 一部分 | $\frac{N-1}{N} \cdot \text{data}$ | ZeRO-2/3 梯度同步 |
 | **All-to-All** | 每个 GPU 向每个 GPU 发送 | data | SP, EP |
 | **Broadcast** | GPU 0 → 所有 GPU | data | 参数初始化 |
 | **P2P Send/Recv** | GPU i → GPU j | data | PP 边界传输 |
 
 ### 9.2 Ring All-Reduce
 
-```
 Ring All-Reduce (NCCL 默认):
 
 N 个 GPU 排成环, 数据分成 N 份
@@ -565,12 +550,9 @@ N 个 GPU 排成环, 数据分成 N 份
   ...
   Step N-1: 完成 → 所有 GPU 有完整结果
 
-总时间: 2(N-1) × (data/N) / bandwidth
-       = 2(N-1)/N × data / bandwidth
-       ≈ 2 × data / bandwidth (大 N 时)
+$$T_{\text{allreduce}} = \frac{2(N-1) \cdot (\text{data}/N)}{\text{bandwidth}} = \frac{2(N-1)}{N} \cdot \frac{\text{data}}{\text{bandwidth}} \approx \frac{2 \cdot \text{data}}{\text{bandwidth}} \quad (\text{当 } N \text{ 较大时})$$
 
 → 带宽利用率接近 100%!
-```
 
 ### 9.3 NCCL 调优
 
@@ -598,7 +580,6 @@ NCCL_DEBUG=INFO                    # 调试信息级别
 
 ### 10.1 为什么需要 Overlap
 
-```
 不 Overlap:
   ┌──────┐     ┌──────┐     ┌──────┐
   │Compute│────▶│Comm  │────▶│Compute│
@@ -616,11 +597,9 @@ Overlap:
   ┌──────┐
   │Compute│
   └──────┘
-```
 
 ### 10.2 Overlap 技术
 
-```
 1. Gradient All-Reduce Overlap (DDP/FSDP):
    反向传播时，每计算完一层的梯度就启动异步 All-Reduce
    → 通信与下一层的反向计算重叠
@@ -637,7 +616,6 @@ Overlap:
   compute_stream: 计算
   comm_stream: 通信
   → 两个 stream 可以并行执行
-```
 
 ---
 
@@ -645,7 +623,6 @@ Overlap:
 
 ### 11.1 问题定义
 
-```
 给定:
   - 模型配置 (层数, d_model, heads, ...)
   - 硬件配置 (GPU 数, 显存, 带宽, 拓扑)
@@ -659,7 +636,6 @@ Overlap:
   - 搜索空间巨大 (组合爆炸)
   - 需要准确的性能模型
   - 不同硬件的约束不同
-```
 
 ### 11.2 代表工作
 
@@ -687,7 +663,6 @@ Overlap:
 
 ### 12.2 选择指南
 
-```
 模型大小 → 推荐方案:
 
 < 7B:
@@ -705,7 +680,6 @@ Overlap:
 > 200B (如 MoE):
   → Megatron-LM: TP + PP + EP + SP
   → 需要精细的并行配置
-```
 
 ---
 
@@ -715,3 +689,46 @@ Overlap:
 > 3. **3D 并行是工业标准**：TP(节点内) × PP(跨节点) × DP(数据并行)
 > 4. **显存和通信是硬币两面**：省显存 = 增加通信，需要权衡
 > 5. **先跑通再优化**：默认配置能跑通 > 手动调优到极致
+
+---
+
+## 十三、进阶：训练系统工程专题
+
+前面 12 章覆盖了分布式训练的基础并行策略——DP/ZeRO、TP、PP、SP、EP 的基本原理和通信模式。在这些基础上，2025-2026 年的前沿实践引入了更复杂的系统工程优化。以下是关键主题的概要，详细分析见 [06-LLM 训练系统与稳定性](./06-LLM训练系统与稳定性.md)。
+
+### 13.1 流水线调度进阶：DualPipe
+
+DeepSeek-V3/V4 的 DualPipe 在 1F1B 和 ZeroBubble 基础上引入**双向调度**和**细粒度计算拆分**——从 pipeline 两端同时喂入 micro-batch，将 Attention 和 MoE FFN 的计算+通信拆为独立调度单元。Kimi-K2 评估后选择不采用（1T 参数下的双份参数存储问题），改用 warmup micro-batch overlap 替代。详见 [06 §2](./06-LLM训练系统与稳定性.md)。
+
+### 13.2 MoE 通信重叠
+
+EP All-to-All 是 MoE 训练的首要瓶颈。DeepSeek-V4 的 MegaMoE 将 Dispatch→Linear1→Act→Linear2→Combine 五阶段融合为单 kernel（理论加速 1.92×）。Kimi-K2 通过延迟权重梯度计算隐藏 EP 通信。MiniMax-01 提出 EP-ETP 解耦。详见 [06 §3](./06-LLM训练系统与稳定性.md)。
+
+### 13.3 Fabric-Aware 通信
+
+实际集群中 NVLink（~900 GB/s）与跨节点 IB（~50 GB/s）带宽差异巨大。Step3.5-Flash 的 Fabric-Aware 调度将 DP All-Reduce 拆为节点内+跨节点两阶段，并通过通信感知 rank 放置减少跨交换机流量 30-40%。详见 [06 §3.2](./06-LLM训练系统与稳定性.md)。
+
+### 13.4 多模态训练：DEP
+
+Kimi K2.5 的 DEP (Decoupled Encoder Process) 将视觉编码器前向、Backbone 训练、视觉反向拆为三阶段流水线，多模态训练效率达到纯文本训练的 ~90%。详见 [06 §3.3](./06-LLM训练系统与稳定性.md)。
+
+---
+
+> **关键原则**：
+> 1. **通信是瓶颈**：TP 通信量大但延迟低 (NVLink)，PP 通信量小但 bubble 大
+> 2. **ZeRO-3 是万能钥匙**：几乎任何模型都能训练，但通信开销大
+> 3. **3D 并行是工业标准**：TP(节点内) × PP(跨节点) × DP(数据并行)
+> 4. **显存和通信是硬币两面**：省显存 = 增加通信，需要权衡
+> 5. **先跑通再优化**：默认配置能跑通 > 手动调优到极致
+> 6. **进阶训练系统工程**：[DualPipe / MegMoE / Fabric-Aware → 详见 06-训练系统与稳定性](./06-LLM训练系统与稳定性.md)
+
+---
+
+## 参考资料
+
+- [Megatron-LM](https://arxiv.org/abs/1909.08053) — TP 并行策略
+- [ZeRO](https://arxiv.org/abs/1910.02054) — 零冗余优化器
+- [DeepSpeed](https://arxiv.org/abs/2201.05140) — 分布式训练框架
+- [PyTorch FSDP](https://pytorch.org/docs/stable/fsdp.html) — 全分片数据并行
+
+> **下一篇**：[LLM 训练系统与稳定性](./06-LLM训练系统与稳定性.md) — 从并行策略走向训练系统工程

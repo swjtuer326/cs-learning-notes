@@ -2,6 +2,13 @@
 
 > **核心命题**：Attention 是 Transformer 的性能瓶颈——O(n²) 的显存和计算。FlashAttention 通过 IO-aware 的算法设计，将 Attention 从显存瓶颈转变为计算瓶颈。理解 FlashAttention = 理解 GPU 的显存层次如何塑造算法设计。
 
+### 前置知识
+
+| 需要了解 | 参考文档 |
+|----------|----------|
+| 注意力机制发展与演进 | [03-LLM注意力机制发展](../03-LLM注意力机制发展与演进.md) |
+| GPU 架构与显存层级 | [11-NVIDIA GPU架构演进](./11-NVIDIA-GPU架构演进与LLM.md) |
+
 ## 目录
 
 1. [Attention 的性能瓶颈](#attention-的性能瓶颈)
@@ -20,25 +27,38 @@
 
 ### 1.1 标准 Attention 的显存问题
 
-```
-标准 Attention 计算:
+标准 Attention 计算：
 
-  Q, K, V ∈ R^{N × d}  (N = seq_len, d = head_dim)
-  
-  S = Q × K^T          ∈ R^{N × N}  ← O(N²) 显存!
-  P = softmax(S)       ∈ R^{N × N}  ← O(N²) 显存!
-  O = P × V            ∈ R^{N × d}
+设输入矩阵 $\mathbf{Q}, \mathbf{K}, \mathbf{V} \in \mathbb{R}^{N \times d}$，其中 $N$ 是序列长度（seq_len），$d$ 是 head 维度（head_dim）。
 
-显存分析 (N=4096, d=128, FP16):
-  S: 4096 × 4096 × 2 = 32MB
-  P: 4096 × 4096 × 2 = 32MB
-  → 每个 head 64MB, 32 heads = 2GB!
-  → 仅 Attention 中间结果就 2GB
+$$
+\mathbf{S} = \mathbf{Q}\mathbf{K}^\top \in \mathbb{R}^{N \times N} \tag{1}
+$$
 
-对于 N=128K:
-  S: 128K × 128K × 2 = 32GB (单个 head!)
-  → 完全不可行
-```
+其中 $\mathbf{S}$ 是注意力分数矩阵（Score matrix）。
+
+$$
+\mathbf{P} = \text{softmax}(\mathbf{S}) \in \mathbb{R}^{N \times N} \tag{2}
+$$
+
+其中 $\mathbf{P}$ 是注意力权重矩阵（Probability matrix）。
+
+$$
+\mathbf{O} = \mathbf{P}\mathbf{V} \in \mathbb{R}^{N \times d} \tag{3}
+$$
+
+其中 $\mathbf{O}$ 是注意力输出矩阵（Output matrix）。整个过程的复杂度为 $O(N^2)$。
+
+**显存分析**（$N=4096$, $d=128$, FP16）：
+
+- $\mathbf{S}$: $4096 \times 4096 \times 2 = 32\text{MB}$
+- $\mathbf{P}$: $4096 \times 4096 \times 2 = 32\text{MB}$
+- 每个 head $64\text{MB}$，32 heads = $2\text{GB}$！仅 Attention 中间结果就 $2\text{GB}$
+
+对于 $N=128\text{K}$：
+
+- $\mathbf{S}$: $128\text{K} \times 128\text{K} \times 2 = 32\text{GB}$（单个 head！）
+- 完全不可行
 
 ### 1.2 GPU 显存层次
 
@@ -67,13 +87,14 @@ GPU 显存层次 (H100):
   │  └──────────────────────────────────────┘    │
   └──────────────────────────────────────────────┘
 
+```
+
 关键洞察:
   HBM 带宽 << 计算吞吐 → Attention 是 IO-bound!
   
   H100: 989 TFLOPS (BF16) vs 3.35 TB/s HBM
-  → 每个 byte 需要 ~300 FLOPS 才能计算 bound
+  → 每个 byte 需要约 $300$ FLOPS 才能计算 bound
   → Attention 的 FLOPs/byte 远低于此
-```
 
 ---
 
@@ -81,7 +102,6 @@ GPU 显存层次 (H100):
 
 ### 2.1 核心思想
 
-```
 FlashAttention 的两个关键技术:
 
 1. Tiling (分块):
@@ -93,46 +113,59 @@ FlashAttention 的两个关键技术:
    → 分块计算 softmax 并增量合并
 
 效果:
-  - 显存: O(N²) → O(N) (不再存储 S 和 P)
+  - 显存: $O(N^2) \to O(N)$ (不再存储 S 和 P)
   - 速度: 2-4× 加速 (减少了 HBM 读写)
   - 精度: 与标准 Attention 数值等价
-```
 
 ### 2.2 Online Softmax 推导
 
-```
-标准 Softmax:
-  m = max(S)                    # 全局最大值
-  P = exp(S - m) / Σ exp(S - m)
+标准 Softmax（数值稳定的版本）：
 
-问题: 需要完整的 S 才能计算 max 和 sum
+$$
+m = \max(S), \quad \mathbf{P} = \frac{\exp(\mathbf{S} - m)}{\sum \exp(\mathbf{S} - m)}
+$$
 
-Online Softmax (分块):
+其中 $m$ 是全局最大值（用于数值稳定）。
 
-对于第 i 块 S_i:
-  m_i = max(S_i)                # 当前块的最大值
-  m_new = max(m_old, m_i)       # 更新全局最大值
-  
-  # 重新缩放旧的 sum
-  sum_new = sum_old × exp(m_old - m_new) + Σ exp(S_i - m_new)
-  
-  # 更新旧的输出
-  O_new = O_old × (sum_old × exp(m_old - m_new) / sum_new) 
-        + P_i × V_i / sum_new
+问题：需要完整的 $\mathbf{S}$ 才能计算 $\max$ 和 $\sum$。
 
-→ 只需要当前块和旧的统计量 (m_old, sum_old, O_old)
-→ 不需要完整的 S 矩阵!
-```
+Online Softmax（分块）：
+
+设第 $i$ 块为 $\mathbf{S}_i$：
+
+$$
+m_{\text{block}} = \max(\mathbf{S}_i)
+$$
+
+其中 $m_{\text{block}}$ 是当前块的最大值。
+
+$$
+m_{\text{new}} = \max(m_{\text{old}}, m_{\text{block}})
+$$
+
+其中 $m_{\text{old}}$ / $m_{\text{new}}$ 分别是旧/新全局最大值。
+
+$$
+\text{sum}_{\text{new}} = \text{sum}_{\text{old}} \cdot \exp(m_{\text{old}} - m_{\text{new}}) + \text{sum}_{\text{block}} \cdot \exp(m_{\text{block}} - m_{\text{new}})
+$$
+
+其中 $\text{sum}_{\text{old}}$ / $\text{sum}_{\text{new}}$ 是旧/新的 Softmax 分母（归一化常数），$\text{sum}_{\text{block}} = \sum \exp(\mathbf{S}_i - m_{\text{new}})$。
+
+$$
+\mathbf{O}_{\text{new}} = \text{diag}\left(\frac{\text{sum}_{\text{old}}}{\text{sum}_{\text{new}}} \cdot \exp(m_{\text{old}} - m_{\text{new}})\right) \cdot \mathbf{O}_{\text{old}} + \text{diag}\left(\frac{\text{sum}_{\text{block}}}{\text{sum}_{\text{new}}} \cdot \exp(m_{\text{block}} - m_{\text{new}})\right) \cdot \mathbf{P}_{\text{block}} \mathbf{V}_{\text{block}}
+$$
+
+只需要当前块和旧的统计量 $(m_{\text{old}}, \text{sum}_{\text{old}}, \mathbf{O}_{\text{old}})$，不需要完整的 $\mathbf{S}$ 矩阵。
 
 ### 2.3 Tiling 策略
 
-```
 FlashAttention 的分块策略:
 
-将 Q 分成 T_r 块 (每块 B_r 行)
-将 K, V 分成 T_c 块 (每块 B_c 行)
+其中 $T_r = \lceil N / B_r \rceil$ 是 Q 的分块数，$B_r$ 是 Q 的块大小；$T_c = \lceil N / B_c \rceil$ 是 K/V 的分块数，$B_c$ 是 K/V 的块大小。
 
 算法:
+
+```
   for i in range(T_r):          # 遍历 Q 的块
     加载 Q_i 到 SRAM
     
@@ -156,15 +189,15 @@ FlashAttention 的分块策略:
       sum_i = sum_new
     
     将 O_i 写入 HBM
+```
 
 显存访问分析:
   Q: N×d (读 1 次)
   K, V: N×d (读 T_r 次)
   O: N×d (写 1 次)
   
-  总 HBM 访问: Θ(N²d²/M)  (M = SRAM 大小)
-  → 比标准 Attention 的 Θ(N²) 少得多!
-```
+  总 HBM 访问: $\Theta(N^2 d^2 / M)$（$M$ 是 SRAM 大小）
+  → 比标准 Attention 的 $\Theta(N^2)$ 少得多!
 
 ---
 
@@ -260,6 +293,73 @@ FlashAttention-3 的三大技术:
    - 不同 block 协作处理同一 Attention
    → 更好的 SM 利用率
 ```
+
+### 3.3 FA3 的 Tiling 策略与 FA2 的区别
+
+FA2 在 Ampere 上使用 warp 级同步，每个 warp 独立处理一个 attention slice。FA3 在 Hopper 上利用 warp-group 级 WGMMA 指令，4 个 warp 协同计算一个更大的 tile。
+
+```
+FA2 (Ampere/Hopper 兼容):
+  每个 warp 独立处理:
+  Q_tile [Br, d] × K_tile^T [d, Bc] → S_tile [Br, Bc]
+  → warp 级 shared memory 同步
+
+FA3 (Hopper 专用):
+  一个 warp group (4 warps) 协同处理:
+  Q_tile [Br, d] × K_tile^T [d, Bc] → S_tile [Br, Bc]
+  → WGMMA 异步执行，TMA 异步加载
+  → Producer-Consumer 流水线:
+
+  时间线:
+  ┌─────────────────────────────────────────────────────┐
+  │ Step 1: TMA 加载 Q,K,V_block0                       │
+  │ Step 2: TMA 加载 Q,K,V_block1 │ WGMMA 计算 block0  │
+  │ Step 3: TMA 加载 Q,K,V_block2 │ WGMMA 计算 block1  │
+  │ ...                                                  │
+  │ → 数据加载完全隐藏在计算中                            │
+  └─────────────────────────────────────────────────────┘
+```
+
+| 对比维度 | FA2 | FA3 |
+|---------|-----|-----|
+| **GEMM 指令** | MMA.sync (warp 级同步) | WGMMA (warp-group 级异步) |
+| **数据加载** | LDG/STS (手动拷贝) | TMA (硬件异步) |
+| **同步方式** | `__syncthreads()` (block 级) | Cluster barrier + TMA commit |
+| **FP8 支持** | 无 | 前向 FP8 GEMM |
+| **Tile 大小** | Br=64-128, Bc=64 | Br=128-256, Bc=128 (更大 tile) |
+| **H100 实测加速** | 基准 | 1.5-2× (FP16), 2-3× (FP8) |
+
+### 3.4 FA3 的 Softmax 处理
+
+FA3 的 FP8 路径中，QK^T 的 GEMM 在 FP8 精度下执行，但 softmax 仍需 FP32 精度以避免数值溢出：
+
+```
+FA3 FP8 前向流程:
+
+  Q (BF16) → [dequant to FP8] → Q_fp8
+  K (BF16) → [dequant to FP8] → K_fp8
+  S_fp8 = Q_fp8 × K_fp8^T     ← WGMMA, FP8 输入, FP32 累加
+  S_fp32 = S_fp8 * scaling     ← 反量化到 FP32
+  P_fp32 = softmax(S_fp32)     ← FP32 softmax (关键精度保证)
+  V (BF16) → [dequant to FP8] → V_fp8
+  O_fp32 = P_fp32 × V_fp8     ← WGMMA, FP32 × FP8, FP32 累加
+  O_bf16 = O_fp32              ← 输出转回 BF16
+```
+
+关键设计决策：softmax 在 FP32 下执行，因为 FP8 的 E4M3 格式最大值仅 448，而 attention logit 在长序列上可能超过此范围。FP32 累加 + FP32 softmax 保证了数值稳定性。
+
+### 3.5 FA3 性能数据
+
+| 模型 | 序列长度 | FA2 (BF16) | FA3 (BF16) | FA3 (FP8) | 加速比 |
+|------|---------|-----------|-----------|-----------|--------|
+| GPT-3 (12层) | 8192 | 185 TFLOPS | 260 TFLOPS | 420 TFLOPS | 2.3× |
+| Llama-2-70B | 4096 | 210 TFLOPS | 310 TFLOPS | 490 TFLOPS | 2.3× |
+| Llama-2-70B | 8192 | 240 TFLOPS | 350 TFLOPS | 540 TFLOPS | 2.3× |
+| Llama-2-70B | 16384 | 260 TFLOPS | 380 TFLOPS | 580 TFLOPS | 2.2× |
+
+H100 理论峰值：989 TFLOPS (BF16), 1979 TFLOPS (FP8)。FA3 FP8 达到理论峰值的 ~30-50%，相比 FA2 BF16 的 ~20-27% 有显著提升。
+
+> **待确认**：FA3 的 FP8 路径在训练中的端到端精度损失仍在社区验证中，当前主要推荐用于推理场景。
 
 ---
 
@@ -651,3 +751,12 @@ ncu --import profile.ncu-rep
 > 3. **Triton 是学习利器**：比 CUDA 简单 10×，性能可达 80-90%
 > 4. **先跑通再优化**：正确性 > 性能，用 torch.profiler 找到真正的瓶颈
 > 5. **硬件在进化**：FA1→FA2→FA3 的演进 = 算法适配新硬件特性
+
+---
+
+## 参考资料
+
+- [FlashAttention](https://arxiv.org/abs/2205.14135) — FA1 原始论文
+- [FlashAttention-2](https://arxiv.org/abs/2307.08691) — FA2 优化
+- [FlashAttention-3](https://arxiv.org/abs/2407.08608) — FA3 Hopper 特化
+- [Triton](https://openai.com/research/triton) — OpenAI GPU 编程 DSL

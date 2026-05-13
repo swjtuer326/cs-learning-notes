@@ -847,11 +847,10 @@ Transformer 的核心计算模式——大规模矩阵乘（QKV 投影、FFN）�
 
 理解 LLM 在 GPU 上的性能，核心概念是**算术强度**（Arithmetic Intensity）= FLOPs / Bytes Accessed，单位 FLOP/Byte。GPU 的"平衡点"算术强度为：
 
-```text
 平衡点 = 峰值 FLOPS / 峰值带宽
-H100 FP16: 989 TFLOPS / 3.35 TB/s ≈ 295 FLOP/Byte
-B200 FP4:  9000 TFLOPS / 8 TB/s  ≈ 1125 FLOP/Byte
-```
+
+H100 FP16: 989 TFLOPS / 3.35 TB/s $\approx$ 295 FLOP/Byte
+B200 FP4:  9000 TFLOPS / 8 TB/s  $\approx$ 1125 FLOP/Byte
 
 当操作的算术强度低于平衡点时，该操作是 **memory-bandwidth-bound**（数据供给速度跟不上计算速度，计算单元空闲等待）；高于平衡点则是 **compute-bound**（计算能力不足，数据供给过剩）。
 
@@ -860,8 +859,8 @@ LLM 的两个阶段有本质差异：
 | **对比维度** | **Prefill（预填充）** | **Decode（逐 token 生成）** |
 |----------|------------------|----------------------|
 | 输入 | 完整 prompt（seq_len 个 token） | 单个新 token |
-| 矩阵乘形状 | [1, seq_len] × [d_model, d_model] | [1, 1] × [d_model, d_model] |
-| 算术强度 | 高（~2×d_model FLOP/Byte） | 低（~1 FLOP/Byte 或更低） |
+| 矩阵乘形状 | $[1, seq\_len] \times [d\_model, d\_model]$ | $[1, 1] \times [d\_model, d\_model]$ |
+| 算术强度 | 高（$\sim 2 \times d_{\text{model}}$ FLOP/Byte） | 低（$\sim 1$ FLOP/Byte 或更低） |
 | 瓶颈 | Compute-bound | **Memory-bandwidth-bound** |
 | Tensor Core 利用率 | 高（>50%） | 极低（<5%） |
 
@@ -875,20 +874,16 @@ LLM 的两个阶段有本质差异：
 
 QKV 投影本质上是三个连续的矩阵乘法：
 
-```text
-Q = X · W_Q    [batch·seq_len, d_model] × [d_model, d_k·n_heads]
+Q = X · W_Q    $[batch \cdot seq\_len, d\_model] \times [d\_model, d\_k \cdot n\_heads]$
 K = X · W_K    同上
 V = X · W_V    同上
-```
 
 这三个 GEMM 操作占 Transformer 层约 40-50% 的 FLOPs，是典型的 compute-bound 操作，直接映射到 Tensor Core 的 WGMMA/tcgen05 指令。
 
 以 GPT-3（175B）为例，单层 QKV 投影的计算量：
 
-```text
-FLOPs = 6 × batch × seq_len × d_model²
-      = 6 × 512 × 2048 × 12288² ≈ 9.5 × 10¹⁴ FLOPs（单层）
-```
+FLOPs = $6 \times batch \times seq\_len \times d\_{model}^2$
+      $= 6 \times 512 \times 2048 \times 12288^2 \approx 9.5 \times 10^{14}$ FLOPs（单层）
 
 H100 FP16 峰值约 989 TFLOPS（密集），单层 QKV 投影理论耗时约 1ms。实际性能受数据通路限制（TMA 搬运权重 tile 到 SMEM、WGMMA 使用 tile 的流水线效率），通常只能达到峰值的 50-70%。
 
@@ -904,15 +899,13 @@ Softmax 的计算步骤（逐行）：
 
 这些操作涉及跨 warp 的 reduction（`__shfl_xor_sync` 或 atomic add），属于 memory-bandwidth-bound 操作。
 
-**FlashAttention 的关键优化**：FlashAttention 将 softmax 的分块计算（tiling）与 QKV 的 GEMM 融合进同一个 kernel，避免将中间的 S 和 P 矩阵写回 HBM。这把 attention 的 HBM 访问量从 O(N²d) 降到 O(N²d²/M)，其中 M 是 SMEM 大小。在 H100 上，SMEM 容量 228KB/SM，可容纳更大的 tile，进一步减少 HBM 访问。FlashAttention 与 Hopper 的 TMA + transaction barrier 高度匹配——TMA 搬运 tile、mbarrier 确认到达、WGMMA 执行计算，形成高效的流水线。
+**FlashAttention 的关键优化**：FlashAttention 将 softmax 的分块计算（tiling）与 QKV 的 GEMM 融合进同一个 kernel，避免将中间的 S 和 P 矩阵写回 HBM。这把 attention 的 HBM 访问量从 $O(N^2 d)$ 降到 $O(N^2 d^2 / M)$，其中 $M$ 是 SMEM 大小。在 H100 上，SMEM 容量 228KB/SM，可容纳更大的 tile，进一步减少 HBM 访问。FlashAttention 与 Hopper 的 TMA + transaction barrier 高度匹配——TMA 搬运 tile、mbarrier 确认到达、WGMMA 执行计算，形成高效的流水线。
 
 ### 13.4 KV Cache：HBM 容量与带宽的双重压力
 
 自回归推理时，每生成一个 token 需要读取之前所有 token 的 K 和 V：
 
-```text
-KV Cache 大小 = 2 × n_layers × n_kv_heads × d_head × seq_len × sizeof(dtype) × batch_size
-```
+KV Cache 大小 = $2 \times n\_{layers} \times n\_{kv\_heads} \times d\_{head} \times seq\_len \times sizeof(dtype) \times batch\_size$
 
 以 LLaMA-2-70B（BF16 精度，d_head=128，n_kv_heads=8）为例，不同序列长度下的 KV Cache 大小（batch_size=1）：
 
@@ -1006,7 +999,7 @@ MoE (Mixture of Experts) 模型将 FFN 层替换为多个专家网络，每次�
 
 MoE 的硬件需求与传统稠密模型不同：
 
-1. **HBM 容量**：671B 参数 × 2 bytes (BF16) = 1.34 TB，需要多卡甚至多节点
+1. **HBM 容量**：671B 参数 $\times$ 2 bytes (BF16) = 1.34 TB，需要多卡甚至多节点
 2. **All-to-All 通信**：每个 token 需要被发送到其被路由到的专家所在的 GPU，产生大量跨 GPU 通信
 
 Blackwell 双 Die GPU 对 MoE 的收益：
@@ -1023,9 +1016,7 @@ Blackwell 双 Die GPU 对 MoE 的收益：
 
 实际训练大型模型时，通常组合使用三种并行策略：
 
-```text
-总 GPU 数 = DP × TP × PP
-```
+总 GPU 数 = $DP \times TP \times PP$
 
 **张量并行（TP）**：将单个矩阵乘法的权重按列/行切分到多个 GPU，每个 GPU 计算部分结果，然后通过 All-Reduce 聚合。每个 Transformer 层需要 2 次 All-Reduce（attention 后 1 次 + FFN 后 1 次）。
 

@@ -2,6 +2,25 @@
 
 > **核心命题**：单次推理的性能优化有上限，推理服务架构的优化才是提升整体吞吐和用户体验的关键。Continuous Batching、Disaggregated Serving、Prefix Caching 和 Speculative Decoding 是 2024-2025 年推理服务架构的四大核心技术。
 
+### 关键术语
+
+| 缩写 | 全称 | 含义 |
+|------|------|------|
+| CB | Continuous Batching | 连续批处理，请求可在任意时刻加入/离开 batch |
+| PD | Prefill-Decode Disaggregation | Prefill/Decode 分离式部署，两类计算使用不同 GPU |
+| TTFT | Time To First Token | 首 token 延迟，用户提交 prompt 到收到第一个 token 的时间 |
+| TPOT | Time Per Output Token | 每输出 token 的平均生成间隔 |
+| SLO | Service Level Objective | 服务水平目标，如 P99 延迟 < 2s |
+| KV Cache | Key-Value Cache | 注意力机制的键值缓存，避免 Decode 阶段重复计算 |
+
+### 前置知识
+
+| 需要了解 | 参考文档 |
+|----------|----------|
+| 推理资源定量分析 | [11-推理资源分析](./11-LLM推理资源分析.md) |
+| 推理引擎实现 | [12-推理引擎](./12-LLM推理引擎：vLLM到TensorRT-LLM.md) |
+| 注意力机制变体 | [03-注意力机制发展](./03-LLM注意力机制发展与演进.md) |
+
 ## 目录
 
 1. [推理服务架构全景](#推理服务架构全景)
@@ -203,7 +222,39 @@ KV Cache 传输优化:
   - 局部 Decode (部分层在 Prefill 侧完成)
 ```
 
-### 3.3 代表工作
+### 3.3 为什么分离：Prefill 与 Decode 的资源冲突
+
+Prefill 和 Decode 在 GPU 资源需求上存在根本性冲突。以 DeepSeek-V4-Pro (1.6T, 激活 49B) 在 H100 (80GB, 67 TFLOPS FP8, 3.35 TB/s HBM Bandwidth) 上的分析为例：
+
+| 维度 | Prefill | Decode | 冲突本质 |
+|------|---------|--------|---------|
+| **计算模式** | 矩阵-矩阵乘法 (GEMM)，高算术强度 | 矩阵-向量乘法 (GEMV)，低算术强度 | Prefill 可充分用 Tensor Core；Decode 主要瓶颈在 HBM 带宽 |
+| **单 token FLOPs** | $2 \times 49\text{B} \approx 98\text{G}$ (每 token 处理一次) | $2 \times 49\text{B} \approx 98\text{G}$ × seq_len (每 decode step 需处理全 KV Cache) | Prefill FLOPs = O(seq_len)；Decode FLOPs = O(seq_len²) (attention 部分) |
+| **算术强度** | ~100-300 FLOPs/Byte (高) | ~1-5 FLOPs/Byte (极低) | Prefill 是 compute-bound；Decode 是 **memory-bound** |
+| **HBM 带宽利用率** | 30-50%（Tensor Core 有时间预热） | **80-95%**（全在从 HBM 读 KV Cache） | Decode 对 HBM 带宽的需求是 Prefill 的 2-3× |
+| **Batch 友好度** | 大 batch 收益显著 (GEMM 维度增加) | 大 batch 收益有限 (KV Cache → HBM 带宽瓶颈) | Prefill batch=32→64 吞吐翻倍；Decode batch 增加几乎不提升吞吐 |
+| **KV Cache 显存** | 仅存当前 batch × 1 层 | 需要存所有活跃请求 × 所有层的 KV Cache | 单 Decode GPU 仅 KV Cache 就可能占 10-30 GB |
+
+**核心结论**：在一台 GPU 上同时做 Prefill 和 Decode 时，两者对"计算 vs 带宽"的需求截然相反——优化一个会损害另一个。PD 分离允许为两类负载使用不同的硬件配置和并行策略（Prefill 用大 TP 充分并行 GEMM，Decode 用小 TP 节省 KV Cache 空间）。
+
+### 3.4 DeepSeek-V4 的 PD 分离部署实例
+
+DeepSeek-V4 在生产环境中采用的分离方案（来自 V4 技术报告）：
+
+| 角色 | 节点数 | GPU 数 | 配置 | 设计依据 |
+|------|--------|--------|------|---------|
+| **Prefill Pool** | 4 | 32 | Attn TP=4, SP+DP=8, MoE EP=32 | 需要大 TP 加速 Attention GEMM；EP 度与专家数匹配 |
+| **Decode Pool** | 40 | 320 | 每 GPU 1 个 expert，IBGDA 降低延迟 | 极低 TP 节省 KV Cache 空间；384 专家分到 320 GPU（12 GPU 有 2 专家） |
+| **总部署** | 44 | 352 | Prefill:Decode ≈ 1:10 | Decode 的 GPU 需求远大于 Prefill（KV Cache 显存是主因） |
+
+**关键设计决策**：
+- Decode pool 的 GPU 数是 Prefill 的 10 倍——因为 Decode 需要存储海量 KV Cache 且是 memory-bound，不可通过增加 batch 来补偿
+- 每 GPU 只放 1-2 个 expert，最大化 KV Cache 可用显存（专家权重在 FP4 下仅 ~2 GB/expert）
+- **冗余部署**：高负载 expert 被复制到多个 GPU（定期检测，每 10 分钟调整），DP-aware routing 确保请求路由到正确的副本
+
+> **对比**：纯 PD 共享部署（不分池）在 V4 规模下几乎不可行——单 GPU 无法同时满足"大批量 GEMM (Prefill) + 海量 KV Cache (Decode)"的内存需求。
+
+### 3.5 代表系统
 
 | 系统 | 分离方式 | 特点 |
 |------|---------|------|
@@ -312,35 +363,35 @@ Speculative Decoding (投机解码):
 
 ### 5.2 Speculative Decoding 算法
 
-```
-Speculative Decoding 详细流程:
+**Speculative Decoding 详细流程：**
 
-输入: prefix tokens x
-参数: K (候选 token 数)
+输入: prefix tokens $\mathbf{x}$，参数: K (候选 token 数)
 
-1. Draft:
-   for k in range(K):
-     q_k(x) = DraftModel(x + [y_1, ..., y_{k-1}])
-     y_k ~ q_k(x)
-   → 生成 K 个候选 token
+**1. Draft（草稿生成）：**
 
-2. Verify:
-   p(x), p(x+y_1), ..., p(x+y_1...y_K) = TargetModel(x)
-   → 一次前向得到 K+1 个分布
+for $k = 1$ to $K$:
 
-3. Accept/Reject:
-   for k in range(K):
-     r = random()
-     if r < min(1, p(y_k) / q(y_k)):
-       accept y_k
-     else:
-       reject y_k
-       sample from max(0, p - q) normalized
-       break
+$$q_k(\mathbf{x}) = \text{DraftModel}(\mathbf{x} \cup \{y_1, \dots, y_{k-1}\})$$
 
-→ 接受的 token 不需要重新计算
-→ 被拒绝的位置从修正分布采样
-```
+$$y_k \sim q_k(\mathbf{x})$$
+
+→ 生成 K 个候选 token
+
+**2. Verify（目标模型验证）：**
+
+$$\{p(\mathbf{x}), p(\mathbf{x} \cup \{y_1\}), \dots, p(\mathbf{x} \cup \{y_1, \dots, y_K\})\} = \text{TargetModel}(\mathbf{x})$$
+
+→ 一次前向得到 K+1 个分布
+
+**3. Accept/Reject（接受/拒绝）：**
+
+for $k = 1$ to $K$:
+
+$$r \sim \text{Uniform}(0, 1)$$
+
+若 $$r < \min\left(1, \frac{p(y_k)}{q(y_k)}\right) \tag{1}$$ ，则接受 $y_k$；否则拒绝 $y_k$，从 $$\text{norm}\left(\max(0, p - q)\right) \tag{2}$$ 采样，并退出循环。
+
+→ 接受的 token 不需要重新计算，被拒绝的位置从修正分布采样
 
 ### 5.3 Draft Model 选择
 
@@ -349,9 +400,12 @@ Speculative Decoding 详细流程:
 | **小模型** | 用更小的模型做 draft | 2-3× | SpecInfer |
 | **Medusa** | 多个 LM Head 并行预测 | 2-3× | Medusa |
 | **Eagle** | 基于特征的预测 | 3-4× | Eagle |
+| **MTP (Multi-Token Prediction)** | 额外 Transformer 层预测后续 token | 1.5-2× | DeepSeek-V3/V4, GLM-5, Step3.5-Flash |
 | **Self-Speculative** | 模型自身做 draft (跳过层) | 1.5-2× | LayerSkip |
 | **Lookahead** | n-gram 匹配 | 1.5-2× | - |
 | **Sequoia** | 树形 speculative decoding | 3-5× | Sequoia |
+
+> **MTP vs Speculative Decoding**：MTP 与 speculative decoding 共享"一次前向预测多个 token"的核心思想，但 MTP 是训练时目标（通过独立的 MTP 层或 Head 预测后续 token），而 speculative decoding 专注于推理时加速（通过 accept/reject 保证分布等价）。两者在实践中可以结合——DeepSeek-V4 用 MTP 模块产生的额外 token 作为 speculative candidate，通过 accept/reject 验证后保留。
 
 ### 5.4 Medusa
 
@@ -570,3 +624,14 @@ LLM 推理 SLA 指标:
 > 3. **Speculative Decoding 是加速利器**：3-4× 加速，但需要额外训练
 > 4. **Disaggregated Serving 是未来方向**：分离 Prefill/Decode 独立优化
 > 5. **监控是生产的基础**：没有监控就没有 SLA 保障
+
+---
+
+## 参考资料
+
+- [vLLM](https://arxiv.org/abs/2309.06180) — PagedAttention 和 Continuous Batching
+- [DistServe](https://arxiv.org/abs/2401.09670) — Disaggregated Serving
+- [Speculative Decoding](https://arxiv.org/abs/2302.01318) — 投机解码加速
+- [SGLang](https://arxiv.org/abs/2312.07104) — RadixAttention
+
+> **下一篇**：[LLM 多模态架构](./14-LLM多模态架构.md) — 从推理服务走向多模态扩展

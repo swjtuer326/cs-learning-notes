@@ -2,6 +2,13 @@
 
 > **核心命题**：分布式训练和推理的性能瓶颈不在计算，而在通信。理解 GPU 互联技术——从节点内的 NVLink/NVSwitch 到跨节点的 InfiniBand/RoCE——是理解大规模 LLM 系统的基础。
 
+### 前置知识
+
+| 需要了解 | 参考文档 |
+|----------|----------|
+| 分布式训练并行策略 | [05-LLM分布式训练](../05-LLM分布式训练：并行策略与ZeRO.md) |
+| NVIDIA GPU 架构演进 | [11-NVIDIA GPU架构演进](./11-NVIDIA-GPU架构演进与LLM.md) |
+
 ## 目录
 
 1. [互联技术全景](#互联技术全景)
@@ -520,3 +527,11 @@ CXL 3.0 (Compute Express Link):
 > 3. **RoCE 是推理的选择**：成本低、生态好、云原生
 > 4. **SHARP 是免费的性能提升**：网内计算减少一半通信量
 > 5. **拓扑感知是必须的**：不知道拓扑的调度 = 浪费 50% 带宽
+
+---
+
+## 参考资料
+
+- [NVLink & NVSwitch](https://www.nvidia.com/en-us/data-center/nvlink/) — NVIDIA 互联技术白皮书
+- [InfiniBand](https://www.infinibandta.org/) — IBTA 规格文档
+- [SHARP](https://docs.nvidia.com/networking/display/SHARPv2) — 网内归约协议

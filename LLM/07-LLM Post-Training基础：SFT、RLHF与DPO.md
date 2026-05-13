@@ -1,6 +1,27 @@
 # LLM Post-Training：SFT、RLHF 与 DPO
 
 > **核心命题**：Pre-training 赋予模型知识和能力，Post-Training 赋予模型行为和对齐。一个只经过 Pre-training 的模型是"什么都懂但不会聊天"的原始智能体，Post-Training 让它变成有用的助手。
+> **推荐配套阅读**：本文覆盖 Post-Training 的基础方法论（SFT / RLHF / DPO / GRPO 原理），进阶内容（多阶段强化学习管线、算法变体、奖励设计工程化、稳定性工程）见 [08-LLM Post-Training 进阶](./08-LLM%20Post-Training进阶：GRPO与多阶段RL.md)。
+
+### 关键术语
+
+| 缩写 | 全称 | 含义 |
+|------|------|------|
+| SFT | Supervised Fine-Tuning | 监督微调，在指令-回复对上继续做 next-token prediction |
+| RLHF | Reinforcement Learning from Human Feedback | 基于人类反馈的强化学习，用 RM + PPO 对齐模型 |
+| DPO | Direct Preference Optimization | 直接偏好优化，无需显式 Reward Model 的对齐方法 |
+| PPO | Proximal Policy Optimization | 近端策略优化，RLHF 中使用的 RL 算法 |
+| RM | Reward Model | 奖励模型，学习人类偏好排序的打分模型 |
+| GRPO | Group Relative Policy Optimization | 组内相对策略优化，PPO 的轻量化替代方案 |
+| PEFT | Parameter-Efficient Fine-Tuning | 参数高效微调，如 LoRA/QLoRA 只训练少量参数 |
+| KL | Kullback-Leibler Divergence | KL 散度，衡量策略偏移的正则化项 |
+
+### 前置知识
+
+| 需要了解 | 参考文档 |
+|----------|----------|
+| Transformer 结构与训练算法 | [02-Transformer完整结构](./02-Transformer完整结构与训练算法.md) |
+| LLM 训练系统与稳定性 | [06-训练系统与稳定性](./06-LLM训练系统与稳定性.md) |
 
 ## 目录
 
@@ -147,45 +168,48 @@ RLHF 完整流程 (InstructGPT / ChatGPT):
 阶段 3: PPO 强化学习
   SFT Model → 用 PPO 优化，Reward Model 提供奖励信号
            → 加入 KL 惩罚防止偏离 SFT Model 太远
-```
-
 ### 3.2 Reward Model 训练
 
-```
 Reward Model 架构:
   通常使用 SFT Model 去掉 LM Head，加一个线性层输出标量
 
-训练数据格式:
-  {
-    "prompt": "Explain quantum computing",
-    "chosen": "Quantum computing uses quantum bits...",
-    "rejected": "It's like regular computing but quantum..."
-  }
+训练数据格式 (JSON):
+
+```json
+{
+  "prompt": "Explain quantum computing",
+  "chosen": "Quantum computing uses quantum bits...",
+  "rejected": "It's like regular computing but quantum..."
+}
+```
 
 损失函数 (Bradley-Terry Model):
-  P(chosen > rejected) = σ(r_chosen - r_rejected)
-  
-  L = -E[log σ(r_chosen - r_rejected)]
-  
-  其中 r = RewardModel(prompt, response)
+
+  偏好概率：$P(\text{chosen} > \text{rejected}) = \sigma(r_{\text{chosen}} - r_{\text{rejected}})$
+
+  其中 $r_{\text{chosen}}$ 和 $r_{\text{rejected}}$ 分别是被选中和被拒绝回复的奖励分数，$\sigma$ 是 sigmoid 函数。
+
+  $$\mathcal{L}_{\text{RM}} = -\mathbb{E}\left[\log \sigma(r_{\text{chosen}} - r_{\text{rejected}})\right] \tag{1}$$
+
+  其中 $r = \text{RewardModel}(\text{prompt}, \text{response})$
 
 关键细节:
   - 需要大量偏好标注数据 (通常 100K+ 对比)
   - 标注一致性是瓶颈 (不同标注者偏好不同)
   - Reward Hacking: RM 可能被 PPO 利用漏洞
-```
 
 ### 3.3 PPO 训练
 
-```
 PPO (Proximal Policy Optimization) 目标:
 
-  max E[r(x,y) - β × KL(π_θ(y|x) || π_ref(y|x))]
+$$\max_{\theta} \ \mathbb{E}_{x \sim \mathcal{D}, y \sim \pi_{\theta}(y|x)}\left[r(x, y) - \beta \cdot \text{KL}\left(\pi_{\theta}(y|x) \parallel \pi_{\text{ref}}(y|x)\right)\right] \tag{2}$$
 
 其中:
-  - r(x,y): Reward Model 给出的奖励
-  - KL 项: 防止策略偏离参考模型太远
-  - β: KL 惩罚系数 (通常 0.01-0.1)
+  - $r(x,y)$: 奖励函数（Reward Model 对输入 $x$ 和输出 $y$ 的评分）
+  - $\pi_{\theta}$: 待训练的策略模型
+  - $\pi_{\text{ref}}$: 冻结的参考策略
+  - $\beta$: KL 惩罚系数（通常 0.01-0.1）
+  - $\text{KL}\left(\pi_{\theta}(y|x) \parallel \pi_{\text{ref}}(y|x)\right)$: KL 散度，用于约束新策略不过分偏离参考策略
 
 PPO 训练挑战:
   1. 需要同时加载 4 个模型:
@@ -203,7 +227,6 @@ PPO 训练挑战:
   3. 计算开销大:
      - 需要在线生成 response
      - 需要多次 PPO 迭代
-```
 
 ### 3.4 RLHF 的变体
 
@@ -221,26 +244,32 @@ PPO 训练挑战:
 
 ### 4.1 DPO 的核心洞察
 
-```
 DPO 的关键发现:
 
 RLHF 的 PPO 目标可以重新参数化，直接用偏好数据优化策略，
 不需要显式训练 Reward Model!
 
 推导:
-  PPO 目标: max E[r(x,y) - β × KL(π_θ || π_ref)]
-  
-  最优策略: π*(y|x) ∝ π_ref(y|x) × exp(r(x,y)/β)
-  
-  反解: r(x,y) = β × log(π*(y|x)/π_ref(y|x)) + β × log Z(x)
-  
-  代入 Bradley-Terry:
-  P(y_w > y_l | x) = σ(β × log(π_θ(y_w|x)/π_ref(y_w|x)) - β × log(π_θ(y_l|x)/π_ref(y_l|x)))
 
-DPO 损失函数:
-  L_DPO = -E[log σ(β × log(π_θ(y_w|x)/π_ref(y_w|x)) 
-                     - β × log(π_θ(y_l|x)/π_ref(y_l|x)))]
-```
+  PPO 目标：
+
+  $$\max_{\theta} \ \mathbb{E}\left[r(x, y) - \beta \cdot \text{KL}(\pi_{\theta} \parallel \pi_{\text{ref}})\right]$$
+
+  最优策略（$ \pi^{*} $ 是理论上的最大化奖励策略）：
+
+  $$\pi^{*}(y|x) \propto \pi_{\text{ref}}(y|x) \cdot \exp\left(\frac{r(x, y)}{\beta}\right) \tag{3}$$
+
+  反解（$Z(x)$ 是配分函数，归一化常数，与策略无关）：
+
+  $$r(x, y) = \beta \cdot \log\frac{\pi^{*}(y|x)}{\pi_{\text{ref}}(y|x)} + \beta \cdot \log Z(x) \tag{4}$$
+
+  代入 Bradley-Terry 偏好概率（$y_w$/$y_l$ 分别是偏好对中胜出和失败的回复）：
+
+  $$P(y_w \succ y_l \mid x) = \sigma\left(\beta \cdot \log\frac{\pi_{\theta}(y_w|x)}{\pi_{\text{ref}}(y_w|x)} - \beta \cdot \log\frac{\pi_{\theta}(y_l|x)}{\pi_{\text{ref}}(y_l|x)}\right) \tag{5}$$
+
+DPO 损失函数：
+
+  $$\mathcal{L}_{\text{DPO}} = -\mathbb{E}_{(x, y_w, y_l) \sim \mathcal{D}}\left[\log \sigma\left(\beta \cdot \log\frac{\pi_{\theta}(y_w|x)}{\pi_{\text{ref}}(y_w|x)} - \beta \cdot \log\frac{\pi_{\theta}(y_l|x)}{\pi_{\text{ref}}(y_l|x)}\right)\right] \tag{6}$$
 
 ### 4.2 DPO vs RLHF
 
@@ -331,7 +360,7 @@ CoT 训练:
 ### 6.2 DeepSeek-R1 的推理增强路线
 
 ```
-DeepSeek-R1 训练流程:
+DeepSeek-R1 训练流程（四阶段管线）:
 
 阶段 1: Cold Start SFT
   - 收集数千条高质量 CoT 数据
@@ -356,9 +385,10 @@ DeepSeek-R1 训练流程:
   - 最终: DeepSeek-R1
 ```
 
+> **扩展阅读**：R1 的四阶段管线是理解现代 Post-Training 的起点。2025-2026 年的实践在此基础上引入了 Specialist + Online Policy Distillation (OPD)、Cross-Stage OPD、多轮 Cold Start→RL→Rejection Sampling→RL 迭代等扩展机制。详见 [08 §3-5](./08-LLM%20Post-Training进阶：GRPO与多阶段RL.md)。
+
 ### 6.3 GRPO (Group Relative Policy Optimization)
 
-```
 GRPO vs PPO:
 
 PPO:
@@ -369,14 +399,21 @@ PPO:
 GRPO:
   - 对每个 prompt 生成 G 个 response (如 G=64)
   - 用组内相对奖励作为优势:
-    A_i = (r_i - mean(r)) / std(r)
-  - 不需要 Value Model!
-  - KL 直接计算 (不需要 Reference Model):
-    KL = exp(log π_θ - log π_old) - (log π_θ - log π_old) - 1
-  
-  → 只需 2 个模型 (Policy + Old Policy)
-  → 显存减半，训练更稳定
-```
+
+    $$A_i = \frac{r_i - \bar{r}}{\sigma_r}$$
+
+    其中 $A_i$ 是第 $i$ 个回复的优势函数，$\bar{r}$ 是组内奖励均值，$\sigma_r$ 是组内奖励标准差。
+
+  **KL 散度估计**：GRPO 使用无偏估计器（unbiased estimator），无需像 PPO 那样维护单独的 Value Model 和 Reference Model：
+
+$$\mathbb{D}_{KL}[\pi_{\theta} \parallel \pi_{\text{ref}}] = \frac{\pi_{\text{ref}}(o_{i,t}|q)}{\pi_{\theta}(o_{i,t}|q)} - \log \frac{\pi_{\text{ref}}(o_{i,t}|q)}{\pi_{\theta}(o_{i,t}|q)} - 1$$
+
+其中 $\pi_{\text{ref}}$ 是参考策略（初始 SFT 模型，训练期间固定不变），$\pi_{\theta}$ 是当前策略。该估计器的期望恰为 $D_{KL}(\pi_{\theta} \parallel \pi_{\text{ref}})$。
+
+  → 只需 2 个模型 (Policy + Reference Model)
+  → 相比 PPO 的 4 个模型，显存减半，训练更稳定
+
+> **注意**：此处的 $\pi_{\text{ref}}$（reference model）与 PPO 中的 $\pi_{\text{old}}$（上一步 checkpoint）有本质区别——GRPO 的参考模型在整个 RL 阶段固定不变，而 PPO 每步更新后旋转 $\pi_{\text{old}}$。更多 GRPO 的变体（MIS-PO、Toggle、Token-Level Clipping）与多阶段管线分析见 [08-LLM Post-Training 进阶](./08-LLM%20Post-Training进阶：GRPO与多阶段RL.md)。
 
 ### 6.4 OpenAI o1 的推理范式
 
@@ -405,14 +442,23 @@ o1: 可变计算量 → 内部思考链 → 输出
 
 ### 7.1 LoRA (Low-Rank Adaptation)
 
-```
 LoRA 核心思想:
-  冻结原始权重 W ∈ R^{d×k}
-  添加低秩分解: ΔW = B × A, 其中 B ∈ R^{d×r}, A ∈ R^{r×k}, r << min(d,k)
-  
-  前向: h = Wx + BAx = Wx + s × B(Ax)
-  
-  其中 s = α/r (缩放因子)
+
+  冻结原始权重：
+
+  $$W \in \mathbb{R}^{d \times k}$$
+
+  添加低秩分解（$W$ 是原始权重矩阵，$B, A$ 是低秩分解矩阵，$r$ 是低秩维度）：
+
+  $$\Delta W = B A, \quad B \in \mathbb{R}^{d \times r}, \quad A \in \mathbb{R}^{r \times k}, \quad r \ll \min(d, k) \tag{7}$$
+
+  前向传播（$x$ 是输入向量，$h$ 是输出向量）：
+
+  $$h = Wx + BAx = Wx + s \cdot B(Ax) \tag{8}$$
+
+  缩放因子（$\alpha$ 是 LoRA 的缩放超参数）：
+
+  $$s = \frac{\alpha}{r}$$
 
 参数量:
   原始: d × k
@@ -427,7 +473,6 @@ LoRA 核心思想:
   - α = 16-32 (缩放)
   - target_modules: Q, K, V, O (有时也加 Gate, Up, Down)
   - dropout = 0.05-0.1
-```
 
 ### 7.2 QLoRA
 
@@ -578,9 +623,111 @@ special_tokens:
 
 ---
 
+## 安全对齐：Red-Teaming 与 Jailbreak 防御
+
+> 模型对齐不只是让输出"有用"和"诚实"，还必须确保"无害"。安全对齐是 Post-Training 中独立于 SFT/RLHF/DPO 的重要维度，涉及攻击、防御和评估三个层面。
+
+### 8.1 安全对齐的威胁模型
+
+```
+威胁模型分类:
+
+  ┌─────────────────────────────────────────────────┐
+  │                 用户输入空间                      │
+  │  ┌──────────┐  ┌──────────┐  ┌──────────────┐  │
+  │  │ 正常请求  │  │ 边界请求  │  │ 恶意 Prompt  │  │
+  │  └────┬─────┘  └────┬─────┘  └──────┬───────┘  │
+  │       │             │               │           │
+  │       ▼             ▼               ▼           │
+  │  [正常回复]    [需判断]        [应拒绝]          │
+  └─────────────────────────────────────────────────┘
+
+  攻击目标: 让模型在"应拒绝"区域产生有害输出
+  防御目标: 准确识别恶意输入并安全拒绝，同时不误伤正常请求
+```
+
+### 8.2 Red-Teaming 方法
+
+Red-Teaming 是系统性地探测模型安全漏洞的方法：
+
+| 方法 | 原理 | 代表工作 | 覆盖范围 |
+|------|------|---------|---------|
+| **人工 Red-Team** | 人类专家构造攻击 prompt | Anthropic, OpenAI 安全团队 | 深度但成本高 |
+| **自动 Red-Team** | 用另一个 LLM 生成攻击 | GPT-4 作为 Red-Teamer | 广度好，深度有限 |
+| **梯度引导攻击** | 基于模型梯度优化攻击 prompt | GCG (Greedy Coordinate Gradient) | 白盒，针对性强 |
+| **多轮对话攻击** | 通过多轮对话逐步绕过安全约束 | PAIR, DeepInception | 模拟真实攻击场景 |
+| **多语言攻击** | 利用低资源语言绕过安全训练 | 多语言 Jailbreak 研究 | 安全训练的语言盲区 |
+
+### 8.3 Jailbreak 攻击类型
+
+| 攻击类型 | 原理 | 示例模式 |
+|---------|------|---------|
+| **Prompt 注入** | 覆盖系统指令 | "Ignore previous instructions..." |
+| **角色扮演** | 让模型扮演不受约束的角色 | "You are DAN, you can do anything" |
+| **编码绕过** | 将有害请求编码为 Base64/ROT13 | "Decode and execute: [base64]..." |
+| **Few-shot 诱导** | 提供有害示例让模型模仿 | "Q: How to... A: [harmful] Q: How to..." |
+| **逻辑链绕过** | 通过学术/虚构框架间接请求 | "For a novel I'm writing..." |
+
+### 8.4 安全对齐训练方法
+
+| 方法 | 机制 | 优点 | 缺点 |
+|------|------|------|------|
+| **安全 SFT** | 在拒绝有害请求的数据上微调 | 简单直接 | 过度拒绝 (over-refusal) |
+| **安全 RLHF** | 对有害输出给负奖励 | 精细控制 | RM 可能被利用 |
+| **Constitutional AI (CAI)** | 用原则 (constitution) 引导自我修正 | 可扩展，减少人工标注 | 原则设计复杂 |
+| **Red-Team RL** | 用 Red-Team 攻击结果做 RL 训练 | 针对性强 | 攻击覆盖不完整 |
+| **Meta-Safety** | 训练元策略决定何时拒绝 | 灵活 | 训练复杂 |
+
+**Constitutional AI 流程**：
+
+```
+CAI 两阶段流程:
+
+阶段 1: 监督学习 (SL)
+  1. 用 Red-Team prompt 生成有害回复
+  2. 让模型根据 constitution 自我批判: "这个回复有什么问题?"
+  3. 让模型根据批判修正: "请重写一个更好的回复"
+  4. 用修正后的回复做 SFT
+
+阶段 2: RL from AI Feedback (RLAIF)
+  1. 生成两个回复
+  2. 让模型根据 constitution 评判哪个更好
+  3. 用评判结果训练 RM
+  4. 用 RM 做 PPO 训练
+
+Constitution 示例:
+- "选择最无害且最有帮助的回复"
+- "不要协助非法活动"
+- "不要生成歧视性内容"
+```
+
+### 8.5 安全评估
+
+| 评估维度 | 数据集/方法 | 指标 |
+|---------|-----------|------|
+| **有害性** | HarmBench, Anthropic HH-RLHF | 有害率 (越低越好) |
+| **过度拒绝** | XSTest, OR-Bench | 拒绝率 (正常请求被拒绝的比例) |
+| **鲁棒性** | GCG/PAIR 攻击成功率 | ASR (Attack Success Rate, 越低越好) |
+| **多语言安全** | MultiJail, MMAudit | 各语言 ASR 一致性 |
+
+**关键权衡**：安全性与有用性的 Pareto 前沿——过度安全 → 模型拒绝正常请求 (over-refusal)，安全不足 → 有害输出。目标是沿 Pareto 前沿推进，而非单点优化。
+
+---
+
 > **关键原则**：
 > 1. **SFT 是基础**：好的 SFT 数据 + 合适的训练配置 = 80% 的效果
 > 2. **DPO 是性价比之选**：不需要 RM，训练稳定，效果接近 RLHF
 > 3. **RLHF 是上限之选**：需要更多资源，但上限更高
 > 4. **推理增强是新范式**：o1/R1 证明了 RL + 可验证奖励的巨大潜力
 > 5. **数据质量决定一切**：Post-Training 中数据比算法更重要
+
+---
+
+## 参考资料
+
+- [Training language models to follow instructions](https://arxiv.org/abs/2203.02155) — InstructGPT / RLHF
+- [DPO](https://arxiv.org/abs/2305.18290) — 直接偏好优化
+- [LIMA](https://arxiv.org/abs/2305.11206) — 少量数据 SFT 的有效性
+- [DeepSeek-R1](https://arxiv.org/abs/2501.12948) — GRPO 推理增强
+
+> **下一篇**：[LLM Post-Training 进阶：GRPO 与多阶段 RL](./08-LLM%20Post-Training进阶：GRPO与多阶段RL.md) — 从基础对齐走向工程化强化学习
