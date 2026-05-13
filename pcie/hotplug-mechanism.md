@@ -5,46 +5,51 @@
 
 ### 关键术语
 
-| 缩写 | 全称 | 含义 |
-|------|------|------|
-| HPC | Hot-Plug Controller | 热插拔控制器，PCIe Spec 中指 Slot Capability 中 HPC=1 的端口 |
-| MRL | Manually Operated Retention Latch | 手动保留锁，检测插槽锁扣状态 |
-| PDS | Presence Detect State | 在位检测状态位，指示卡是否在位 |
-| DLLSC | Data Link Layer State Changed | 数据链路层状态变化事件 |
-| PDC | Presence Detect Changed | 在位检测变化事件 |
-| ABP | Attention Button Pressed | 注意力按钮按下事件 |
-| PFD | Power Fault Detected | 电源故障检测事件 |
-| CC | Command Completed | 命令完成事件 |
-| DPC | Downstream Port Containment | 下游端口遏制，错误隔离机制 |
-| IST | Interrupt Service Thread | pciehp 的中断服务线程 |
-| NCCS | No Command Completed Support | 不需要等待命令完成，Slot Capability 位 |
-| IBPD | In-Band Presence Detect | 带内在位检测，通过 PCIe 链路信号检测卡在位 |
-| DLLLA | Data Link Layer Link Active | 数据链路层链路活跃信号，指示链路训练完成 |
+| 缩写    | 全称                                | 含义                                              |
+| ----- | --------------------------------- | ----------------------------------------------- |
+| HPC   | Hot-Plug Controller               | 热插拔控制器，PCIe Spec 中指 Slot Capability 中 HPC=1 的端口 |
+| PCP   | Power Controller Present          | 电源控制器存在，Slot Capability Bit 1，表示插槽具备软件可控电源      |
+| ABP   | Attention Button Present          | 注意力按钮存在，Slot Capability Bit 0                   |
+| AIP   | Attention Indicator Present       | 注意力指示灯存在，Slot Capability Bit 3                  |
+| PIP   | Power Indicator Present           | 电源指示灯存在，Slot Capability Bit 4                   |
+| HPS   | Hot-Plug Surprise                 | 支持意外拔出，Slot Capability Bit 5                    |
+| MRL   | Manually Operated Retention Latch | 手动保留锁，检测插槽锁扣状态                                  |
+| PDS   | Presence Detect State             | 在位检测状态位，指示卡是否在位                                 |
+| DLLSC | Data Link Layer State Changed     | 数据链路层状态变化事件                                     |
+| PDC   | Presence Detect Changed           | 在位检测变化事件                                        |
+| PFD   | Power Fault Detected              | 电源故障检测事件                                        |
+| CC    | Command Completed                 | 命令完成事件                                          |
+| NCCS  | No Command Completed Support      | 不需要等待命令完成，Slot Capability Bit 18                |
+| DPC   | Downstream Port Containment       | 下游端口遏制，错误隔离机制                                   |
+| IST   | Interrupt Service Thread          | pciehp 的中断服务线程                                  |
+| IBPD  | In-Band Presence Detect           | 带内在位检测，通过 PCIe 链路信号检测卡在位                        |
+| DLLLA | Data Link Layer Link Active       | 数据链路层链路活跃信号，指示链路训练完成                            |
+| _OSC  | Operating System Capabilities     | ACPI 方法，OS 与固件协商特性控制权                           |
 
----
+***
 
 ## 1. 概述
 
 ### 1.1 前置知识
 
-| 需要了解 | 参考文档 |
-|----------|----------|
-| PCIe 配置空间与 Capability 结构 | [ECAM与配置空间](./ecam-config-space.md) |
-| 枚举流程与设备扫描 | [枚举流程](./enumeration-flow.md) |
-| BAR 分配与资源管理 | [BAR与资源分配](./bar-resource-allocation.md) |
-| MSI/MSI-X 中断机制 | [MSI中断](./msi-interrupt.md) |
+| 需要了解                     | 参考文档                                     |
+| ------------------------ | ---------------------------------------- |
+| PCIe 配置空间与 Capability 结构 | [ECAM与配置空间](./ecam-config-space.md)      |
+| 枚举流程与设备扫描                | [枚举流程](./enumeration-flow.md)            |
+| BAR 分配与资源管理              | [BAR与资源分配](./bar-resource-allocation.md) |
+| MSI/MSI-X 中断机制           | [MSI中断](./msi-interrupt.md)              |
 
 ### 1.2 计划性移除 vs 意外拔出
 
 PCIe Spec §6.7 统一使用 **Hot-Plug** 术语，核心区分在于移除是否通知 OS：
 
-| 对比维度 | 计划性移除 (Safe Removal) | 意外拔出 (Surprise Removal) |
-|---------|--------------------------|---------------------------|
-| 触发方式 | 注意力按钮 5 秒确认 / sysfs 写 power | 直接拔卡，无事先通知 |
-| 前提条件 | Slot Cap HPC=1 | Slot Cap HPS=1 |
-| 驱动回调 | `pci_device_remove()` 正常路径 | 驱动需处理 MMIO 返回 `0xFFFFFFFF` |
-| 数据安全 | 有保障（驱动先 quiesce） | 无保障（可能正在 DMA） |
-| 设备标记 | 正常移除 | `pci_dev_set_disconnected()` |
+| 对比维度 | 计划性移除 (Safe Removal)        | 意外拔出 (Surprise Removal)      |
+| ---- | --------------------------- | ---------------------------- |
+| 触发方式 | 注意力按钮 5 秒确认 / sysfs 写 power | 直接拔卡，无事先通知                   |
+| 前提条件 | Slot Cap HPC=1              | Slot Cap HPS=1               |
+| 驱动回调 | `pci_device_remove()` 正常路径  | 驱动需处理 MMIO 返回 `0xFFFFFFFF`   |
+| 数据安全 | 有保障（驱动先 quiesce）            | 无保障（可能正在 DMA）                |
+| 设备标记 | 正常移除                        | `pci_dev_set_disconnected()` |
 
 > **术语说明**：Hot-Swap 常见于 CompactPCI 等规范，PCIe Spec 中不使用此术语。本文统一使用 Hot-Plug，涵盖上述两种场景。
 
@@ -73,7 +78,7 @@ flowchart TD
     class ADD,REM,CFG,UCFG action
 ```
 
----
+***
 
 ## 2. 硬件基础：Slot 寄存器
 
@@ -81,46 +86,51 @@ flowchart TD
 
 Slot Capability 是只读寄存器，描述端口的热插拔硬件能力：
 
-| 位域 | 名称 | 含义 |
-|------|------|------|
-| [0] | ABP | Attention Button Present，是否有注意力按钮 |
-| [1] | PCP | Power Controller Present，是否有电源控制器 |
-| [2] | MRLSP | MRL Sensor Present，是否有锁扣传感器 |
-| [3] | AIP | Attention Indicator Present，是否有注意力指示灯 |
-| [4] | PIP | Power Indicator Present，是否有电源指示灯 |
-| [5] | HPS | Hot-Plug Surprise，支持意外拔出 |
-| [6] | HPC | Hot-Plug Capable，端口支持热插拔 |
-| [14:7] | SPLV | Slot Power Limit Value，插槽功率限制值 |
-| [16:15] | SPLS | Slot Power Limit Scale，功率限制比例（0=1x, 1=0.1x, 2=0.01x, 3=0.001x） |
-| [17] | EIP | Electromechanical Interlock Present，是否有机电联锁 |
-| [18] | NCCS | No Command Completed Support，不需要等待命令完成 |
-| [31:19] | PSN | Physical Slot Number，物理插槽编号 |
+| 位域       | 名称    | 含义                                                             |
+| -------- | ----- | -------------------------------------------------------------- |
+| \[0]     | ABP   | Attention Button Present，是否有注意力按钮                              |
+| \[1]     | PCP   | Power Controller Present，是否有电源控制器                              |
+| \[2]     | MRLSP | MRL Sensor Present，是否有锁扣传感器                                    |
+| \[3]     | AIP   | Attention Indicator Present，是否有注意力指示灯                          |
+| \[4]     | PIP   | Power Indicator Present，是否有电源指示灯                               |
+| \[5]     | HPS   | Hot-Plug Surprise，支持意外拔出                                       |
+| \[6]     | HPC   | Hot-Plug Capable，端口支持热插拔                                       |
+| \[14:7]  | SPLV  | Slot Power Limit Value，插槽功率限制值                                 |
+| \[16:15] | SPLS  | Slot Power Limit Scale，功率限制比例（0=1x, 1=0.1x, 2=0.01x, 3=0.001x） |
+| \[17]    | EIP   | Electromechanical Interlock Present，是否有机电联锁                    |
+| \[18]    | NCCS  | No Command Completed Support，不需要等待命令完成                         |
+| \[31:19] | PSN   | Physical Slot Number，物理插槽编号                                    |
 
-**HPC 与 HPS 的区别**：
-- **HPC=1**：端口具备热插拔控制器，OS 可以通过 Slot Control 寄存器控制上电/下电
+**HPC、PCP 与 HPS 的关系**：
+
+- **HPC=1**：端口具备热插拔控制器，OS 可参与热插拔流程（中断处理、指示灯控制、在位检测等）
+- **PCP=1**：插槽具备电源控制器，OS 可通过 Slot Control 的 PCC 位软件控制上电/下电
 - **HPS=1**：端口支持意外拔出，即卡被突然拔走时硬件不会损坏，OS 能正确处理
+
+> HPC 与 PCP 是独立的能力位：HPC=1 不隐含 PCP=1。当 HPC=1 但 PCP=0 时，OS 仍可处理热插拔事件，但无法软件控制电源（电源始终开启或由固件/外部管理）。Linux 内核中 `POWER_CTRL(ctrl)` 宏检查的是 PCP 位而非 HPC 位。
 
 ### 2.2 Slot Control（偏移 0x18）
 
 Slot Control 是读写寄存器，OS 通过它控制热插拔行为和中断使能：
 
-| 位域 | 名称 | 含义 |
-|------|------|------|
-| [0] | ABPE | Attention Button Pressed Enable |
-| [1] | PFDE | Power Fault Detected Enable |
-| [2] | MRLSCE | MRL Sensor Changed Enable |
-| [3] | PDCE | Presence Detect Changed Enable |
-| [4] | CCIE | Command Completed Interrupt Enable |
-| [5] | HPIE | Hot-Plug Interrupt Enable（总开关） |
-| [7:6] | AIC | Attention Indicator Control（00=保留, 01=On, 10=Blink, 11=Off） |
-| [9:8] | PIC | Power Indicator Control（同 AIC 编码） |
-| [10] | PCC | Power Controller Control（0=Power On, 1=Power Off） |
-| [11] | EIC | Electromechanical Interlock Control |
-| [12] | DLLSCE | Data Link Layer State Changed Enable |
-| [13] | ASPLD | Auto Slot Power Limit Disable |
-| [14] | IBPD | In-Band Presence Detect Disable |
+| 位域     | 名称     | 含义                                                          |
+| ------ | ------ | ----------------------------------------------------------- |
+| \[0]   | ABPE   | Attention Button Pressed Enable                             |
+| \[1]   | PFDE   | Power Fault Detected Enable                                 |
+| \[2]   | MRLSCE | MRL Sensor Changed Enable                                   |
+| \[3]   | PDCE   | Presence Detect Changed Enable                              |
+| \[4]   | CCIE   | Command Completed Interrupt Enable                          |
+| \[5]   | HPIE   | Hot-Plug Interrupt Enable（总开关）                              |
+| \[7:6] | AIC    | Attention Indicator Control（00=保留, 01=On, 10=Blink, 11=Off） |
+| \[9:8] | PIC    | Power Indicator Control（同 AIC 编码）                           |
+| \[10]  | PCC    | Power Controller Control（0=Power On, 1=Power Off）           |
+| \[11]  | EIC    | Electromechanical Interlock Control                         |
+| \[12]  | DLLSCE | Data Link Layer State Changed Enable                        |
+| \[13]  | ASPLD  | Auto Slot Power Limit Disable                               |
+| \[14]  | IBPD   | In-Band Presence Detect Disable                             |
 
 **关键语义**：
+
 - **HPIE 是中断总开关**：只有 HPIE=1 时，ABPE/PFDE/PDCE 等事件才能产生中断
 - **PCC 控制插槽电源**：写 0 上电，写 1 下电
 - **命令完成协议**：如果 NCCS=0，每次写 Slot Control 后必须等待 CC 事件（1 秒超时），才能写下一次
@@ -129,33 +139,265 @@ Slot Control 是读写寄存器，OS 通过它控制热插拔行为和中断使�
 
 Slot Status 反映当前状态和事件，事件位写 1 清除（Write-1-to-Clear）：
 
-| 位域 | 名称 | 含义 |
-|------|------|------|
-| [0] | ABP | Attention Button Pressed（事件） |
-| [1] | PFD | Power Fault Detected（事件） |
-| [2] | MRLSC | MRL Sensor Changed（事件） |
-| [3] | PDC | Presence Detect Changed（事件） |
-| [4] | CC | Command Completed（事件） |
-| [5] | MRLSS | MRL Sensor State（0=Closed, 1=Open）（状态） |
-| [6] | PDS | Presence Detect State（0=Empty, 1=Present）（状态） |
-| [7] | EIS | Electromechanical Interlock Status（状态） |
-| [8] | DLLSC | Data Link Layer State Changed（事件） |
+| 位域   | 名称    | 含义                                            |
+| ---- | ----- | --------------------------------------------- |
+| \[0] | ABP   | Attention Button Pressed（事件）                  |
+| \[1] | PFD   | Power Fault Detected（事件）                      |
+| \[2] | MRLSC | MRL Sensor Changed（事件）                        |
+| \[3] | PDC   | Presence Detect Changed（事件）                   |
+| \[4] | CC    | Command Completed（事件）                         |
+| \[5] | MRLSS | MRL Sensor State（0=Closed, 1=Open）（状态）        |
+| \[6] | PDS   | Presence Detect State（0=Empty, 1=Present）（状态） |
+| \[7] | EIS   | Electromechanical Interlock Status（状态）        |
+| \[8] | DLLSC | Data Link Layer State Changed（事件）             |
 
 **事件 vs 状态**：
+
 - **事件位**（ABP/PFD/MRLSC/PDC/CC/DLLSC）：变化时置 1，写 1 清除。用于触发中断
 - **状态位**（MRLSS/PDS/EIS）：反映当前硬件状态，只读
 
 **PDS 与 DLLSC 的关系**：
+
 - PDS 由插槽的物理引脚信号驱动，卡插入时置 1
 - DLLSC 由数据链路层的 DLLLA（Data Link Layer Link Active）信号驱动，链路训练完成后置 1
 - 卡插入时：PDS 先变 1，DLLSC 后变 1（链路训练需要时间）
 - 卡拔出时：DLLSC 先变 0（链路断开），PDS 后变 0
 
----
+***
 
-## 3. pciehp 驱动架构
+## 3. Cap 组合与热插拔模式
 
-### 3.1 驱动注册与 Port Service 模型
+### 3.1 Native 与 ACPI 模式选择
+
+PCIe 热插拔存在两种软件处理模式：**Native 模式**（OS 直接操作 Slot 寄存器）和 **ACPI 模式**（固件通过 ACPI 事件驱动）。模式选择由硬件能力、_OSC 协商和内核参数共同决定。
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "'trebuchet ms', verdana, arial, sans-serif"}}}%%
+flowchart TD
+    Probe["PCI 设备探测<br/>set_pcie_hotplug_bridge()"] --> ReadSLTCAP["读取 Slot Capability"]
+    ReadSLTCAP --> HPC{"HPC=1?"}
+    HPC -->|Yes| SetPciehp["dev->is_pciehp = 1"]
+    HPC -->|No| NoNative["无 Native 热插拔能力"]
+
+    SetPciehp --> OSC["_OSC 协商"]
+    OSC --> Grant{"固件授予<br/>Native HP Control?"}
+    Grant -->|Yes| NativeHP["host->native_pcie_hotplug = 1"]
+    Grant -->|No| NoNativeHP["host->native_pcie_hotplug = 0"]
+
+    NativeHP --> PortDrv["get_port_device_capability()"]
+    NoNativeHP --> PortDrv
+
+    PortDrv --> Check{"is_pciehp &&<br/>(pcie_ports_native ||<br/>native_pcie_hotplug)?"}
+    Check -->|Yes| AssignHP["PCIE_PORT_SERVICE_HP<br/>pciehp 驱动探测"]
+    Check -->|No| ACPIHP["acpiphp 通过 ACPI 处理"]
+
+    NoNative --> ACPIHP
+
+    AssignHP --> NativeMode["Native 模式<br/>OS 直接控制 Slot 寄存器"]
+    ACPIHP --> ACPIEvents["ACPI 模式<br/>固件通过 _EJ0/_RMV 驱动"]
+
+    classDef process fill:#dbeafe, stroke:#2563eb, color:#1e40af, stroke-width:2px
+    classDef decision fill:#fef3c7, stroke:#d97706, color:#92400e, stroke-width:2px
+    classDef native fill:#d1fae5, stroke:#059669, color:#065f46, stroke-width:2px
+    classDef acpi fill:#fee2e2, stroke:#dc2626, color:#991b1b, stroke-width:2px
+
+    class Probe,ReadSLTCAP,SetPciehp,OSC,NativeHP,NoNativeHP,PortDrv process
+    class HPC,Grant,Check decision
+    class AssignHP,NativeMode native
+    class NoNative,ACPIHP,ACPIEvents acpi
+```
+
+**决策链关键节点**：
+
+| 节点 | 代码位置 | 判断逻辑 |
+|------|---------|---------|
+| HPC 检测 | `drivers/pci/probe.c:set_pcie_hotplug_bridge()` | `SLTCAP & PCI_EXP_SLTCAP_HPC` → `is_pciehp=1` |
+| Host Bridge 默认值 | `drivers/pci/probe.c:pci_init_host_bridge()` | `native_pcie_hotplug = 1`（默认假设 OS 可控） |
+| _OSC 协商 | `drivers/acpi/pci_root.c` | 固件未授予 `OSC_PCI_EXPRESS_NATIVE_HP_CONTROL` → 清除 `native_pcie_hotplug` |
+| 服务分配 | `drivers/pci/pcie/portdrv.c:get_port_device_capability()` | `is_pciehp && (pcie_ports_native \|\| native_pcie_hotplug)` → 分配 `PCIE_PORT_SERVICE_HP` |
+| acpiphp 避让 | `drivers/pci/hotplug/acpiphp_glue.c` | `hotplug_is_native()` 为真时跳过该 Slot |
+
+**内核参数覆盖**：
+
+| 参数 | 效果 |
+|------|------|
+| `pcie_ports=native` | 忽略 _OSC 结果，强制使用 Native 模式 |
+| `pcie_ports=compat` | 禁用所有 PCIe Port Service（包括热插拔） |
+
+> **D3 电源管理约束**：ACPI 模式下 OS 不可将热插拔桥置入 D3，因固件可能需要访问 Slot 寄存器。Native 模式下热插拔桥理论上可进入 D3，但 2018 年前的硬件未经验证，内核默认不允许。
+
+### 3.2 Cap 位对驱动行为的影响
+
+pciehp 驱动在初始化时读取 Slot Capability 寄存器并缓存到 `ctrl->slot_cap`，后续通过宏检查各位：
+
+```c
+// drivers/pci/hotplug/pciehp.h
+#define ATTN_BUTTN(ctrl)  ((ctrl)->slot_cap & PCI_EXP_SLTCAP_ABP)   // Bit 0
+#define POWER_CTRL(ctrl)  ((ctrl)->slot_cap & PCI_EXP_SLTCAP_PCP)   // Bit 1
+#define MRL_SENS(ctrl)    ((ctrl)->slot_cap & PCI_EXP_SLTCAP_MRLSP) // Bit 2
+#define ATTN_LED(ctrl)    ((ctrl)->slot_cap & PCI_EXP_SLTCAP_AIP)   // Bit 3
+#define PWR_LED(ctrl)     ((ctrl)->slot_cap & PCI_EXP_SLTCAP_PIP)   // Bit 4
+#define NO_CMD_CMPL(ctrl) ((ctrl)->slot_cap & PCI_EXP_SLTCAP_NCCS)  // Bit 18
+```
+
+> `HPS`（Bit 5）没有对应的运行时宏——pciehp 对 PDC/DLLSC 事件的处理方式不依赖 HPS 位。HPS 是硬件声明，表示插槽物理上支持意外拔出不会损坏平台。
+
+各 Cap 位对驱动行为的影响：
+
+| Cap 位 | =1 时的行为 | =0 时的行为 |
+|--------|-----------|-----------|
+| **PCP** | `pciehp_power_on/off_slot()` 控制 PCC 位；上电后 1s 等待；使能/禁用前检查电源状态 | 跳过所有电源控制命令；假设电源始终开启；跳过 1s 等待 |
+| **ABP** | 使能 ABPE 中断；按钮触发 5s 延时（BLINKINGON/OFF 状态）；**禁用** PDCE | 使能 PDCE 中断；无按钮状态；在位检测直接触发上电/下电 |
+| **AIP** | 注册注意力指示灯 ops；`pciehp_set_indicators()` 写 AIC 字段 | 不注册注意力指示灯 ops（除非 `hotplug_user_indicators`）；AIC 写入静默丢弃 |
+| **PIP** | `pciehp_set_indicators()` 写 PIC 字段 | PIC 写入静默丢弃；电源指示灯操作变为空操作 |
+| **NCCS** | `pcie_wait_cmd()` 立即返回；不使能 CCIE 中断 | 每次 Slot Control 写入后等待 CC 事件（1s 超时）；使能 CCIE |
+| **MRLSP** | 注册锁扣状态 ops；使能前检查锁扣是否打开 | 不注册锁扣 ops；无锁扣检查 |
+| **HPS** | 硬件声明支持意外拔出（信息位，不门控运行时行为） | 不影响软件处理路径；PDC/DLLSC 事件仍正常处理 |
+
+**`pcie_init()` 中的 Cap 修正**：
+
+```c
+// drivers/pci/hotplug/pciehp_hpc.c
+pcie_capability_read_dword(pdev, PCI_EXP_SLTCAP, &slot_cap);
+
+if (pdev->hotplug_user_indicators)
+    slot_cap &= ~(PCI_EXP_SLTCAP_AIP | PCI_EXP_SLTCAP_PIP);
+
+if (pdev->is_thunderbolt)
+    slot_cap |= PCI_EXP_SLTCAP_NCCS;
+
+ctrl->slot_cap = slot_cap;
+```
+
+- **`hotplug_user_indicators`**：固件要求用户空间控制指示灯时，清除 AIP/PIP，驱动不再操作硬件指示灯
+- **Thunderbolt 控制器**：强制设置 NCCS，因部分 Thunderbolt 控制器虚假声明 CC 支持
+
+### 3.3 典型 Cap 组合与交互流程
+
+#### 场景 A：全功能 Native 热插拔
+
+**前置条件**：HPC=1, PCP=1, ABP=1, AIP=1, PIP=1, `native_pcie_hotplug=1`
+
+这是 PCIe Spec §6.7 描述的标准热插拔模型，所有可选硬件均存在：
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "'trebuchet ms', verdana, arial, sans-serif"}}}%%
+sequenceDiagram
+    participant Op as 操作员
+    participant HW as 硬件
+    participant ISR as pciehp_isr
+    participant IST as pciehp_ist
+    participant Ctrl as board_added/remove_board
+
+    Note over Op,Ctrl: 卡插入流程
+    Op->>HW: 按下注意力按钮
+    HW->>ISR: ABP 中断
+    ISR->>IST: pending_events
+    IST->>IST: handle_button_press()<br/>OFF→BLINKINGON<br/>电源灯闪烁
+    Op->>Op: 5秒内未再按（确认）
+    IST->>Ctrl: board_added()
+    Ctrl->>HW: PCC=0（上电）
+    Ctrl->>HW: 电源灯=闪烁
+    Ctrl->>Ctrl: 等待链路训练完成
+    Ctrl->>Ctrl: configure_device()
+    Ctrl->>HW: 电源灯=On, 注意力灯=Off
+
+    Note over Op,Ctrl: 卡移除流程
+    Op->>HW: 按下注意力按钮
+    HW->>ISR: ABP 中断
+    IST->>IST: handle_button_press()<br/>ON→BLINKINGOFF<br/>电源灯闪烁
+    Op->>Op: 5秒内未再按（确认）
+    IST->>Ctrl: disable_slot(SAFE_REMOVAL)
+    Ctrl->>Ctrl: unconfigure_device()<br/>驱动 quiesce + 禁用 Bus Master
+    Ctrl->>HW: PCC=1（下电）
+    Ctrl->>Ctrl: msleep(1000)
+    Ctrl->>HW: 电源灯=Off, 注意力灯=On
+```
+
+#### 场景 B：无电源控制的 Native 热插拔
+
+**前置条件**：HPC=1, PCP=0, `native_pcie_hotplug=1`
+
+常见于服务器背板电源始终开启的插槽。与场景 A 的关键差异：
+
+| 对比维度 | PCP=1 | PCP=0 |
+|---------|-------|-------|
+| 上电 | `pciehp_power_on_slot()` 写 PCC=0 | 跳过，电源始终开启 |
+| 下电 | `pciehp_power_off_slot()` 写 PCC=1 + 1s 等待 | 跳过，电源始终开启 |
+| 使能前检查 | 读取电源状态，已上电则跳过 | 不检查，直接调用 `board_added()` |
+| 禁用前检查 | 读取电源状态，已下电则跳过 | 不检查，直接调用 `remove_board()` |
+| 初始化清理 | 空插槽上电时自动下电 | 不清理 |
+
+交互流程简化为：检测在位 → 链路训练 → 枚举设备（跳过电源控制步骤）。
+
+#### 场景 C：无按钮的热插拔
+
+**前置条件**：HPC=1, ABP=0, `native_pcie_hotplug=1`
+
+无注意力按钮时，pciehp 使能 PDCE（在位检测中断）替代 ABPE。卡插入/拔出直接触发上电/下电，无 5s 延时窗口：
+
+- **卡插入**：PDC 事件 → `pciehp_handle_presence_or_link_change()` → OFF→POWERON → `board_added()`
+- **卡移除**：PDC/DLLSC 事件 → `pciehp_handle_presence_or_link_change()` → ON→POWEROFF → `pciehp_disable_slot(SURPRISE_REMOVAL)`
+
+> 无按钮时，卡拔出始终走 SURPRISE_REMOVAL 路径，即使是有计划的移除。因为没有按钮信号来区分"计划性"和"意外"。
+
+#### 场景 D：意外拔出（Surprise Removal）
+
+**前置条件**：HPS=1（硬件声明支持），或任何产生 PDC/DLLSC 事件的拔出
+
+pciehp 对意外拔出的处理不依赖 HPS 位——只要收到 PDC 或 DLLSC 事件且 Slot 处于 ON_STATE，即执行 SURPRISE_REMOVAL 路径：
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "'trebuchet ms', verdana, arial, sans-serif"}}}%%
+sequenceDiagram
+    participant Card as 卡
+    participant HW as 硬件
+    participant ISR as pciehp_isr
+    participant IST as pciehp_ist
+    participant Ucfg as unconfigure_device
+
+    Card->>HW: 物理拔出（无事先通知）
+    HW->>HW: PDS→0, DLLLA→0
+    HW->>ISR: PDC/DLLSC 中断
+    ISR->>IST: pending_events
+    IST->>IST: handle_presence_or_link_change()<br/>ON→POWEROFF
+    IST->>Ucfg: disable_slot(SURPRISE_REMOVAL)
+    Ucfg->>Ucfg: pci_dev_set_disconnected()<br/>标记 pci_channel_io_perm_failure
+    Ucfg->>Ucfg: pci_stop_and_remove_bus_device()
+    Note over Ucfg: 不写 PCI_COMMAND<br/>（设备已不在）
+    alt PCP=1
+        Ucfg->>HW: PCC=1（下电）
+        Ucfg->>Ucfg: msleep(1000)
+    end
+```
+
+**安全移除 vs 意外拔出的核心差异**：
+
+| 对比维度 | 安全移除 (`safe_removal=true`) | 意外拔出 (`safe_removal=false`) |
+|---------|---------------------------|---------------------------|
+| 设备标记 | 正常移除 | `pci_dev_set_disconnected()` → `pci_channel_io_perm_failure` |
+| Bus Master | 禁用（写 PCI_COMMAND） | 不写（设备已不在） |
+| 数据安全 | 驱动先 quiesce | 无保障，可能正在 DMA |
+| 触发路径 | 按钮 5s 确认 / sysfs | PDC/DLLSC 事件 |
+
+#### 场景 E：ACPI 热插拔
+
+**前置条件**：`native_pcie_hotplug=0`（固件通过 _OSC 拒绝 Native 控制），或 HPC=0
+
+当 OS 未获得 Native 热插拔控制权时，acpiphp 驱动接管：
+
+1. ACPI 枚举：`acpiphp_enumerate_slots()` 扫描 `_EJ0`/`_RMV` 方法
+2. 事件触发：固件通过 ACPI Notify 通知 OS
+3. 设备添加：`enable_slot()` → `pci_scan_bridge()` → `pci_bus_add_devices()`
+4. 设备移除：`disable_slot()` → `_EJ0` 方法执行 → `pci_stop_and_remove_bus_device()`
+
+acpiphp 通过 `hotplug_is_native()` 检查避免与 pciehp 冲突：若桥的 `is_pciehp && pciehp_is_native()` 为真，acpiphp 跳过该 Slot。
+
+***
+
+## 4. pciehp 驱动架构
+
+### 4.1 驱动注册与 Port Service 模型
 
 pciehp 是 PCIe Port Bus Driver 的一个 Service，与 PME、AER 等共享同一个 Root Port/Downstream Port：
 
@@ -172,13 +414,13 @@ static struct pcie_port_service_driver hpdriver_portdrv = {
 ```
 
 **探测条件**（`pciehp_probe`）：
-1. `dev->service == PCIE_PORT_SERVICE_HP`（由 Port Driver 分配）
+
+1. `dev->service == PCIE_PORT_SERVICE_HP`（由 Port Driver 的 `get_port_device_capability()` 分配，要求 `is_pciehp && (pcie_ports_native || native_pcie_hotplug)`，详见[3.1 节](#31-native-与-acpi-模式选择)）
 2. 端口必须有 `subordinate` 总线（已分配 Bus Number）
-3. Slot Capability 中 HPC=1（或固件通过 ACPI 声明 `native_pcie_hotplug`）
 
-**Port Service 中断共享**：PME、Hot-Plug、Bandwidth Notification 共享同一个 MSI/MSI-X 向量，pciehp_isr 通过读取 Slot Status 判断是否为热插拔事件。
+**Port Service 中断共享**：PME、Hot-Plug、Bandwidth Notification 共享同一个 MSI/MSI-X 向量，pciehp\_isr 通过读取 Slot Status 判断是否为热插拔事件。
 
-### 3.2 controller 结构体
+### 4.2 controller 结构体
 
 pciehp 的核心数据结构，每个热插拔端口一个实例：
 
@@ -201,7 +443,7 @@ struct controller {
 };
 ```
 
-### 3.3 初始化流程
+### 4.3 初始化流程
 
 ```mermaid
 %%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "'trebuchet ms', verdana, arial, sans-serif"}}}%%
@@ -224,21 +466,21 @@ flowchart TD
     class Done done
 ```
 
-**`pcie_enable_notification()` 使能的事件**：
+**`pcie_enable_notification()`** **使能的事件**：
 
-| 事件 | 使能条件 | 原因 |
-|------|---------|------|
-| DLLSCE | 始终使能 | 链路 Up/Down 是最可靠的热插拔检测信号 |
-| ABPE | ATTN_BUTTN(ctrl) | 有按钮时使能按钮事件 |
-| PDCE | !ATTN_BUTTN(ctrl) | 无按钮时使能在位检测事件 |
-| HPIE | !pciehp_poll_mode | 中断模式下使能热插拔中断 |
-| CCIE | !poll_mode && !NO_CMD_CMPL | 需要命令完成通知时使能 |
+| 事件     | 使能条件                          | 原因                      |
+| ------ | ----------------------------- | ----------------------- |
+| DLLSCE | 始终使能                          | 链路 Up/Down 是最可靠的热插拔检测信号 |
+| ABPE   | ATTN\_BUTTN(ctrl)             | 有按钮时使能按钮事件              |
+| PDCE   | !ATTN\_BUTTN(ctrl)            | 无按钮时使能在位检测事件            |
+| HPIE   | !pciehp\_poll\_mode           | 中断模式下使能热插拔中断            |
+| CCIE   | !poll\_mode && !NO\_CMD\_CMPL | 需要命令完成通知时使能             |
 
----
+***
 
-## 4. 状态机
+## 5. 状态机
 
-### 4.1 六状态定义
+### 5.1 六状态定义
 
 ```c
 // drivers/pci/hotplug/pciehp.h
@@ -250,7 +492,7 @@ flowchart TD
 #define ON_STATE          5   // 插槽上电，下游设备已枚举
 ```
 
-### 4.2 状态转换图
+### 5.2 状态转换图
 
 ```mermaid
 %%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "'trebuchet ms', verdana, arial, sans-serif"}}}%%
@@ -277,7 +519,7 @@ stateDiagram-v2
     POWEROFF_STATE --> OFF_STATE : 下电完成
 ```
 
-### 4.3 注意力按钮的 5 秒延时
+### 5.3 注意力按钮的 5 秒延时
 
 按钮按下后 pciehp 不会立即执行上电/下电，而是进入 BLINKING 状态并启动 5 秒延时：
 
@@ -312,11 +554,11 @@ void pciehp_handle_button_press(struct controller *ctrl)
 
 **设计意图**：5 秒延时给操作员反悔的机会。如果误按按钮，在 5 秒内再按一次即可取消。电源灯闪烁提示操作员"即将执行操作"。
 
----
+***
 
-## 5. 中断处理
+## 6. 中断处理
 
-### 5.1 两级中断架构
+### 6.1 两级中断架构
 
 pciehp 使用 `request_threaded_irq()` 注册硬中断处理函数和中断线程：
 
@@ -326,12 +568,12 @@ retval = request_threaded_irq(irq, pciehp_isr, pciehp_ist,
                               IRQF_SHARED, "pciehp", ctrl);
 ```
 
-| 层级 | 函数 | 上下文 | 职责 |
-|------|------|--------|------|
-| 硬中断 | `pciehp_isr()` | 中断上下文 | 读取 Slot Status，筛选事件位，存入 `pending_events` |
-| 中断线程 | `pciehp_ist()` | 进程上下文 | 执行状态机转换、上电/下电、设备枚举/移除 |
+| 层级   | 函数             | 上下文   | 职责                                       |
+| ---- | -------------- | ----- | ---------------------------------------- |
+| 硬中断  | `pciehp_isr()` | 中断上下文 | 读取 Slot Status，筛选事件位，存入 `pending_events` |
+| 中断线程 | `pciehp_ist()` | 进程上下文 | 执行状态机转换、上电/下电、设备枚举/移除                    |
 
-### 5.2 硬中断处理（pciehp_isr）
+### 6.2 硬中断处理（pciehp\_isr）
 
 ```c
 // drivers/pci/hotplug/pciehp_hpc.c（简化）
@@ -364,7 +606,7 @@ static irqreturn_t pciehp_isr(int irq, void *dev_id)
 
 **MSI 重读的必要性**：PCIe Spec §6.7.3.4 规定，MSI 模式下所有事件位必须为 0 端口才会发送新中断。如果在 read 和 clear 之间有新事件置位，端口不会再发中断，必须重读。
 
-### 5.3 中断线程（pciehp_ist）
+### 6.3 中断线程（pciehp\_ist）
 
 ```c
 // drivers/pci/hotplug/pciehp_hpc.c（简化）
@@ -402,7 +644,7 @@ static irqreturn_t pciehp_ist(int irq, void *dev_id)
 
 **事件优先级**：`DISABLE_SLOT > PDC/DLLSC`。如果用户通过 sysfs 请求禁用插槽，同时卡被拔出，优先执行安全移除路径。
 
-### 5.4 轮询模式
+### 6.4 轮询模式
 
 当中断不可用时，pciehp 支持轮询模式（`pciehp_poll_mode=1`）：
 
@@ -427,11 +669,11 @@ static int pciehp_poll(void *data)
 
 轮询模式通过内核线程实现，默认 2 秒轮询一次。适用于中断控制器不支持 MSI 或中断线路有问题的平台。
 
----
+***
 
-## 6. 设备添加与移除
+## 7. 设备添加与移除
 
-### 6.1 卡插入流程
+### 7.1 卡插入流程
 
 ```mermaid
 %%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "'trebuchet ms', verdana, arial, sans-serif"}}}%%
@@ -460,7 +702,7 @@ sequenceDiagram
     Ctrl->>HW: 电源灯=On, 注意力灯=Off
 ```
 
-**`pciehp_configure_device()` 的关键步骤**：
+**`pciehp_configure_device()`** **的关键步骤**：
 
 ```c
 // drivers/pci/hotplug/pciehp_pci.c
@@ -489,7 +731,7 @@ int pciehp_configure_device(struct controller *ctrl)
 }
 ```
 
-### 6.2 卡移除流程
+### 7.2 卡移除流程
 
 **安全移除**（通过 sysfs 或按钮 5 秒确认）：
 
@@ -536,19 +778,19 @@ void pciehp_unconfigure_device(struct controller *ctrl, bool presence)
 
 **安全移除 vs 意外拔出的关键差异**：
 
-| 对比维度 | 安全移除 | 意外拔出 |
-|---------|---------|---------|
-| `presence` 参数 | `true` | `false` |
-| 设备标记 | 正常移除 | `pci_dev_set_disconnected()` |
-| Bus Master | 禁用（写 Command 寄存器） | 不写（设备已不在） |
-| 驱动回调 | `pci_device_remove()` 正常路径 | 驱动需处理 MMIO 返回 `0xFFFFFFFF` |
-| 数据安全 | 有保障（驱动先 quiesce） | 无保障（可能正在 DMA） |
+| 对比维度          | 安全移除                       | 意外拔出                         |
+| ------------- | -------------------------- | ---------------------------- |
+| `presence` 参数 | `true`                     | `false`                      |
+| 设备标记          | 正常移除                       | `pci_dev_set_disconnected()` |
+| Bus Master    | 禁用（写 Command 寄存器）          | 不写（设备已不在）                    |
+| 驱动回调          | `pci_device_remove()` 正常路径 | 驱动需处理 MMIO 返回 `0xFFFFFFFF`   |
+| 数据安全          | 有保障（驱动先 quiesce）           | 无保障（可能正在 DMA）                |
 
----
+***
 
-## 7. 特殊场景
+## 8. 特殊场景
 
-### 7.1 DPC 恢复后的虚假链路变化
+### 8.1 DPC 恢复后的虚假链路变化
 
 DPC (Downstream Port Containment) 触发后会执行 Secondary Bus Reset 来恢复链路，这会产生 DLLSC 事件。pciehp 必须过滤这些虚假事件，否则会把正在恢复的设备误认为热拔插：
 
@@ -563,7 +805,7 @@ if ((events & (PCI_EXP_SLTSTA_PDC | PCI_EXP_SLTSTA_DLLSC)) &&
 
 `pci_hp_spurious_link_change()` 还覆盖了 Secondary Bus Reset、D3cold 挂起恢复、固件更新、FPGA 重配置等场景。
 
-### 7.2 系统睡眠期间的设备替换
+### 8.2 系统睡眠期间的设备替换
 
 系统睡眠期间，热插拔槽中的设备可能被替换为不同设备。pciehp 在 `resume_noirq` 阶段检测这种情况：
 
@@ -588,7 +830,7 @@ static int pciehp_resume_noirq(struct pcie_device *dev)
 
 `pciehp_device_replaced()` 通过比较 Vendor ID、Device ID、Class Code、Subsystem ID 和 DSN (Device Serial Number) 来判断设备是否被替换。
 
-### 7.3 In-Band Presence Detect 禁用
+### 8.3 In-Band Presence Detect 禁用
 
 某些平台（如 Dell NVMe 插槽）的 In-Band Presence Detect 信号不可靠，PDS 位可能始终为 0。pciehp 通过以下方式处理：
 
@@ -607,7 +849,7 @@ int pciehp_card_present_or_link_active(struct controller *ctrl)
 }
 ```
 
-### 7.4 Command Completed Erratum
+### 8.4 Command Completed Erratum
 
 Intel 某些控制器（CF118 erratum）声明支持 Command Completed，但只在修改电源/指示灯控制位时才置 CC 位，修改中断使能位时不置。内核通过 quirk 标记这些设备：
 
@@ -619,9 +861,9 @@ DECLARE_PCI_FIXUP_CLASS_EARLY(PCI_VENDOR_ID_INTEL, PCI_ANY_ID,
 
 Thunderbolt 控制器一律假设 NCCS=1（不需要等待命令完成），因为部分 Thunderbolt 控制器虚假声明 CC 支持。
 
----
+***
 
-## 8. sysfs 接口
+## 9. sysfs 接口
 
 pciehp 通过 `/sys/bus/pci/slots/` 暴露用户空间接口：
 
@@ -649,11 +891,11 @@ echo 1 > /sys/bus/pci/slots/5/power
 echo 1 > /sys/bus/pci/slots/5/attention
 ```
 
----
+***
 
-## 9. 调试指南
+## 10. 调试指南
 
-### 9.1 启用动态调试
+### 10.1 启用动态调试
 
 ```bash
 # 启用 pciehp 所有调试输出
@@ -663,18 +905,18 @@ echo 'file pciehp* +p' > /sys/kernel/debug/dynamic_debug/control
 echo 'file pciehp_ctrl.c +p' > /sys/kernel/debug/dynamic_debug/control
 ```
 
-### 9.2 常见问题排查
+### 10.2 常见问题排查
 
-| 现象 | 可能原因 | 排查方法 |
-|------|---------|---------|
-| 热插入后设备不出现 | 链路训练失败 | 检查 `lspci -vv` 中 LNKSTA 的 NLW 是否为 0 |
-| 热插入后设备不出现 | BAR 分配失败 | `dmesg | grep "BAR.*no space"` |
-| 意外拔出后系统卡死 | 驱动未处理 MMIO 错误 | 检查驱动是否注册 `pci_error_handlers` |
-| DPC 恢复后设备消失 | pciehp 误判链路变化 | `dmesg | grep "Link Down/Up ignored"` |
-| 电源故障循环 | 插卡功耗超限 | `dmesg | grep "Power fault"` |
-| 按钮按下无反应 | HPIE 未使能 | 检查 `lspci -vv` 中 Slot Control 的 HPIE 位 |
+| 现象          | 可能原因          | 排查方法                                   | <br />                        |
+| ----------- | ------------- | -------------------------------------- | :---------------------------- |
+| 热插入后设备不出现   | 链路训练失败        | 检查 `lspci -vv` 中 LNKSTA 的 NLW 是否为 0    | <br />                        |
+| 热插入后设备不出现   | BAR 分配失败      | \`dmesg                                | grep "BAR.\*no space"\`       |
+| 意外拔出后系统卡死   | 驱动未处理 MMIO 错误 | 检查驱动是否注册 `pci_error_handlers`          | <br />                        |
+| DPC 恢复后设备消失 | pciehp 误判链路变化 | \`dmesg                                | grep "Link Down/Up ignored"\` |
+| 电源故障循环      | 插卡功耗超限        | \`dmesg                                | grep "Power fault"\`          |
+| 按钮按下无反应     | HPIE 未使能      | 检查 `lspci -vv` 中 Slot Control 的 HPIE 位 | <br />                        |
 
-### 9.3 关键日志消息
+### 10.3 关键日志消息
 
 ```
 pciehp: Slot(#N): Card present           # 卡插入检测
@@ -687,13 +929,16 @@ pciehp: Slot(#N): No link                # 链路训练超时
 pciehp: Slot(#N): Link Down/Up ignored   # DPC/SBR 虚假事件被过滤
 ```
 
----
+***
 
 ## 参考资料
 
 - [PCI Express Base Specification r6.2 §6.7](https://pcisig.com) — Hot-Plug 规范定义
-- [Linux kernel source: drivers/pci/hotplug/pciehp*](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/drivers/pci/hotplug) — pciehp 驱动实现
+- [Linux kernel source: drivers/pci/hotplug/pciehp\*](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/drivers/pci/hotplug) — pciehp 驱动实现
 - [Linux kernel source: drivers/pci/pcie/portdrv.c](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/drivers/pci/pcie/portdrv.c) — Port Service 驱动框架
+- [Linux kernel source: drivers/acpi/pci_root.c](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/drivers/acpi/pci_root.c) — _OSC 协商与 Native 热插拔控制权
+- [Linux kernel source: drivers/pci/hotplug/acpiphp_glue.c](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/drivers/pci/hotplug/acpiphp_glue.c) — ACPI 热插拔驱动
 - [PCI Express Hot-Plug: A Standard Approach](https://www.intel.com/content/dam/www/public/us/en/documents/white-papers/pci-express-hot-plug-paper.pdf) — Intel 白皮书
 
 > **下一篇**：[SR-IOV虚拟化](./sriov-virtualization.md)
+
