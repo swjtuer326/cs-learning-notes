@@ -4,6 +4,25 @@
 >
 > **工程师视角**：扩展不是"越多越好"。服务器芯片需要 A（原子操作）和 V（向量）扩展；实时嵌入式系统可能只需要 M 扩展；而 Boot ROM 为了最小体积，可能连 M 都不要。理解每个扩展的代价和收益，是架构设计的基础决策。
 
+### 关键术语
+
+| 缩写 | 全称 | 含义 |
+|------|------|------|
+| AMO | Atomic Memory Operation | 原子内存操作 |
+| LR/SC | Load-Reserved / Store-Conditional | 保留加载/条件存储 |
+| SEW | Selected Element Width | 选中元素宽度（V 扩展） |
+| LMUL | Vector Length Multiplier | 向量长度乘数（V 扩展） |
+| VLMAX | Vector Length Maximum | 最大向量长度 |
+| VLEN | Vector Register Length | 向量寄存器位宽 |
+| PMU | Performance Monitoring Unit | 性能监控单元 |
+| HPM | Hardware Performance Monitor | 硬件性能监控计数器 |
+| TSO | Total Store Order | 全存储序内存模型 |
+| RVWMO | RISC-V Weak Memory Ordering | RISC-V 弱内存序模型 |
+| TLB | Translation Lookaside Buffer | 页表缓存 |
+| ASID | Address Space Identifier | 地址空间标识符 |
+| CSR | Control and Status Register | 控制状态寄存器 |
+| SBI | Supervisor Binary Interface | 管理模式二进制接口 |
+
 ### 前置知识
 
 | 需要了解 | 参考文档 |
@@ -250,6 +269,43 @@ spin_lock:
     ret
 ```
 
+#### FENCE 指令的 pred/succ 编码
+
+FENCE 指令通过 pred（前序）和 succ（后序）字段精确控制内存操作排序：
+
+```
+FENCE pred, succ 指令编码:
+
+  pred [27:24]: 前序操作类型（必须在此 fence 之前完成）
+  succ [23:20]: 后续操作类型（必须在此 fence 之后开始）
+
+  每个字段的位编码:
+    bit 3 = I (Input):  设备输入（读）
+    bit 2 = O (Output): 设备输出（写）
+    bit 1 = R (Read):   内存读
+    bit 0 = W (Write):  内存写
+```
+
+| FENCE 写法 | pred | succ | 含义 |
+|-----------|------|------|------|
+| `fence` | IORW | IORW | 全屏障（所有操作有序） |
+| `fence w, r` | W | R | 写-读屏障（Release 语义） |
+| `fence r, rw` | R | RW | 读-读写屏障（Acquire 语义） |
+| `fence.i` | — | — | 指令缓存与数据缓存一致性（Zifencei） |
+
+```asm
+# 生产者-消费者模式
+# 生产者：写数据后执行 Release fence
+sw    t0, 0(a0)          # 写数据
+fence w, r               # 确保写对其他核可见
+sw    t1, 4(a0)          # 写标志位
+
+# 消费者：读标志后执行 Acquire fence
+lw    t1, 4(a0)          # 读标志位
+fence r, rw              # 确保读到标志后，后续读能看到数据
+lw    t0, 0(a0)          # 读数据
+```
+
 ---
 
 ## 3. F/D 扩展：浮点运算
@@ -292,7 +348,96 @@ D 扩展的指令与 F 扩展完全对称，只需将 `.S` 替换为 `.D`：
 | `FMV.X.W` | `FMV.X.D` | 64 位位模式搬移（RV64） |
 | — | `FCVT.S.D` / `FCVT.D.S` | 单双精度互转 |
 
-### 3.4 浮点控制状态寄存器（fcsr）
+### 3.4 FSGNJ 系列：符号注入
+
+| 指令 | 功能 | 等价 |
+|------|------|------|
+| `FSGNJ.S rd, rs1, rs2` | 复制 rs1 的值，但符号位取自 rs2 | rd = \|rs1\| × sign(rs2) |
+| `FSGNJN.S rd, rs1, rs2` | 复制 rs1 的值，符号位取自 rs2 的反 | rd = \|rs1\| × ~sign(rs2) |
+| `FSGNJX.S rd, rs1, rs2` | 复制 rs1 的值，符号位与 rs2 异或 | rd = \|rs1\| × (sign(rs1) ⊕ sign(rs2)) |
+
+```asm
+fmv.s fa0, fa1    # 伪指令，展开为 fsgnj.s fa0, fa1, fa1
+fneg.s fa0, fa1   # 伪指令，展开为 fsgnjn.s fa0, fa1, fa1
+fabs.s fa0, fa1   # 伪指令，展开为 fsgnjx.s fa0, fa1, fa1
+```
+
+### 3.5 FCLASS：浮点分类
+
+FCLASS 将浮点数的类别编码为一个 10-bit 的独热码写入 rd：
+
+| bit | 类别 | 说明 |
+|-----|------|------|
+| 0 | 负无穷 | -∞ |
+| 1 | 负正规数 | 负常数值 |
+| 2 | 负非正规数 | 负极小值 |
+| 3 | -0 | 负零 |
+| 4 | +0 | 正零 |
+| 5 | 正非正规数 | 正极小值 |
+| 6 | 正正规数 | 正常数值 |
+| 7 | 正无穷 | +∞ |
+| 8 | 信令 NaN | sNaN |
+| 9 | 安静 NaN | qNaN |
+
+```asm
+# 检查是否为 NaN
+fclass.s t0, fa0
+andi    t1, t0, 0x300    # bit 8 或 bit 9 = NaN
+bnez    t1, is_nan
+```
+
+### 3.6 FCVT：浮点-整数转换
+
+FCVT 的舍入行为由 fcsr.FRM 或指令中的 rm 字段控制。关键注意点：
+
+- `FCVT.W.S` 将浮点转为 32-bit 有符号整数，结果符号扩展到 XLEN
+- `FCVT.WU.S` 将浮点转为 32-bit 无符号整数
+- 越界值被钳位到目标类型的最大/最小值（不触发异常，只设置 NV 标志）
+- `FMV.X.W` 是位模式搬移，不做任何转换
+
+### 3.7 Zfa：额外浮点指令
+
+Zfa 扩展为 F/D/Q 扩展添加了实用的浮点指令：
+
+| 指令 | 功能 | 说明 |
+|------|------|------|
+| `FLI.S rd, fimm` | 加载浮点立即数 | 从 8-bit 编码加载常见浮点常量（如 0.0, 1.0, π, √2 等） |
+| `FLI.D rd, fimm` | 加载双精度浮点立即数 | 同上，双精度版本 |
+| `FMINM.S rd, rs1, rs2` | IEEE 最小值 | 遵循 IEEE 754-2019 minNum 语义（-0 < +0，NaN 传播） |
+| `FMAXM.S rd, rs1, rs2` | IEEE 最大值 | 遵循 IEEE 754-2019 maxNum 语义 |
+| `FMINM.D / FMAXM.D` | 双精度版本 | — |
+| `FROUND.S rd, rs1, rm` | 浮点取整 | 按 rm 模式取整为整数，结果仍为浮点格式 |
+| `FROUNDNX.S rd, rs1, rm` | 浮点取整（不精确例外） | 同 FROUND 但会触发不精确异常 |
+| `FCVTMOD.W.D rd, rs1, rm` | 模取整转换 | 双精度转整数，仅低 32 位有效，用于 JavaScript |
+
+> **RVA23 必需。** FLI 指令避免了加载浮点常量时需要从内存读取的开销，一条指令即可加载 π、e、√2 等常用常量。
+
+### 3.8 Zfh/Zfhmin：半精度浮点
+
+| 子扩展 | 说明 |
+|--------|------|
+| **Zfh** | 完整的半精度浮点支持，包含所有 .H 后缀的算术/转换/比较指令 |
+| **Zfhmin** | 最小半精度支持，仅包含 FCVT.S.H / FCVT.H.S（半精度与单精度互转），不包含 .H 算术指令 |
+
+半精度浮点（IEEE 754-2008 binary16）格式：
+
+- 1 位符号 + 5 位指数 + 10 位尾数 = 16 bit
+- 范围：±6.55×10⁴，精度约 3.3 位十进制
+- 主要用于 AI 推理（FP16）、图形处理（HDR）
+
+```asm
+# Zfhmin：半精度与单精度互转
+fcvt.s.h  fa0, fa1     # 半精度 → 单精度（扩展）
+fcvt.h.s  fa0, fa1     # 单精度 → 半精度（舍入）
+
+# Zfh：半精度算术
+fadd.h  fa0, fa1, fa2  # 半精度加法
+fmul.h  fa0, fa1, fa2  # 半精度乘法
+```
+
+> **RVA23 要求 Zvfh（向量半精度），但不要求 Zfh。** AI 推理场景通常使用向量半精度（V 扩展的 Zvfh）而非标量半精度。
+
+### 3.9 浮点控制状态寄存器（fcsr）
 
 ```
 fcsr (32-bit):
@@ -355,7 +500,11 @@ C 扩展将常用指令编码为 16-bit，可减少代码体积 25%-30%。
 | `C.NOP` | `ADDI x0, x0, 0` | 空操作 |
 | `C.EBREAK` | `EBREAK` | 断点 |
 
-> **C 扩展的限制：** 压缩指令只能访问部分寄存器（x8-x15，即 s0-s1, a0-a5），立即数范围也有限。这是 16-bit 编码空间有限的妥协。
+> **C 扩展的限制：** 16-bit 编码空间有限，因此寄存器访问和立即数范围有不同程度限制：
+> - CI/CJ/CL/CS/CB 格式只能访问 x8-x15（称为 rd'/rs1'/rs2'，即 s0-s1, a0-a5）
+> - C.LI/C.ADDI/C.LUI/C.ADDI16SP 等可以访问任何寄存器
+> - C.MV/C.ADD 可以访问任何寄存器对
+> - 立即数范围也因指令而异（如 C.LI 仅 6-bit 有符号，C.ADDI4SPN 仅无符号 nzuimm）
 
 ### 4.3 代码密度对比
 
@@ -523,6 +672,8 @@ xperm8  t0, t0, a0        # t0 中每个字节作为索引，从 a0 中选对应
 
 ---
 
+## 6. V 扩展：可变长度向量
+
 V 扩展是 RISC-V 最重要的扩展之一，提供可变长度向量（Vector）处理能力，对 AI 推理、信号处理、多媒体等场景至关重要。
 
 ### 6.1 设计哲学：可变长度向量
@@ -573,27 +724,78 @@ V 扩展添加 32 个向量寄存器 v0-v31，每个宽度为 VLEN（实现决�
 
 # 示例：配置为 32-bit 整数，LMUL=1
 vsetvli t0, a0, e32, m1, ta, ma
-# e32 = 元素宽度 32-bit
+# a0  = 应用程序请求处理的元素总数（application vector length）
+# e32 = 元素宽度 32-bit (SEW=32)
 # m1  = LMUL=1（1 个寄存器一组）
 # ta  = tail agnostic（尾部元素不关心）
 # ma  = mask agnostic（掩码元素不关心）
-# t0  = 实际处理的元素个数
+# t0  = 本次实际能处理的元素个数 VL
+#       vsetvli 根据 VLEN 和 SEW/LMUL 计算出 VL，写入 t0
+#       如果 a0=0，则 VL=VLMAX（最大可能值）
 ```
 
+#### VLMAX 计算公式
+
+$$VLMAX = \frac{VLEN \times LMUL}{SEW}$$
+
+其中 $VLEN$ 为向量寄存器位宽（硬件实现决定），$LMUL$ 为向量长度乘数，$SEW$ 为选中元素宽度。例如 $VLEN=256$，$SEW=32$，$LMUL=1$ 时，$VLMAX = 256 \times 1 / 32 = 8$。
+
+#### vsetvl：非立即数版本
+
+`vsetvl rd, rs1, rs2` 是 vsetvli 的寄存器版本，其中 rs2 是包含 vtype 值的寄存器（而非立即数），主要用于上下文恢复——保存的 vtype 值可以直接写回：
+
+```asm
+# 上下文恢复：从保存的 vtype 值恢复向量配置
+vsetvl t0, a0, a1    # a1 = 之前保存的 vtype 值
 ```
-vtype 寄存器关键字段:
 
- 31  30  29  28  27  26  25  24  23  22  21  20  19  18  7   6   5   4   3   2   1   0
-┌───┬───┬───┬───┬───┬───┬───┬───┬───┬───┬───┬───┬───┬─────┬───┬───┬───┬───┬───┬───┬───┬───┐
-│   │   │   │   │   │   │   │   │   │   │   │   │   │ ... │NV │NM │MA │TA │SEW│ VMA│ VSEW│
-└───┴───┴───┴───┴───┴───┴───┴───┴───┴───┴───┴───┴───┴─────┴───┴───┴───┴───┴───┴───┴───┴───┘
+#### Fractional LMUL
 
-VSEW (Selected Element Width):
+LMUL 支持分数值，用于减少寄存器占用：
+
+| VLMUL 编码 | LMUL 值 | 含义 |
+|------------|---------|------|
+| 000 | 1 | 使用 1 个向量寄存器 |
+| 001 | 2 | 使用 2 个连续向量寄存器 |
+| 010 | 4 | 使用 4 个连续向量寄存器 |
+| 011 | 8 | 使用 8 个连续向量寄存器 |
+| 101 | 1/8 | 只使用向量寄存器的 1/8 位宽 |
+| 110 | 1/4 | 只使用向量寄存器的 1/4 位宽 |
+| 111 | 1/2 | 只使用向量寄存器的 1/2 位宽 |
+
+Fractional LMUL 的典型用途是减少寄存器占用（如 LMUL=f2 只用半个寄存器，VLMAX 也减半）。当 $SEW > VLEN \times LMUL$ 时，$VLMAX=0$，此时无法处理任何元素。
+
+#### 向量 CSR
+
+| CSR | 地址 | 说明 |
+|-----|------|------|
+| `vstart` | 0x008 | 异常后恢复执行的起始元素索引，异常处理完成后应清零 |
+| `vxsat` | 0x009 | 定点饱和溢出标志（1 = 发生过饱和） |
+| `vcsr` | 0x00F | 向量控制状态寄存器，包含 vstart 和 vxsat 的使能位 |
+
+#### vtype 寄存器位域
+
+```
+XLEN-1                                    7     6     5   3    2    0
+┌──────────────────────────────────────┬─────┬─────┬────────┬────────┐
+│              reserved                │ VMA │ VTA │ VLMUL  │ VSEW   │
+└──────────────────────────────────────┴─────┴─────┴────────┴────────┘
+
+VSEW (Selected Element Width) [2:0]:
   000 = 8-bit    001 = 16-bit    010 = 32-bit    011 = 64-bit
+  101 = 128-bit  110 = 256-bit   111 = 512-bit（保留给未来）
 
-VLMUL (Vector Length Multiplier):
+VLMUL (Vector Length Multiplier) [5:3]:
   000 = LMUL=1   001 = LMUL=2   010 = LMUL=4   011 = LMUL=8
-  111 = fractional LMUL (f8, f4, f2)
+  101 = LMUL=f8  110 = LMUL=f4  111 = LMUL=f2
+
+VTA (Vector Tail Agnostic) [6]:
+  0 = 尾部元素保留旧值（undisturbed）
+  1 = 尾部元素值不确定（agnostic）
+
+VMA (Vector Mask Agnostic) [7]:
+  0 = 掩码元素保留旧值（undisturbed）
+  1 = 掩码元素值不确定（agnostic）
 ```
 
 ### 6.4 向量指令分类
@@ -612,7 +814,73 @@ VLMUL (Vector Length Multiplier):
 | **转换** | `vzext.vf2`, `vsext.vf2` | 元素宽度转换 |
 | **浮点** | `vfadd.vv`, `vfmul.vv`, `vfsgnj.vv` | 浮点向量运算 |
 
-### 6.5 向量编程示例
+### 6.5 向量加载/存储指令详解
+
+V 扩展的访存指令分为四类，覆盖从连续访问到随机访问的所有场景：
+
+#### Unit-stride：连续内存访问
+
+最基础的向量访存模式，访问连续的内存地址：
+
+| 指令 | 功能 |
+|------|------|
+| `vle<eew>.v vd, (rs1)` | 向量加载（连续） |
+| `vse<eew>.v vs3, (rs1)` | 向量存储（连续） |
+
+```asm
+# 连续加载 32-bit 元素
+vle32.v v1, (a0)     # 从 a0 地址连续加载 VL 个 32-bit 元素到 v1
+vse32.v v1, (a1)     # 将 v1 连续存储到 a1 地址
+```
+
+#### Strided：固定步长访问
+
+每次访问后地址增加固定步长，适用于矩阵行遍历等非连续访问：
+
+| 指令 | 功能 |
+|------|------|
+| `vlse<eew>.v vd, (rs1), rs2` | 向量加载（步长） |
+| `vsse<eew>.v vs3, (rs1), rs2` | 向量存储（步长） |
+
+```asm
+# 按行遍历矩阵（每行 4 个 int32，步长 = 16 字节）
+li    t0, 16
+vlse32.v v1, (a0), t0    # 加载矩阵第一列，步长 16 字节
+```
+
+#### Indexed：向量索引访问（Gather/Scatter）
+
+用另一个向量提供索引，实现随机访问模式：
+
+| 指令 | 功能 |
+|------|------|
+| `vluxei<eew>.v vd, (rs1), vs2` | 无序索引加载（Gather，不保证顺序） |
+| `vloxei<eew>.v vd, (rs1), vs2` | 有序索引加载（Gather，保证顺序） |
+| `vsuxei<eew>.v vs3, (rs1), vs2` | 无序索引存储（Scatter） |
+| `vsoxei<eew>.v vs3, (rs1), vs2` | 有序索引存储（Scatter） |
+
+```asm
+# Gather：从索引数组指定的位置加载数据
+# a0 = 基地址, v2 = 索引向量
+vluxei32.v v1, (a0), v2    # v1[i] = *(a0 + v2[i])
+```
+
+#### Segment：多字段加载/存储
+
+加载多个连续元素到多个向量寄存器，适用于 RGB 像素拆分等结构化数据：
+
+| 指令 | 功能 |
+|------|------|
+| `vlseg<nf>e<eew>.v vd, (rs1)` | 加载 nf 个连续元素到 nf 个向量寄存器 |
+| `vsseg<nf>e<eew>.v vs3, (rs1)` | 存储 nf 个向量寄存器到连续地址 |
+
+```asm
+# RGB 像素拆分：每个像素 3 字节 (R, G, B)
+# 将连续的 RGB 数据拆分到 3 个向量寄存器
+vlseg3e8.v v1, (a0)    # v1=R, v2=G, v3=B
+```
+
+### 6.6 向量编程示例
 
 ```asm
 # 向量加法：C[i] = A[i] + B[i]
@@ -650,7 +918,7 @@ masked_add:
     bnez     a1, masked_add
 ```
 
-### 6.6 VLEN 对性能的影响
+### 6.7 VLEN 对性能的影响
 
 | VLEN | 每周期处理 32-bit 元素数 | 典型硬件 |
 |------|--------------------------|----------|
@@ -663,11 +931,118 @@ masked_add:
 
 ---
 
-## 7. 服务器关键子扩展
+## 7. PMU：性能监控单元
+
+PMU (Performance Monitoring Unit) 是 RISC-V 的硬件性能监控机制，由三个子扩展组成：
+
+### 7.1 Zicntr：基本计数器
+
+| CSR | 地址 | 说明 |
+|-----|------|------|
+| `cycle` | 0xC00 | 自上次复位以来的时钟周期数（只读） |
+| `time` | 0xC01 | 当前实时时钟值（只读，与 mtime 同步） |
+| `instret` | 0xC02 | 自上次复位以来已完成的指令数（只读） |
+
+M-mode 对应的计数器：`mcycle` (0xB00), `minstret` (0xB02)
+
+```asm
+csrr  t0, cycle       # 时钟周期数
+csrr  t1, instret     # 已完成指令数
+csrr  t2, time        # 当前时间
+```
+
+**访问控制**：M-mode 通过 `mcounteren` CSR 控制 S/U-mode 是否可以读取这些计数器。每个 bit 对应一个计数器，bit 0=cycle, bit 2=instret。如果 mcounteren 对应位为 0，S/U-mode 读取会触发非法指令异常。
+
+### 7.2 Zihpm：硬件性能监控计数器
+
+Zihpm 提供 29 个可编程事件计数器（mhpmcounter3-31），每个计数器有对应的事件选择寄存器：
+
+| CSR | 地址范围 | 说明 |
+|-----|----------|------|
+| `mhpmcounter3-31` | 0xB03-B1F | M-mode 计数器值（64-bit，RV32 有高半部分 mhpmcounter3h-31h） |
+| `mhpmevent3-31` | 0x323-33F | M-mode 事件选择寄存器 |
+| `shpmcounter3-31` | 0xC03-C1F | S-mode 可见计数器（受 mcounteren/scounteren 控制） |
+
+事件选择寄存器 mhpmevent 的编码由实现定义，但常见事件包括：
+
+| 事件码（示例） | 含义 |
+|----------------|------|
+| 0x01 | L1 I-Cache miss |
+| 0x02 | L1 D-Cache miss |
+| 0x03 | TLB miss |
+| 0x04 | 分支预测失败 |
+| 0x05 | 分支指令执行 |
+| 0x06 | Load 指令执行 |
+| 0x07 | Store 指令执行 |
+
+> **注意：** 事件码的具体编码由微架构实现决定，不同核心的事件码不同。Linux 通过设备树中的 `riscv,pmu` 节点或 SBI PMU 扩展来发现可用事件。
+
+```asm
+# 编程 HPM 计数器：统计 L1 D-Cache miss
+csrw  mhpmevent3, 0x02      # 选择事件：L1 D-Cache miss
+csrw  mhpmcounter3, x0      # 清零计数器
+# ... 运行被测代码 ...
+csrr  t0, mhpmcounter3      # 读取 L1 D-Cache miss 次数
+```
+
+### 7.3 Sscofpmf：计数器溢出中断
+
+基本 HPM 计数器是 64-bit 宽，在高速运行时仍可能溢出。Sscofpmf 扩展为计数器添加了溢出检测和中断能力：
+
+| CSR | 地址 | 说明 |
+|-----|------|------|
+| `mhpmevent3-31` | 0x323-33F | 扩展：bit 63 = OF（溢出标志），bit 62 = MINH（不在 M-mode 计数）等 |
+| `mcountinhibit` | 0x320 | 计数器禁止寄存器，bit N=1 禁止计数器 N |
+| `scountovf` | 0xDA0 | S-mode 可见的溢出状态（只读） |
+
+溢出中断流程：
+
+1. 计数器从最大值翻转到 0 时，mhpmevent 的 OF 位置 1
+2. 如果 mie 的 LCOFIE（Local Counter Overflow Interrupt Enable）位为 1，触发溢出中断
+3. 中断处理程序读取 scountovf 确定哪个计数器溢出
+4. 软件维护 64-bit 以上的软件计数器，清零硬件计数器，清除 OF 位
+
+```asm
+# 启用计数器溢出中断
+li    t0, (1 << 20)         # LCOFIE 位 (bit 20 of mie)
+csrrs t1, mie, t0           # 使能溢出中断
+
+# 配置计数器 3：统计 L1 D-Cache miss，启用溢出检测
+li    t0, 0x02              # 事件：L1 D-Cache miss
+csrw  mhpmevent3, t0
+csrw  mhpmcounter3, x0     # 清零
+```
+
+### 7.4 Linux perf 与 RISC-V PMU
+
+Linux 内核通过 SBI PMU 扩展（SBI v2.0+）访问 PMU 硬件：
+
+```bash
+# 查看 RISC-V PMU 事件
+perf list | grep riscv
+
+# 统计 L1 D-Cache miss
+perf stat -e riscv_dcache_miss ./my_program
+
+# 统计周期数和指令数
+perf stat ./my_program
+
+# 使用硬件计数器采样
+perf record -e cycles ./my_program
+perf report
+```
+
+SBI PMU 扩展定义了标准的事件发现和计数器管理接口，使得 OS 内核无需直接操作 CSR，而是通过 ecall 委托给 M-mode 固件（OpenSBI）。
+
+> **服务器场景：** PMU 是性能调优的基础设施。在数据中心，perf top 可以实时监控热点函数；perf record 可以采集 off-CPU 分析数据。RVA22 Profile 强制要求 Zicntr + Zihpm。
+
+---
+
+## 8. 服务器关键子扩展
 
 除了上述主要扩展，RV64 服务器场景还有几个重要的子扩展：
 
-### 7.1 Zicbom / Zicboz：缓存管理
+### 8.1 Zicbom / Zicboz：缓存管理
 
 | 子扩展 | 功能 | 关键指令 |
 |--------|------|----------|
@@ -684,27 +1059,11 @@ cbo.zero   (a0)     # 将缓存行清零（用于内存分配优化）
 
 > **服务器场景：** 缓存管理对 DMA 一致性、自修改代码和多核同步至关重要。RVA22 强制要求 Zicbom + Zicboz。
 
-### 7.2 Zicntr / Zihpm：性能计数器
+### 8.2 Zicntr / Zihpm：性能计数器
 
-| 子扩展 | 功能 |
-|--------|------|
-| **Zicntr** | 基本性能计数器（cycle、time、instret） |
-| **Zihpm** | 硬件性能监控计数器（可编程事件计数器） |
+> 详细内容见 [第 7 章 PMU](#7-pmu性能监控单元)。Zicntr 提供 cycle/time/instret 基本计数器，Zihpm 提供 29 个可编程事件计数器。RVA22 强制要求两者。
 
-```asm
-# 读取基本计数器
-csrr  t0, cycle       # 时钟周期数
-csrr  t1, instret     # 已完成指令数
-csrr  t2, time        # 当前时间
-
-# 使用 HPM 计数器
-csrw  mhpmcounter3, x0     # 清零计数器 3
-csrw  mhpmevent3, 0x01     # 设置事件：L1 I-cache miss
-# ... 运行代码 ...
-csrr  t0, mhpmcounter3     # 读取 L1 I-cache miss 次数
-```
-
-### 7.3 Zicsr：CSR 指令
+### 8.3 Zicsr：CSR 指令
 
 自 20191213 版规范起，CSR 指令从 I 扩展中拆分为独立的 **Zicsr** 扩展：
 
@@ -717,7 +1076,7 @@ csrr  t0, mhpmcounter3     # 读取 L1 I-cache miss 次数
 
 > **实际影响：** GCC 工具链中 `-march=rv64i` 默认包含 Zicsr，但严格来说 `-march=rv64i_zicsr` 才是规范写法。在 RVA22/RVA23 Profile 中 Zicsr 是强制要求的。
 
-### 7.4 Zifencei：指令缓存刷新
+### 8.4 Zifencei：指令缓存刷新
 
 ```asm
 fence.i              # 保证指令缓存与数据缓存的一致性
@@ -725,6 +1084,83 @@ fence.i              # 保证指令缓存与数据缓存的一致性
 ```
 
 > **注意：** Zifencei 在 RVA22 中不是强制要求，Linux 通过 SBI 调用 `sbi_remote_fence_i()` 替代。但在裸机场景仍然有用。
+
+### 8.5 Zicond：条件操作
+
+Zicond 扩展提供两条条件选择指令，类似 x86 的 CMOV：
+
+| 指令 | 功能 | 等价伪代码 |
+|------|------|-----------|
+| `CZERO.EQZ rd, rs1, rs2` | 条件清零（rs2=0 时） | rd = (rs2 == 0) ? 0 : rs1 |
+| `CZERO.NEZ rd, rs1, rs2` | 条件清零（rs2≠0 时） | rd = (rs2 != 0) ? 0 : rs1 |
+
+```asm
+# if (cond) x = val; else x = 0;
+# cond 在 a0, val 在 a1
+czero.eqz t0, a1, a0    # a0==0 → t0=0; a0!=0 → t0=a1
+
+# if (!cond) x = val; else x = 0;
+czero.nez t0, a1, a0    # a0!=0 → t0=0; a0==0 → t0=a1
+```
+
+> **RVA23 必需。** Zicond 让编译器可以将简单的条件赋值转换为无分支代码，减少分支预测失败。GCC 12+ 和 LLVM 15+ 已支持。
+
+### 8.6 Svinval：细粒度 TLB 刷新
+
+标准 `sfence.vma` 是一条"重量级"指令，会刷新整个 TLB 或大范围条目。Svinval 扩展将 TLB 刷新拆分为三步，允许在批量刷新时减少流水线停顿：
+
+| 指令 | 功能 |
+|------|------|
+| `SINVAL.VMA rs1, rs2` | 使单个 TLB 条目无效（按虚拟地址 rs1 和 ASID rs2） |
+| `SFENCE.W.INVAL` | 确保所有之前的写操作在后续 SINVAL.VMA 之前完成 |
+| `SFENCE.INVAL.IR` | 确保所有之前的 SINVAL.VMA 在后续指令取指之前完成 |
+
+```asm
+# 批量刷新多个 TLB 条目（比多次 sfence.vma 更高效）
+sfence.w.inval              # 前置屏障
+sinval.vma  t0, t1          # 刷新条目 1
+sinval.vma  t2, t3          # 刷新条目 2
+sinval.vma  t4, t5          # 刷新条目 3
+sfence.inval.ir             # 后置屏障，确保所有 sinval 生效
+```
+
+> **性能意义：** 在进程切换或大范围页表更新时，Svinval 可以将 N 次 sfence.vma 的开销从 O(N) 次完整 TLB 刷新降低为 1 次 w.inval + N 次 sinval + 1 次 inval.ir，大幅减少流水线停顿。
+
+### 8.7 Zawrs：等待预约集
+
+Zawrs 提供两条等待指令，用于优化自旋锁的功耗：
+
+| 指令 | 功能 | 条件 |
+|------|------|------|
+| `WRS.NTO` | 等待直到中断或超时 | 在 LR 设置的预约集上等待 |
+| `WRS.STO` | 等待直到中断或超时（严格） | 同上，但超时行为更严格 |
+
+```asm
+# 优化自旋锁：用 WRS 替代忙等
+spin_lock:
+    lr.w   t1, (a0)
+    bnez   t1, spin_wait    # 锁被占用，进入等待
+    sc.w   t1, t0, (a0)
+    bnez   t1, spin_lock
+    ret
+
+spin_wait:
+    wrs.nto                 # 低功耗等待，直到中断或预约集被破坏
+    j      spin_lock        # 重新尝试
+```
+
+> **功耗优化：** WRS 让 CPU 在等待锁释放时进入低功耗状态，而不是持续轮询。当其他核心释放锁（写入锁变量）时，LR 的预约集被破坏，WRS 自动唤醒。
+
+### 8.8 Ztso：全存储序
+
+Ztso 扩展将处理器的内存模型从 RISC-V 默认的 RVWMO (RISC-V Weak Memory Ordering) 增强为 TSO (Total Store Order)，与 x86 的内存模型一致：
+
+| 模型 | Store-Load 重排 | 典型架构 |
+|------|----------------|----------|
+| RVWMO（默认） | 允许 | ARM, RISC-V |
+| TSO (Ztso) | 禁止 | x86, SPARC |
+
+> **应用场景：** 从 x86 移植的软件可能隐含依赖 TSO 语义。启用 Ztso 后，这些软件无需添加额外的 fence 指令即可正确运行。但新写的 RISC-V 软件应遵循 RVWMO，显式使用 fence。
 
 ---
 
@@ -734,6 +1170,13 @@ fence.i              # 保证指令缓存与数据缓存的一致性
 - [RISC-V V Extension Spec v1.0](https://github.com/riscv/riscv-v-spec/releases/tag/v1.0) — 向量扩展详细定义
 - [RISC-V Scalar Cryptography Extensions v1.0.1](https://github.com/riscv/riscv-crypto/releases/tag/v1.0.1) — Zbkb/Zbkc/Zbkx 密码学指令规范
 - [RISC-V Bit-Manipulation (Zba/Zbb/Zbs) v1.0.0](https://github.com/riscv-non-isa/riscv-bitmanip/releases/tag/1.0.0) — 位操作扩展规范
+- [RISC-V Zicond Extension v1.0.0](https://github.com/riscv/riscv-zicond/releases/tag/v1.0.0) — 条件操作扩展规范
+- [RISC-V Zfa Extension v1.0.0](https://github.com/riscv/riscv-zfa/releases/tag/v1.0.0) — 额外浮点指令扩展规范
+- [RISC-V Zfh / Zfhmin Extension v1.0.0](https://github.com/riscv/riscv-zfh/releases/tag/v1.0.0) — 半精度浮点扩展规范
+- [RISC-V Svinval Extension v1.0.0](https://github.com/riscv/riscv-svinval/releases/tag/v1.0.0) — 细粒度 TLB 刷新扩展规范
+- [RISC-V Zawrs Extension v1.0.0](https://github.com/riscv/riscv-zawrs/releases/tag/v1.0.0) — 等待预约集扩展规范
+- [RISC-V Ztso Extension v1.0.0](https://github.com/riscv/riscv-ztso/releases/tag/v1.0.0) — 全存储序扩展规范
+- [RISC-V Sscofpmf Extension v1.0.0](https://github.com/riscv/riscv-sscofpmf/releases/tag/v1.0.0) — 计数器溢出中断扩展规范
 
 ---
 
@@ -741,7 +1184,7 @@ fence.i              # 保证指令缓存与数据缓存的一致性
 
 ---
 
-## 8. 扩展组合速查
+## 9. 扩展组合速查
 
 | 配置名称 | 包含扩展 | 典型应用 |
 |----------|----------|----------|
@@ -753,8 +1196,8 @@ fence.i              # 保证指令缓存与数据缓存的一致性
 | RV64IMAFDC | 全功能 64 位 | 服务器/桌面 |
 | RV64G | = RV64IMAFDZicsr_Zifencei | 旧称"GC"的替代 |
 | **RV64GC+V** | + 向量扩展 | AI/HPC 服务器 |
-| **RVA22** | RV64IMAFDC + Zba+Zbb+Zbs+Zicbom+Zicboz+Zihpm+... | 服务器 Profile |
-| **RVA23** | RVA22 + V + Zicond+Zimop+Zcmop+... | 服务器 Profile（含向量） |
+| **RVA22** | RV64IMAFDC + Zba+Zbb+Zbs+Zicbom+Zicboz+Zicntr+Zihpm+Zicsr+... | 服务器 Profile |
+| **RVA23** | RVA22 + V + Zicond+Zfa+Zimop+Zcmop+Svinval+... | 服务器 Profile（含向量） |
 
 ---
 
@@ -768,5 +1211,12 @@ fence.i              # 保证指令缓存与数据缓存的一致性
 | **C** | 代码密度提升 25-30% | C.LI, C.MV, C.LW, C.SW |
 | **B** | 位操作加速、密码学 | SH2ADD, CLZ, CPOP, BSET |
 | **V** | 可变长度向量、AI/HPC | vsetvli, vle32.v, vadd.vv |
+| **PMU** | 硬件性能监控 | csrr cycle, mhpmevent |
+| **Zicond** | 无分支条件选择 | CZERO.EQZ, CZERO.NEZ |
+| **Zfa** | 浮点常量加载、IEEE 取整 | FLI.S, FROUND.S |
+| **Zfh/Zfhmin** | 半精度浮点 | FCVT.H.S, FADD.H |
+| **Svinval** | 细粒度 TLB 刷新 | SINVAL.VMA |
+| **Zawrs** | 低功耗自旋等待 | WRS.NTO |
+| **Ztso** | x86 兼容内存模型 | — |
 
 → 下一节：[特权模式与 CSR](../03-privileged/privileged-modes-and-csr.md)
