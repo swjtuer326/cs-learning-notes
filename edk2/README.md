@@ -55,16 +55,34 @@ flowchart LR
 
 ---
 
+## 依赖管理
+
+本项目使用 Git Submodule 管理 EDKII 源码：
+
+```bash
+# 初始化 submodule
+git submodule update --init --recursive
+
+# 更新 submodule 到最新版本
+git submodule update --remote edk2/edk2-src
+
+# 更新到特定版本
+cd edk2/edk2-src
+git checkout <tag-or-commit>
+```
+
+---
+
 ## 源码阅读导航
 
 | 包 | 路径 | 职责 | 对应文档 |
 |----|------|------|----------|
-| **MdePkg** | `MdePkg/` | 类型定义、库类声明、UEFI/PI 头文件 | 04-handle-protocol |
-| **MdeModulePkg** | `MdeModulePkg/` | PEI Core、DXE Core、通用驱动 | 02-boot-sequence |
-| **UefiCpuPkg** | `UefiCpuPkg/` | CPU 驱动、异常处理、MMU | 09-riscv-porting |
-| **OvmfPkg** | `OvmfPkg/` | QEMU 虚拟机平台（含 RiscVVirt） | 09-riscv-porting |
-| **BaseTools** | `BaseTools/` | 构建工具集 | 08-build-system |
-| **DynamicTablesPkg** | `DynamicTablesPkg/` | 动态 ACPI 表生成 | 09-riscv-porting |
+| **MdePkg** | `edk2-src/MdePkg/` | 类型定义、库类声明、UEFI/PI 头文件 | 04-handle-protocol |
+| **MdeModulePkg** | `edk2-src/MdeModulePkg/` | PEI Core、DXE Core、通用驱动 | 02-boot-sequence |
+| **UefiCpuPkg** | `edk2-src/UefiCpuPkg/` | CPU 驱动、异常处理、MMU | 09-riscv-porting |
+| **OvmfPkg** | `edk2-src/OvmfPkg/` | QEMU 虚拟机平台（含 RiscVVirt） | 09-riscv-porting |
+| **BaseTools** | `edk2-src/BaseTools/` | 构建工具集 | 08-build-system |
+| **DynamicTablesPkg** | `edk2-src/DynamicTablesPkg/` | 动态 ACPI 表生成 | 09-riscv-porting |
 
 ---
 

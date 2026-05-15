@@ -1,3 +1,7 @@
 [submodule "zephyr-src"]
 	path = zephyr-src
 	url = https://github.com/zephyrproject-rtos/zephyr.git
+
+[submodule "edk2/edk2-src"]
+	path = edk2/edk2-src
+	url = https://github.com/tianocore/edk2.git
