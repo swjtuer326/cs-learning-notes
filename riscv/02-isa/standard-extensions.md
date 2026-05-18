@@ -30,6 +30,23 @@
 | RV32I/RV64I 整数指令集 | [RV32I/RV64I 指令集详解](./rv32i-rv64i-instructions.md) |
 | RISC-V 模块化扩展理念与 Profile | [RISC-V 概览](../01-basics/riscv-overview.md) |
 
+### 学习目标
+
+本章涵盖 15 个以上 RISC-V 标准扩展。读完你应该能够：
+
+1. **区分各扩展的实际用途**：知道 M（乘除法）、A（原子操作）、F/D（浮点）、C（压缩）、B（位操作）、V（向量）各自解决什么问题，以及哪些是服务器 Profile（RVA22/RVA23）的强制要求
+2. **理解 LR/SC 与 AMO 的设计差异**：知道何时用乐观锁（LR/SC），何时用单指令原子操作（AMO），以及自旋锁的完整实现
+3. **掌握浮点寄存器和指令的对应关系**：FSGNJ 系列的符号注入、FCLASS 的分类编码、FCVT 的舍入行为
+4. **理解向量扩展的可变长度设计**：为什么 vsetvli 是 V 扩展的核心，VLMAX 公式如何计算
+5. **识别服务器场景的关键子扩展**：Zicond（条件选择）、Svinval（TLB 刷新）、Zawrs（低功耗等待）等各自解决什么实际问题
+
+### 阅读建议
+
+这篇内容较长，不必一次读完。建议按需阅读：
+- 先读完 **M/A/C** 扩展（最常用），再跳到第 9 节看扩展组合速查表建立全局印象
+- **F/D/V** 扩展可以分开阅读，它们是独立的知识体系
+- **B 扩展**和**服务器子扩展**（第 8 节）作为参考备用，需要时查阅即可
+
 ---
 
 ## 1. M 扩展：整数乘除法
@@ -73,6 +90,10 @@ mul   t0, t1, t2       # t0 = t1 * t2（低 32 位）
 | DIV | -1 | 2^XLEN - 1 |
 | REM | rs1 | rs1 |
 
+#### 小结：M 扩展
+
+M 扩展的 8 条指令可分为两类：**乘法**（4 条）解决了从"获取完整 64/128 位积"到"只需要低半部分"的各种需求；**除法**（4 条）通过"除以 0 不异常，返回特殊值"避免了微架构中复杂的异常处理。在嵌入式场景中，如果代码里没有乘除法运算，完全可以省略 M 扩展来节省面积。但如果需要做任何 DSP 或控制算法，M 扩展就是性价比最高的选择。
+
 ---
 
 ## 2. A 扩展：原子操作
@@ -95,6 +116,7 @@ A 扩展提供两种原子操作机制：**LR/SC**（保留加载/条件存储�
 LR/SC 采用**乐观锁**策略：先读，再检查，最后写。如果检查期间有人修改过，就放弃并重试。
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 sequenceDiagram
     participant CPU1 as CPU 1
     participant MEM as 内存
@@ -306,6 +328,12 @@ fence r, rw              # 确保读到标志后，后续读能看到数据
 lw    t0, 0(a0)          # 读数据
 ```
 
+#### 小结：A 扩展
+
+A 扩展提供了两种互补的原子机制：**LR/SC** 适合复杂条件判断（锁获取、CAS 语义），**AMO** 适合简单读写-修改操作（计数器递增、标志位更新）。两者的核心区别在于：LR/SC 在"读"和"写"之间允许任意计算，代价是可能重试；AMO 一条指令完成全部操作，但只支持固定的 9 种运算。在多核场景中，选择 A 扩展几乎是必选项——没有原子操作，就无法正确实现锁和同步原语。
+
+A 扩展中 `.AQ`/`.RL` 后缀的内存序控制与 FENCE 指令紧密关联——它们共同构成了 RISC-V 弱内存序模型（RVWMO）的底层机制。理解这些对于编写正确的多核代码至关重要。
+
 ---
 
 ## 3. F/D 扩展：浮点运算
@@ -361,6 +389,8 @@ fmv.s fa0, fa1    # 伪指令，展开为 fsgnj.s fa0, fa1, fa1
 fneg.s fa0, fa1   # 伪指令，展开为 fsgnjn.s fa0, fa1, fa1
 fabs.s fa0, fa1   # 伪指令，展开为 fsgnjx.s fa0, fa1, fa1
 ```
+
+> **设计用意：** 用三条 FSGNJ 变体来模拟 MOV/NEG/ABS，而不是增加三条专用浮点指令——这延续了 x0=0 消除整数 MOV/NOP 的设计哲学。此外，FSGNJ 的直接用途包括：在复数运算中交换实虚部符号、在迭代算法中注入特定的符号位、以及实现 `copysign()` 等数学函数。
 
 ### 3.5 FCLASS：浮点分类
 
@@ -462,6 +492,12 @@ FRM (舍入模式):
   111: DYN - 动态舍入模式（由 fcsr.FRM 决定）
 ```
 
+#### 小结：F/D 扩展
+
+浮点扩展的设计体现了 RISC-V 一贯的模块化理念：**F 扩展**提供 32 个浮点寄存器 + 完整的单精度运算（算术、比较、转换、分类），**D 扩展**将寄存器拓宽到 64-bit 并添加双精度版本（指令对称，`.S` → `.D`）。**Zfa** 在此基础上补充了浮点立即数加载（FLI）和 IEEE 兼容的取整/最值操作，**Zfh/Zfhmin** 则为半精度提供了标量支持。
+
+一个容易被忽视的细节是：`FMV.X.W` 是**位模式搬移**而非数据类型转换——它把浮点寄存器的 32 个 bit 原封不动地复制到整数寄存器，不做任何数值转换。这和 `FCVT.W.S`（真正做浮点→整数转换）有本质区别。另外，fcsr 的舍入模式和异常标志是全局状态，在上下文切换时需要保存/恢复。
+
 ---
 
 ## 4. C 扩展：压缩指令
@@ -523,6 +559,10 @@ c.sw   s0, 8(sp)     # 2 字节
 c.addi s0, sp, 16    # 2 字节
 c.li   a5, 0         # 2 字节
 ```
+
+#### 小结：C 扩展
+
+C 扩展是**使用门槛最低、收益最直观**的扩展。它利用 32-bit 指令低 2 位始终为 11 这一规律，将常用指令重新编码为 16-bit 格式。使用时需要注意两点限制：一是部分压缩指令只能访问 x8-x15 寄存器子集，二是立即数范围按指令类型缩水。但即使有这些限制，C 扩展仍然能为典型嵌入式代码节省 25%-30% 的空间——在现代芯片上，这个面积的"成本"远低于 Flash/ROM 存储的成本，因此几乎所有实际部署的 RISC-V 核心都包含 C 扩展。
 
 ---
 
@@ -670,6 +710,12 @@ xperm8  t0, t0, a0        # t0 中每个字节作为索引，从 a0 中选对应
 
 > **实际应用场景：** 在 TLS 1.3 握手过程中，AES-GCM 和 ChaCha20-Poly1305 是强制密码套件。支持 Zbkb+Zbkc 的 RISC-V 处理器可以在无专用加密引擎的情况下，仅靠指令扩展就接近硬件加速器的吞吐量。这对于 IoT 设备和边缘网关（面积/功耗受限，无法放置大型加密 IP）尤为关键。
 
+#### 小结：B 扩展
+
+B 扩展看似是"杂项位操作"，但它有清晰的层次结构：**Zba** 优化地址计算（将 slli+add 合并）、**Zbb** 提供通用位操作（CLZ/CTZ/CPOP/MIN/MAX 等十余条）、**Zbs** 实现单 bit 操作（BSET/BCLR/BINV/BEXT），这三者构成了 RVA22 的强制要求。**密码学子扩展**（Zbkb/Zbkc/Zbkx）则独立成体系，专门针对 AES、SM4、GHASH 等算法的核心操作做硬件加速——这对于 IoT 安全和 TLS 性能至关重要。
+
+实际选择时，Zba+Zbb+Zbs 是最实用的组合，几乎任何代码都能从中受益。密码学子扩展则更专用，仅在需要加解密加速时考虑。
+
 ---
 
 ## 6. V 扩展：可变长度向量
@@ -681,6 +727,7 @@ V 扩展是 RISC-V 最重要的扩展之一，提供可变长度向量（Vector�
 与 ARM SVE/NEON 的固定宽度向量不同，RISC-V V 扩展采用**可变长度向量**设计：
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph LR
     subgraph neon ["固定宽度向量 (ARM NEON)"]
         F1["128-bit 固定<br/>软件需要针对不同宽度<br/>写不同版本"]
@@ -771,7 +818,7 @@ Fractional LMUL 的典型用途是减少寄存器占用（如 LMUL=f2 只用半�
 |-----|------|------|
 | `vstart` | 0x008 | 异常后恢复执行的起始元素索引，异常处理完成后应清零 |
 | `vxsat` | 0x009 | 定点饱和溢出标志（1 = 发生过饱和） |
-| `vcsr` | 0x00F | 向量控制状态寄存器，包含 vstart 和 vxsat 的使能位 |
+| `vcsr` | 0x00F | 向量控制状态寄存器，包含 vxsat（饱和溢出标志，bit 0）和 vxrm（定点舍入模式，bits 2:1） |
 
 #### vtype 寄存器位域
 
@@ -918,6 +965,8 @@ masked_add:
     bnez     a1, masked_add
 ```
 
+> **常见误区：忘记 vsetvli 返回的是 VL 而非 AVL。** vsetvli 的第一个参数（rd）是本次实际可处理的元素个数 VL，不一定是应用程序请求的总数 AVL（rs1 的值）。每次循环迭代后，需要用 `sub a3, a3, t0` 更新剩余计数，而不能直接用原始的 a3。在向量循环的结尾必须检查 `bnez a3` 而非其他条件——这保证当没有剩余元素时退出。
+
 ### 6.7 VLEN 对性能的影响
 
 | VLEN | 每周期处理 32-bit 元素数 | 典型硬件 |
@@ -928,6 +977,14 @@ masked_add:
 | 1024+ | 32+ | AI 加速器 |
 
 > **服务器场景：** RVA22 Profile 不强制要求 V 扩展，但 RVA23 Profile 强制要求。对于 AI 推理和 HPC 场景，V 扩展是必选项。
+
+#### 小结：V 扩展
+
+V 扩展的核心思想是"**一份代码，任意 VLEN**"——通过 vsetvli 动态设置 SEW（元素宽度）和 LMUL（寄存器分组），应用程序无需在编译时就确定向量宽度。这种可变长度设计解决了 ARM NEON（固定 128-bit）的前向兼容性问题。
+
+理解 V 扩展只需抓住三个关键量：**VLEN**（硬件决定的寄存器位宽）、**SEW**（你指定的元素大小）、**LMUL**（寄存器分组因子）。VLMAX = VLEN × LMUL / SEW 给出了单条向量指令能处理的最大元素数，而 vsetvli 根据你需要的总元素数（application vector length）和 VLMAX 计算出实际的 VL。
+
+V 扩展的学习曲线较陡，但一旦理解了 vsetvli 和四种访存模式（连续、步长、索引、分段），向量编程的实际体验出奇地一致——它和标量编程的思维类似，只是每次操作多个元素而已。
 
 ---
 
@@ -1036,6 +1093,10 @@ SBI PMU 扩展定义了标准的事件发现和计数器管理接口，使得 OS
 
 > **服务器场景：** PMU 是性能调优的基础设施。在数据中心，perf top 可以实时监控热点函数；perf record 可以采集 off-CPU 分析数据。RVA22 Profile 强制要求 Zicntr + Zihpm。
 
+#### 小结：PMU
+
+PMU 按能力分为三层：**Zicntr** 提供 cycle/time/instret 三个基础计数器（几乎零成本），**Zihpm** 添加 29 个可编程事件计数器（需要硬件支持，事件码由实现定义），**Sscofpmf** 添加溢出中断（用于采样分析）。在 Linux 上，`perf stat` 和 `perf record` 底层都通过 SBI PMU 扩展访问这些计数器，开发者无需直接操作 CSR。RVA22 强制要求 Zicntr + Zihpm，因为性能监控是服务器运维的刚需。
+
 ---
 
 ## 8. 服务器关键子扩展
@@ -1083,7 +1144,7 @@ fence.i              # 保证指令缓存与数据缓存的一致性
                      # 用于自修改代码、JIT 等
 ```
 
-> **注意：** Zifencei 在 RVA22 中不是强制要求，Linux 通过 SBI 调用 `sbi_remote_fence_i()` 替代。但在裸机场景仍然有用。
+> **注意：** Zifencei 在 RVA22 中是**强制要求**的扩展（参见 RISC-V Profiles 规范 Table A.1）。即使操作系统可以通过 SBI 调用 `sbi_remote_fence_i()` 实现远程 fence.i，本地的 `fence.i` 指令仍然是必需的（例如自修改代码后刷新本地指令缓存）。
 
 ### 8.5 Zicond：条件操作
 
@@ -1162,29 +1223,13 @@ Ztso 扩展将处理器的内存模型从 RISC-V 默认的 RVWMO (RISC-V Weak Me
 
 > **应用场景：** 从 x86 移植的软件可能隐含依赖 TSO 语义。启用 Ztso 后，这些软件无需添加额外的 fence 指令即可正确运行。但新写的 RISC-V 软件应遵循 RVWMO，显式使用 fence。
 
----
+#### 这八个子扩展的共同主题
 
-## 参考资料
-
-- [RISC-V Unprivileged ISA Spec v20240411](https://github.com/riscv/riscv-isa-manual/releases/tag/20240411) — M/A/F/D/B/V/C 扩展的权威规范
-- [RISC-V V Extension Spec v1.0](https://github.com/riscv/riscv-v-spec/releases/tag/v1.0) — 向量扩展详细定义
-- [RISC-V Scalar Cryptography Extensions v1.0.1](https://github.com/riscv/riscv-crypto/releases/tag/v1.0.1) — Zbkb/Zbkc/Zbkx 密码学指令规范
-- [RISC-V Bit-Manipulation (Zba/Zbb/Zbs) v1.0.0](https://github.com/riscv-non-isa/riscv-bitmanip/releases/tag/1.0.0) — 位操作扩展规范
-- [RISC-V Zicond Extension v1.0.0](https://github.com/riscv/riscv-zicond/releases/tag/v1.0.0) — 条件操作扩展规范
-- [RISC-V Zfa Extension v1.0.0](https://github.com/riscv/riscv-zfa/releases/tag/v1.0.0) — 额外浮点指令扩展规范
-- [RISC-V Zfh / Zfhmin Extension v1.0.0](https://github.com/riscv/riscv-zfh/releases/tag/v1.0.0) — 半精度浮点扩展规范
-- [RISC-V Svinval Extension v1.0.0](https://github.com/riscv/riscv-svinval/releases/tag/v1.0.0) — 细粒度 TLB 刷新扩展规范
-- [RISC-V Zawrs Extension v1.0.0](https://github.com/riscv/riscv-zawrs/releases/tag/v1.0.0) — 等待预约集扩展规范
-- [RISC-V Ztso Extension v1.0.0](https://github.com/riscv/riscv-ztso/releases/tag/v1.0.0) — 全存储序扩展规范
-- [RISC-V Sscofpmf Extension v1.0.0](https://github.com/riscv/riscv-sscofpmf/releases/tag/v1.0.0) — 计数器溢出中断扩展规范
-
----
-
-→ 下一节：[特权模式与 CSR](../03-privileged/privileged-modes-and-csr.md)
-
----
+第 8 节的子扩展虽然功能各异，但都围绕一个共同目标：**让 RV64 服务器做好"真正跑起来"的准备**。Zicbom/Zicboz 解决了 DMA 一致性和内存清零效率，Zicntr/Zihpm 提供了性能监控，Zicsr/Zifencei 是特权软件的基础设施，Zicond 和 Zawrs 优化了分支和功耗，Svinval 降低了 TLB 维护开销，Ztso 则为 x86 迁移提供了兼容性。RVA22 和 RVA23 Profile 将这些零散的"必需品"系统化地组织成了服务器平台的底线要求。
 
 ## 9. 扩展组合速查
+
+了解了各个扩展之后，实际芯片会按需组合它们。下表列出了常见的扩展组合及其典型应用场景：
 
 | 配置名称 | 包含扩展 | 典型应用 |
 |----------|----------|----------|
@@ -1203,20 +1248,48 @@ Ztso 扩展将处理器的内存模型从 RISC-V 默认的 RVWMO (RISC-V Weak Me
 
 ## 小结
 
-| 扩展 | 核心价值 | 关键指令 |
-|------|----------|----------|
-| **M** | 硬件乘除法，避免软件模拟 | MUL, DIV, REM |
-| **A** | 多核同步、无锁编程 | LR/SC, AMOADD, AMOSWAP |
-| **F/D** | IEEE 754 浮点运算 | FADD.S/D, FCVT |
-| **C** | 代码密度提升 25-30% | C.LI, C.MV, C.LW, C.SW |
-| **B** | 位操作加速、密码学 | SH2ADD, CLZ, CPOP, BSET |
-| **V** | 可变长度向量、AI/HPC | vsetvli, vle32.v, vadd.vv |
-| **PMU** | 硬件性能监控 | csrr cycle, mhpmevent |
-| **Zicond** | 无分支条件选择 | CZERO.EQZ, CZERO.NEZ |
-| **Zfa** | 浮点常量加载、IEEE 取整 | FLI.S, FROUND.S |
-| **Zfh/Zfhmin** | 半精度浮点 | FCVT.H.S, FADD.H |
-| **Svinval** | 细粒度 TLB 刷新 | SINVAL.VMA |
-| **Zawrs** | 低功耗自旋等待 | WRS.NTO |
-| **Ztso** | x86 兼容内存模型 | — |
+下表按"遇到什么问题→用什么扩展"的思路组织，方便快速查阅：
+
+| 你的需求 | 对应扩展 | 关键指令 |
+|----------|----------|----------|
+| 需要硬件乘除法，避免软件模拟 | **M** | MUL, DIV, REM |
+| 多核同步、无锁编程 | **A** | LR/SC, AMOADD, AMOSWAP |
+| IEEE 754 单/双精度浮点 | **F/D** | FADD.S/D, FCVT |
+| 减小代码体积 25-30% | **C** | C.LI, C.MV, C.LW, C.SW |
+| 位操作加速、密码学 | **B** (Zba/Zbb/Zbs/Zbkb) | SH2ADD, CLZ, CPOP, BSET |
+| AI/HPC 数据并行 | **V** | vsetvli, vle32.v, vadd.vv |
+| 性能监控与调优 | **PMU** (Zicntr/Zihpm) | csrr cycle, mhpmevent |
+| 消除分支预测失败 | **Zicond** | CZERO.EQZ, CZERO.NEZ |
+| 浮点常量加载、IEEE 取整 | **Zfa** | FLI.S, FROUND.S |
+| 半精度浮点（AI推理/图形） | **Zfh/Zfhmin** | FCVT.H.S, FADD.H |
+| 批量 TLB 刷新优化 | **Svinval** | SINVAL.VMA |
+| 自旋锁低功耗等待 | **Zawrs** | WRS.NTO |
+| x86 内存模型兼容 | **Ztso** | — |
+
+选择扩展时，一个实用的决策框架是：
+
+1. **对标 Profile**：如果目标是运行标准 Linux 发行版，RVA22 就是最低基线；如果需要 AI/向量加速，则瞄准 RVA23
+2. **按需裁剪**：最小嵌入式实现可以只需要 RV32IMC（三扩展）；IoT 设备可能额外加 Zbkb/Zbkc 做安全加速
+3. **关注编译器和 OS 支持**：有些扩展（如 Zicond）虽然刚被纳入 Profile，但 GCC/LLVM 已经支持——实际可用性比纸面规范更重要
+
+整体来看，RISC-V 扩展体系的核心哲学不是"做大做全"，而是"**精确选择你需要的，无需为不需要的买单**"。这种模块化设计使得同一套 ISA 可以从几美分的 MCU 扩展到百万核心的 AI 加速器。
+
+---
+
+## 参考资料
+
+- [RISC-V Unprivileged ISA Spec v20260517](https://github.com/riscv/riscv-isa-manual/releases/tag/20260517) — M/A/F/D/B/V/C 扩展的权威规范
+- [RISC-V V Extension Spec v1.0](https://github.com/riscv/riscv-v-spec/releases/tag/v1.0) — 向量扩展详细定义
+- [RISC-V Scalar Cryptography Extensions v1.0.1](https://github.com/riscv/riscv-crypto/releases/tag/v1.0.1) — Zbkb/Zbkc/Zbkx 密码学指令规范
+- [RISC-V Bit-Manipulation (Zba/Zbb/Zbs) v1.0.0](https://github.com/riscv-non-isa/riscv-bitmanip/releases/tag/1.0.0) — 位操作扩展规范
+- [RISC-V Zicond Extension v1.0.0](https://github.com/riscv/riscv-zicond/releases/tag/v1.0.0) — 条件操作扩展规范
+- [RISC-V Zfa Extension v1.0.0](https://github.com/riscv/riscv-zfa/releases/tag/v1.0.0) — 额外浮点指令扩展规范
+- [RISC-V Zfh / Zfhmin Extension v1.0.0](https://github.com/riscv/riscv-zfh/releases/tag/v1.0.0) — 半精度浮点扩展规范
+- [RISC-V Svinval Extension v1.0.0](https://github.com/riscv/riscv-svinval/releases/tag/v1.0.0) — 细粒度 TLB 刷新扩展规范
+- [RISC-V Zawrs Extension v1.0.0](https://github.com/riscv/riscv-zawrs/releases/tag/v1.0.0) — 等待预约集扩展规范
+- [RISC-V Ztso Extension v1.0.0](https://github.com/riscv/riscv-ztso/releases/tag/v1.0.0) — 全存储序扩展规范
+- [RISC-V Sscofpmf Extension v1.0.0](https://github.com/riscv/riscv-sscofpmf/releases/tag/v1.0.0) — 计数器溢出中断扩展规范
+
+---
 
 → 下一节：[特权模式与 CSR](../03-privileged/privileged-modes-and-csr.md)

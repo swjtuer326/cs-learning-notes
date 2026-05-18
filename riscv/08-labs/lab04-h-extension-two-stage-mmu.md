@@ -315,7 +315,7 @@ cat trace
 | 要点 | 说明 |
 |------|------|
 | 两阶段翻译 | vsatp（GVA→GPA）+ hgatp（GPA→HPA） |
-| Sv39x4 | 第二阶段专用，3 级页表（根页表 1024 项），1TB GPA |
+| Sv39x4 | 第二阶段专用，3 级页表（根页表 1024 项），2 TB GPA |
 | VMID | TLB 标记，避免 VM 切换全刷 |
 | VM Exit/Entry | Guest trap → Host KVM 处理 → sret 返回 |
 | KVM API | /dev/kvm → KVM_CREATE_VM → KVM_CREATE_VCPU → KVM_RUN |

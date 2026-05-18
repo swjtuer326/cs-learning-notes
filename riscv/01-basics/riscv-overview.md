@@ -1,8 +1,26 @@
 # RISC-V 概览
 
-> RISC-V 是一个开源、模块化的指令集架构，正在改变芯片行业的游戏规则。本文从全局视角理解 RISC-V 的设计哲学与生态。
->
-> **工程师视角**：RISC-V 的"开源"不只是免费——它意味着你可以深入到底层，理解每一条指令的精确行为，甚至参与标准的制定。对于系统软件工程师，这消除了 x86/ARM 中常见的"黑盒困惑"：不再依赖厂商的手册猜测行为，而是直接阅读官方 Spec 和开源实现。
+## 学习目标
+
+完成本章学习后，你将能够：
+
+- 复述 RISC-V 从 2010 年伯克利项目到当今全球生态的发展脉络，理解"开放 ISA"模式的战略意义
+- 阐释 RISC-V 的五条核心设计原则（开源免费、模块化、简洁、稳定、可扩展）及其对软件生态的影响
+- 解析 `RV64IMAFDC` 命名规范的每一组成部分，列举至少 8 个标准扩展及其用途
+- 对比 RISC-V 与 ARM、x86 在授权模式、指令数量、特权级设计上的关键差异
+- 辨别 RISC-V 与 OpenRISC、SPARC、MIPS 的历史分岔——理解为什么前人未能成功而 RISC-V 成功了
+- 描述 RISC-V 软件与硬件生态的全景（工具链、模拟器、芯片实现），并按场景匹配合适的 Profile
+- 解释 RVA22/RVA23 Profile 的扩展组成，判断给定 Profile 是否适合服务器或 AI 推理场景
+
+## 为什么 RISC-V 值得深入学习？
+
+RISC-V 的"开源"不只是免费——它意味着你可以深入底层，理解每一条指令的精确行为，甚至参与标准的制定。对于系统软件工程师，这消除了 x86/ARM 中常见的"黑盒困惑"：不再依赖厂商手册猜测行为，而是直接阅读官方规范与开源实现。
+
+更具体地说：
+
+- **职业价值**：从 NVIDIA GPU 管理核心到 Western Digital SSD 控制器，从 ESP32-C3 到 64 核香山服务器——RISC-V 已渗透进每一个计算层次。掌握它，你就掌握了一张覆盖从 MCU 到云服务器的技术通行证。
+- **学习价值**：RISC-V 基础指令集仅 40 条，你可以在一个学期内完整理解一条指令从取指到写回的全过程——在 x86（1500+ 条指令）上几乎不可能做到同等深度的掌握。
+- **创新价值**：开放的 ISA 意味着你可以按需求定制指令扩展（Domain-Specific Acceleration），这在封闭的 x86/ARM 生态中需要天价授权费或根本不可行。
 
 ### 前置知识
 
@@ -16,6 +34,7 @@
 ## 1. RISC-V 的起源
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 timeline
     title RISC-V 发展历程
     2010 : 伯克利 Krste Asanović 教授启动项目
@@ -36,6 +55,22 @@ timeline
 
 **核心人物：** David Patterson（RISC 概念提出者，2017 年图灵奖得主）和 Krste Asanović。
 
+### 1.1 前车之鉴：历史上的开放 ISA 为何未能成功？
+
+RISC-V 并非第一个"开放 ISA"。在它之前，至少有三个重要的开放架构尝试。理解它们的失败原因，有助于看清 RISC-V 的历史定位。
+
+| 架构 | 年代 | 开放方式 | 失败原因 | 与 RISC-V 的差异 |
+|------|------|----------|----------|-------------------|
+| **SPARC** | 1986 | Sun 将 SPARC V8/V9 定为开放标准，允许任何人实现兼容处理器 | 技术层面：寄存器窗口（Register Window）设计复杂，上下文切换代价高；商业层面：Sun 作为主导公司衰落，生态随之瓦解。SPARC 本质是"一家公司主导的开源" | RISC-V：基金会治理，无单一主导公司；放弃寄存器窗口设计，使用扁平的 32 寄存器模型 |
+| **MIPS** | 1985 | MIPS Technologies 授权 ISA，开放程度有限；2018 年 Wave Computing 宣布 MIPS Open，2020 年又关闭 | 商业摇摆：在开放与封闭之间反复，生态缺乏信任；技术层面：分支延迟槽（Branch Delay Slot）在深流水线时代成为负担 | RISC-V：从第一天起就明确"基础 ISA 永不改变"的承诺；无延迟槽设计，分支预测由微架构自行决定 |
+| **OpenRISC** | 2000 | 完全开源（GPL/LGPL），由开源社区维护 | 缺乏商业支持：没有芯片巨头采纳，工具链不成熟，限于学术圈；规范更新缓慢，版本迭代跟不上产业需求 | RISC-V：由学术界启动但迅速引入产业力量（Google、NVIDIA、Qualcomm 等均为会员）；基金会治理机制保证"中立、开放、快速迭代" |
+
+> **RISC-V 成功的三个关键因素：**（1）时机——2010 年代摩尔定律放缓，产业需要差异化而非通用微架构优化，开放 ISA 恰好满足定制化需求；（2）设计质量——Patterson 和 Asanović 是世界顶级的体系结构学者，RV32I 的设计经过了与 Chisel 硬件描述语言同步迭代的严格验证；（3）治理模型——从大学项目转型为瑞士注册的全球基金会，确保没有任何单一一国可以控制 ISA 的方向。
+
+### 1.2 本节摘要
+
+RISC-V 的起源故事说明：技术上的正确性只是必要条件，而非充分条件。SPARC 有技术（被 Fujitsu/Oracle 用于服务器 20 年），MIPS 有生态（SGI 工作站和 PlayStation），OpenRISC 有开放的初心——但它们都因为治理模式的缺陷而未能成为"全行业标准"。RISC-V 的成功是"正确的人、在正确的时间、用正确的治理机制"三者叠加的结果。
+
 ---
 
 ## 2. 设计哲学：为什么 RISC-V 与众不同？
@@ -44,11 +79,11 @@ timeline
 
 | 原则 | 说明 | 对比 x86/ARM |
 |------|------|--------------|
-| **开源免费** | 任何人都可以实现，无需授权费 | ARM 授权费高昂，x86 不开放 |
-| **模块化** | 极小的基础集 + 按需扩展 | ARM 版本碎片化，x86 历史包袱重 |
-| **简洁** | 基础指令集仅 40 条指令 | x86 有 1500+ 条指令 |
-| **稳定** | 基础 ISA 永不改变 | x86 不断追加新指令 |
-| **可扩展** | 支持自定义指令扩展 | ARM 需要授权才能扩展 |
+| **开源免费** | 任何人都可以实现，无需授权费 | ARM 需支付数百万美元授权费，x86 不开放授权 |
+| **模块化** | 极小的基础集 + 按需扩展，扩展可由社区提出 | ARM 扩展由 ARM Ltd. 单方定义，x86 全部集成不可拆分 |
+| **简洁** | 基础指令集仅 40 条 | x86 有 1500+ 条指令，ARMv8-A 约 300 条 |
+| **稳定** | 基础 ISA 一旦冻结永不改变 | x86 每代追加新指令以保证向后兼容 |
+| **可扩展** | 支持自定义指令扩展（通过预留编码空间） | ARM 需特殊授权，x86 不允许第三方扩展 |
 
 ### 2.2 一个类比
 
@@ -69,6 +104,8 @@ RISC-V 就像乐高积木：
   - 甚至可以自己设计新的积木块
   - 没人收你授权费
 ```
+
+**本节摘要：** RISC-V 的设计哲学可以浓缩为一句话——"给基础，不设限"。开源降低准入门槛，模块化避免"全有或全无"的臃肿，简洁让验证和实现成本可控，稳定保证软件投资不被废弃，可扩展则是 RISC-V 最独特的战略武器——它让 ISA 从"芯片公司规定游戏规则"变成"需求方也可以参与规则制定"。x86 是我们可以"用"的架构，ARM 是我们可以"买"的架构，RISC-V 才是我们可以"改"的架构。
 
 ---
 
@@ -116,6 +153,8 @@ RV64IMAFDC
 
 > **命名规则：** 标准扩展用单个大写字母，子扩展用 Z + 小写字母组合。这种命名方式使得扩展可以独立开发和验证。
 
+**本节摘要：** 模块化是 RISC-V 最核心的设计决策。I（整数基础）是不可动摇的地基；M/A/F/D/C 构成了通用计算的标准配置；V（向量）打开高性能计算的大门；而 Z* 子扩展则允许以极细的粒度添加功能而不破坏兼容性。理解这种分层，就能理解为什么同一个 RV64GC 二进制可以在 50 美分的微控制器和 5000 美元的服务器的 CPU 上同时运行。
+
 ---
 
 ## 4. RISC-V 与其他 ISA 的对比
@@ -151,11 +190,14 @@ add  [rax], rbx      # 直接对内存操作数做运算
 
 这种设计简化了指令解码和流水线实现，是 RISC 哲学的核心。
 
+**本节摘要：** RISC-V 与 ARM/x86 的对比不是"孰优孰劣"的简单结论，而是"不同历史阶段的产物"。x86 诞生于 1978 年，当时晶体管昂贵、编译器不成熟，CISC 的"一条指令干多件事"是有道理的；ARM 诞生于 1985 年，面向低功耗移动场景优化；RISC-V 诞生于 2010 年，受益于 30 年的 RISC 研究和编译器进步，可以从零开始做最干净的设计。选择 RISC-V 不是因为它"打败"了谁，而是因为它是目前唯一允许你在 ISA 层面自由创新的现代架构。
+
 ---
 
 ## 5. RISC-V 生态全景
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph TB
     subgraph sw ["软件生态"]
         OS[操作系统<br/>Linux/FreeRTOS/Zephyr]
@@ -267,6 +309,7 @@ RVA23 在 RVA22 基础上增加了向量扩展和更多子扩展：
 ### 7.4 Profile 对软件的意义
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph LR
     SRC[源代码] --> |"编译时指定<br/>-march=rv64gcv_zba_zbb_zbs"| BIN1[二进制]
     BIN1 --> |"运行在 RVA22 平台"| FAIL[❌ V 扩展指令<br/>可能不支持"]
@@ -339,21 +382,23 @@ endif
 
 ## 小结
 
-| 要点 | 说明 |
-|------|------|
-| RISC-V 是开源的 | 不需要授权费，任何人都可以实现 |
-| 模块化是核心 | 小基础集 + 按需扩展，像乐高积木 |
-| Load-Store 架构 | 只有 load/store 访问内存，简化流水线 |
-| 生态正在爆发 | 从 MCU 到服务器，全场景覆盖 |
-| 自定义扩展是杀手锏 | 可以针对特定领域优化，这是 x86/ARM 做不到的 |
-| **Profile 防碎片化** | RVA22/RVA23 定义服务器标准扩展组合 |
-| **服务器 = RVA22+** | 至少 RVA22，AI/HPC 需要 RVA23 |
+本章建立了 RISC-V 的全局认知框架，可以将所有要点归纳为一条主线：
+
+**历史维度**——RISC-V 不是第一个开放 ISA（SPARC、MIPS、OpenRISC 都尝试过），但它是第一个在正确的时机（摩尔定律放缓）、由正确的人（Patterson/Asanović）、以正确的治理模型（瑞士基金会）推动的开放 ISA。这一组合使它在诞生十年内完成了前人三十年未竟的事业。
+
+**设计维度**——五条原则形成了一个正反馈循环：开源 → 低成本实验 → 更多参与者 → 模块化设计检验 → 简洁性提升 → 更广泛的应用场景。这个循环是 RISC-V 从学术项目蜕变为产业标准的底层动力。
+
+**技术维度**——RV32I（40 条指令）→ RV64GC（通用计算）→ RVA22（服务器基线）→ RVA23（AI/HPC）构成了从简单到复杂的清晰进阶路径。Load-Store 架构、定长指令和扁平寄存器文件确保每一级都建立在坚实的基础上。
+
+**生态维度**——工具链（GCC/LLVM）、模拟器（QEMU/Spike）、固件（OpenSBI/U-Boot）和芯片实现（从 ESP32-C3 到香山）构成了一个完整的软件栈。RISC-V 不只是 ISA 规范，它是一个正在快速成熟的、从规格书到硅片的完整计算平台。
+
+> **一句话总结：** RISC-V 是首个在现代半导体产业背景下成功建立"开放 ISA 标准"的架构。它不是"免费版的 ARM"，而是一种全新的芯片设计范式——从"一家公司定义，所有人购买"转变为"社区共同定义，所有人自由实现"。
 
 ---
 
 ## 参考资料
 
-- [RISC-V Unprivileged ISA Spec v20240411](https://github.com/riscv/riscv-isa-manual/releases/tag/20240411) — 非特权 ISA 权威规范
+- [RISC-V Unprivileged ISA Spec v20260517](https://github.com/riscv/riscv-isa-manual/releases/tag/20260517) — 非特权 ISA 权威规范
 - [RISC-V International — Profiles](https://github.com/riscv/riscv-profiles) — RVA/RVM/RVH Profile 定义
 - [RISC-V International — Technical Overview](https://riscv.org/technical/specifications/) — 各扩展规范列表
 - [Calista Redmond (RISC-V CEO) — State of the Union 2024](https://riscv.org/blog/2024/12/) — 产业动态与生态展望

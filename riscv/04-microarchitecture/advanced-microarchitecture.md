@@ -1,8 +1,23 @@
 # 高级微架构
 
 > 5 级流水线是小学水平，超标量、乱序执行、多核才是现代高性能 CPU 的"高考题"。本章从系统软件工程师的视角，拆解这些技术的核心逻辑——你不需要自己造 CPU，但需要知道怎么写出让 CPU "跑得快" 的代码。
->
+
+## 为什么重要
+
+你对硬件的每一次"友好"编程，都是在对这些高级微架构机制说"谢谢"。当一个 4-wide 的超标量处理器在单个周期内同时执行你的两条不相关指令时，背后是寄存器重命名消除了假依赖，是 Tomasulo 算法在发射队列中精确唤醒了等待的指令；当你的多线程程序在 64 核机器上线性扩展时，背后是 MESI 协议在缓存行级别维护了一致性，是 store buffer 在默默地合并写操作。
+
+然而，这些机制的副作用也直接体现在 bug 上：伪共享（false sharing）导致缓存行在核心间来回乒乓、store-to-load 转发失败导致的内存序可见性问题、ROB 满导致的流水线阻塞——这些问题都不会在单核上暴露，却会在生产环境的多核机器上引发诡异的随机崩溃。理解本章内容，你就能从"我的代码为什么这么慢"升级到"我知道硬件在干什么"。
+
 > **工程师视角**：超标量和乱序执行对系统软件是"透明的"，但缓存一致性不是。当你写多核驱动或实现 RCU 锁时，必须清楚理解 Store Buffer、Cache Coherency Protocol 和 Memory Barrier 的交互。一个放错位置的 `fence`，可能导致其他核心看到 stale 数据——这种 bug 极难复现。
+
+## 学习目标
+
+- 区分超标量、乱序执行、多核、SMT 四种技术解决的问题和各自代价
+- 解释寄存器重命名如何通过消除 WAW/WAR 假依赖来扩大指令窗口
+- 描述 ROB（重排序缓冲）在"乱序执行、顺序提交"机制中的核心角色
+- 理解 MESI 协议的四种状态转换及其对系统软件编程的影响
+- 识别伪共享（false sharing）的成因与解决方案
+- 选择合适的代码模式来规避 Load-Use 停顿和分支预测失败
 
 ### 前置知识
 
@@ -16,6 +31,7 @@
 ## 1. 从 5 级流水线到高性能：性能提升路线图
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph LR
     subgraph perf ["性能提升路径"]
         A["5 级标量<br/>CPI ≈ 1"] --> B["超标量<br/>IPC > 1"]
@@ -41,6 +57,7 @@ graph LR
 ### 2.1 基本结构
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph TB
     FETCH["取指单元<br/>每周期取 N 条指令"]
     DECODE["译码单元<br/>每周期译码 N 条指令"]
@@ -97,6 +114,7 @@ mul  t7, t0, t8      # 等 t0 到达后执行
 ### 3.2 乱序执行的核心流程：顺序进，乱序做，顺序出
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph TD
     IN_ORDER1["顺序取指/译码"] --> RENAME["寄存器重命名"]
     RENAME --> IN_ORDER2["顺序写入发射队列和 ROB"]
@@ -145,6 +163,7 @@ graph TD
 内存操作需要特殊处理，因为它们之间可能存在地址依赖：
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph TB
     subgraph LSQ
         LD1["Load 0x1000<br/>地址已知<br/>✅ 可以执行"]
@@ -173,6 +192,7 @@ graph TB
 ### 5.1 MESI 协议：四状态状态机
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 stateDiagram-v2
     M: Modified（已修改）<br/>只有本 Cache 有此行<br/>内存数据过期
     E: Exclusive（独占）<br/>只有本 Cache 有此行<br/>与内存一致
@@ -222,6 +242,7 @@ stateDiagram-v2
 ### 6.1 典型多核 SoC 结构
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph TB
     subgraph Core0
         C0_L1I["L1 I-Cache"]
@@ -271,6 +292,7 @@ graph TB
 SMT（Intel 称 Hyper-Threading）让一个物理核心同时执行多个线程：
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph LR
     subgraph st ["单线程核心"]
         ST1["线程 A<br/>ALU 30% 利用率<br/>Cache 等待时空闲"]

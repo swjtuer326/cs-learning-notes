@@ -1,8 +1,23 @@
 # SoC 与系统设计
 
 > CPU 核心只是 SoC 的一部分。总线协议、中断控制器、调试接口等系统级设计同样重要。对系统软件工程师来说，理解 SoC 架构是写好固件和驱动的前提。
->
+
+## 为什么重要
+
+当你按下一个 RISC-V 开发板的 reset 键后，CPU 并不是第一个醒来的硬件。时钟 PLL 先锁定频率，复位控制器依次释放各模块，Debug Module 通过 JTAG 静默待命，CLINT 开始计时——这一切发生在第一条指令执行之前。你的固件如果不知道 AXI 总线的 VALID/READY 握手时序，就可能写出"偶尔挂死"的 DMA 驱动；如果没理解 PLIC 的 Claim/Complete 机制，中断就会悄悄地丢失。
+
+本章从 SoC 的"微型城市"全景图出发，深入讲解 AXI4 和 TileLink 两大总线协议的设计哲学，对比 CLINT、PLIC、AIA 三代中断控制器的演进路径，并覆盖 JTAG 调试、时钟复位、低功耗设计等系统软件工程师在日常 bring-up 中最频繁接触的模块。读完本章，你将能读懂设备树的地址映射，理解为什么 PLIC 的中断号在设备树里是 `interrupts = <5>`，并能在新芯片 bring-up 时自信地通过 JTAG 查验第一条指令是否正确执行。
+
 > **工程师视角**：SoC 设计决定了固件的上限。一个设计良好的中断控制器（如 AIA）可以让 Linux 驱动简洁高效；一个设计糟糕的总线交叉开关可能导致不可预测的延迟抖动。作为系统软件工程师，你虽然不改 RTL，但你需要能读懂设备树和地址映射，能在仿真环境中验证软件行为，能在 bring-up 阶段定位"是硬件问题还是软件问题"。
+
+## 学习目标
+
+- 在 SoC 框图中识别 CPU、总线、中断控制器、外设的功能边界
+- 区分 AXI4 的 5 个独立通道并解释 VALID/READY 握手机制
+- 对比 AXI 与 TileLink 在一致性支持上的设计差异
+- 解释 CLINT（本地定时器/软件中断）与 PLIC（全局外部中断）的分工
+- 描述 JTAG 调试链如何通过 DTM → DM → Core 控制处理器
+- 列举 bring-up 一个新 SoC 的典型 8 步流程
 
 ### 前置知识
 
@@ -16,6 +31,7 @@
 ## 1. SoC 的组成：一座微型城市
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph TB
     subgraph SoC
         CPU0["CPU Core 0"]
@@ -64,6 +80,7 @@ graph TB
 ### 2.1 AMBA 总线家族（ARM 定义，RISC-V 广泛使用）
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph LR
     subgraph amba ["AMBA 总线层次"]
         AHB["AHB<br/>高速总线<br/>CPU/DDR/DMA"]
@@ -167,6 +184,7 @@ TileLink 是 Rocket Chip 使用的缓存一致性总线协议：
 ### 4.1 RISC-V Debug 规范
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph LR
     HOST["调试主机<br/>GDB / OpenOCD"] --> |"USB"| JTAG["JTAG 适配器"]
     JTAG --> |"JTAG/SB"| DM["Debug Module<br/>芯片内部"]

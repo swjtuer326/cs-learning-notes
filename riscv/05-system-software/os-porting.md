@@ -1,8 +1,24 @@
 # 操作系统移植
 
 > 将操作系统运行在 RISC-V 上是系统软件工程师的核心能力。本文以 Linux 为主，讲解移植的关键步骤。
->
+
+## 为什么重要
+
+从 OpenSBI 把 `a0=hartid` 和 `a1=FDT地址` 塞进寄存器跳转到内核的那一刻起，操作系统移植的每一个环节都在考验你对硬件的理解深度：`setup_vm()` 必须同时建立恒等映射和内核虚拟地址映射，否则启用 MMU 的下一条指令就会页错误；`_trap_entry` 汇编中如果忘记保存 `s0-s11`，进程上下文切换就会静默地损坏数据；PLIC 驱动中如果漏掉 Claim/Complete 配对，外部中断就会永久丢失。这些不是"可以后续优化"的点——它们是 OS 能不能启动的硬性条件。
+
+本章以 Linux 内核启动为主线，从 OpenSBI 传递的启动协议（a0/a1）出发，逐层讲解早期页表建立、MMU 启用、上下文切换、中断异常处理、定时器驱动、PLIC 驱动、设备树解析的全流程，最后对比 RTOS（Zephyr/FreeRTOS）移植的简化路径。读完本章，你应当能在 QEMU 上跑通一个最小内核，或在拿到新的 RISC-V SoC 时按照 bring-up 流程让 Linux 启动到 shell。
+
 > **工程师视角**：OS 移植不是"一次性任务"，而是持续迭代的过程。从 bring-up 阶段的"串口输出第一个字符"，到生产环境的"NUMA 调度优化"，每个阶段都需要深入理解硬件与软件的交互边界。
+
+## 学习目标
+
+- 描述 OpenSBI → Linux 内核的启动协议（a0/a1 寄存器约定）
+- 解释 `setup_vm()` 为何必须同时建立恒等映射和内核映射
+- 手写 RISC-V 上下文切换的汇编实现（保存/恢复 s0-s11, ra, sp, sepc, sstatus）
+- 实现 C 层异常分发函数（根据 scause 分发系统调用/页错误/中断）
+- 编写 PLIC 驱动程序：Claim → 处理 → Complete
+- 解析设备树节点以获取硬件寄存器基地址
+- 对比 Linux 移植与 RTOS 移植的复杂度差异
 
 ### 前置知识
 
@@ -17,6 +33,7 @@
 ## 1. 操作系统移植概览
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph TD
     A[OS 移植] --> B[早期初始化<br/>汇编入口]
     A --> C[内存管理<br/>页表/TLB]
@@ -49,6 +66,7 @@ OpenSBI/U-Boot 传递给 Linux 内核的参数：
 ### 2.2 内核入口流程
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph TD
     ENTRY["_start<br/>head.S"] --> DISABLE["禁止中断<br/>mie=0, sip=0"]
     DISABLE --> SAVE["保存 hartid 和 FDT<br/>s0=hartid, s1=FDT"]
@@ -130,6 +148,7 @@ struct pt_regs {
 ### 3.2 上下文切换流程
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 sequenceDiagram
     participant SCHED as 调度器
     participant A as 进程 A

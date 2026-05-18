@@ -1813,13 +1813,13 @@ riscv64-unknown-elf-gdb your-kernel.bin
 3. **检查 IMSIC eidelivery**
    ```c
    // eidelivery 必须为 1
-   assert(imsic_s_read(0x00) & 1);
+   assert(imsic_s_read(0x30) & 1);  // eidelivery 间接地址 0x30
    ```
 
 4. **检查中断优先级阈值**
    ```c
    // eithreshold 应该小于中断优先级
-   uint32_t threshold = imsic_s_read(0x04);
+   uint32_t threshold = imsic_s_read(0x31);  // eithreshold 间接地址 0x31
    uint32_t priority = get_interrupt_priority(source_id);
    assert(priority >= threshold);
    ```

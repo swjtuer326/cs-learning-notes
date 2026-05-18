@@ -7,6 +7,7 @@
 ## 学习路径
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph LR
     A[第一阶段<br/>基础入门] --> B[第二阶段<br/>指令集架构]
     B --> C[第三阶段<br/>特权架构 ⭐]

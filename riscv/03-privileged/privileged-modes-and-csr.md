@@ -4,6 +4,18 @@
 >
 > **工程师视角**：特权模式不仅是"权限分级"，更是故障隔离的最后一道防线。当用户态程序触发非法指令时，CPU 自动切换到 S-mode 处理；当 S-mode 遇到无法处理的异常时，M-mode 的固件接管。理解这个"升级"流程，是调试"神秘重启"和"权限违规"问题的关键。
 
+### 学习目标
+
+读完本文后，你将能够：
+
+- **区分** RISC-V 的五个运行模式（M/HS/VS/VU/U）及其分工
+- **理解** CSR 地址编码规则：12 位地址如何编码权限与读写属性
+- **掌握** CSR 读写指令（csrrw/csrrs/csrrc）及其原子操作特性
+- **解释** mstatus 各控制位（MPP/MPIE/MIE 等）在 trap 进入/返回时的作用
+- **说明** mtvec/mepc/mcause/mtval 四个寄存器在 trap 处理流程中各自承担的角色
+- **理解** 委托机制（medeleg/mideleg）如何将 M-mode trap 下放给 S-mode
+- **描述** satp 寄存器如何作为页表翻译的入口
+
 ### 前置知识
 
 | 需要了解 | 参考文档 |
@@ -18,20 +30,24 @@
 RISC-V 定义了三级特权模式（M/S/U）；H 扩展在 S-mode 基础上增加虚拟化支持，新增 VS 和 VU 两个虚拟化模式，共五个运行模式：
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph TB
     M["Machine Mode (M)<br/>最高特权级<br/>完全控制硬件"]
     HS["HS-mode (Hypervisor Extended S)<br/>Hypervisor / Host OS<br/>管理虚拟机和两阶段翻译"]
+    S["S-mode (Supervisor)<br/>操作系统内核<br/>管理虚拟内存与进程"]
     VS["VS-mode (Virtual Supervisor)<br/>Guest OS 内核<br/>与 S-mode 视角相同，但受限"]
     VU["VU-mode (Virtual User)<br/>Guest 用户程序<br/>与 U-mode 视角相同"]
     U["User Mode (U)<br/>用户程序<br/>受限访问"]
 
-    M --> |"委托"| HS
-    HS --> |"sret (SPV=1)"| VS
-    VS --> |"sret"| VU
-    HS --> |"ecall"| U
+    M --> |"mret → S/HS"| HS
+    M --> |"mret → S/HS"| S
+    S --> |"sret → U<br/>ecall → S"| U
+    HS --> |"sret → VS<br/>ecall → HS"| VS
+    VS --> |"sret → VU<br/>ecall → VS"| VU
 
     style M fill:#ff6b6b,color:#fff
     style HS fill:#ffa502,color:#fff
+    style S fill:#ffa502,color:#fff
     style VS fill:#4ecdc4,color:#fff
     style VU fill:#a4b0be,color:#333
     style U fill:#4ecdc4,color:#fff
@@ -79,10 +95,12 @@ U-mode = 普通员工
 
 > **服务器场景重点：** 在服务器虚拟化场景中，HS-mode 运行 Host Linux + KVM，VS-mode 运行 Guest OS，VU-mode 运行 Guest 用户态。理解 HS/VS/VU 的关系是掌握 RISC-V 服务器虚拟化的基础。详见 [虚拟化专题](./virtualization.md)。
 
+> **本节要点：** RISC-V 的特权模式本质上是按责任分层：M-mode 充当"硬件的代理人"处理所有平台级事务，S/HS-mode 作为"系统管理者"调度资源与进程，U/VU-mode 是普通的用户程序。H 扩展的 VS/VU 并非新增物理模式，而是通过 hstatus.SPV 位在现有的 S/U 编码上叠加一层虚拟化语境。这层设计让 Guest OS 以为自己运行在真正的 S-mode，实际上每次敏感操作都会被 Hypervisor 拦截。
+
 ---
 ## 2. CSR 寄存器地址编码
 
-理解了特权级的角色分工之后，接下来需要认识每个特权级的具体"工具箱"——CSR（Control and Status Register，控制与状态寄存器）。这些寄存器是 CPU 内部的特权资源，不同特权级只能访问属于自己的 CSR，硬件通过地址编码来强制这个访问规则。
+理解了特权级的角色分工之后，接下来需要认识每个特权级控制的硬件资源——CSR（Control and Status Register，控制与状态寄存器）。CSR 是 CPU 内部的特权寄存器，不同特权级只能访问属于自己的 CSR，硬件通过地址编码来强制这个访问规则。
 
 CSR 地址是 12 位（0x000 - 0xFFF），编码规则如下：
 
@@ -106,9 +124,9 @@ CSR 地址: [11:10] [9:8] [7:0]
 | 地址范围 | 权限 | 类型 | 举例 |
 |----------|------|------|------|
 | 0x000-0x0FF | U 级 | 读/写 | fflags, frm, fcsr |
-| 0x100-0x1FF | S 级 | 读/写 | sstatus, sepc, stvec |
-| 0x200-0x2FF | VS 级 / S 级只读 | 读/写 | vsstatus, vsepc, vstvec |
-| 0x300-0x3FF | M 级 | 读/写 | mstatus, mepc, mtvec |
+| 0x100-0x1FF | S 级 | 读/写 | sstatus, sepc, stvec, satp |
+| 0x200-0x2FF | VS 级 | 读/写 | vsstatus, vsepc, vstvec, vsatp |
+| 0x300-0x3FF | M 级 | 读/写 | mstatus, mepc, mtvec, medeleg |
 | 0x400-0x4FF | M 级 | 只读 | mvendorid, marchid, mimpid, mhartid |
 | 0x500-0x5FF | M 级 | 只读 | mhpmcounter3-31 等 |
 | 0x600-0x6FF | HS 级 | 读/写 | hstatus, hgatp, hideleg, hie |
@@ -117,7 +135,10 @@ CSR 地址: [11:10] [9:8] [7:0]
 
 > **访问规则：** 低特权级不能访问高特权级的 CSR，否则触发非法指令异常。高特权级可以访问低特权级的 CSR。
 
+> **本节要点：** CSR 地址编码是把"谁有权访问什么"固化在硬件中的精妙设计——你不需要查手册就能从地址的 bit[11:10] 推断一个寄存器属于哪个特权级。0x3xx 系列的 M-mode CSR 是整个特权体系的核心控制面；0x1xx 系列的 S-mode CSR 是操作系统内核的日常工作面板。记住这个规律，读代码时看到 `csrw 0x300, t0` 就能立刻意识到这是 M-mode 的操作。
+
 ---
+
 ## 3. CSR 指令
 
 了解了 CSR 的地址编码规则后，还需要知道如何读写它们。RISC-V 提供了专门的 CSR 指令集，支持原子读写、置位和清位操作，这些都是操作 CSR 的唯一途径。
@@ -164,6 +185,12 @@ RV64 mstatus 布局（关键位）:
 ┌───────────┬─────┬─────┬─────┬─────┬─────┬─────┬───────┬───────┬─────┬─────┬─────┬─────┬─────┬─────┬─────┬─────┬─────┬─────┐
 │  SD  ...  │ SXL │ UXL │ SBE │ MBE │  ... │ MPRV │  ...  │  MPP  │ SPP │ MPIE│  ... │ SPIE│ UPIE│ MIE │  ... │ SIE │ UIE │
 └───────────┴─────┴─────┴─────┴─────┴─────┴─────┴───────┴───────┴─────┴─────┴─────┴─────┴─────┴─────┴─────┴─────┴─────┴─────┘
+  ...        35:34 33:32                17               12:11    8     7           5     4     3           1     0
+
+  关键控制位（补充）:
+  MXR [19]  = Make eXecutable Readable（允许从不可读页面加载）
+  SUM [18]  = Supervisor User Memory access（允许 S-mode 访问 U-mode 页面）
+  MPRV[17]  = Modify PRiVilege（load/store 使用 MPP 指定的特权级）
 ```
 
 | 位域 | 名称 | 说明 |
@@ -175,6 +202,8 @@ RV64 mstatus 布局（关键位）:
 | **MPP** [12:11] | M-mode 特权级保存 | trap 前的特权级（00=U, 01=S, 11=M） |
 | **SPP** [8] | S-mode 特权级保存 | trap 前的特权级（0=U, 1=S） |
 | **MPRV** [17] | 内存特权 | 1=load/store 使用 MPP 指定的特权级 |
+| **MXR** [19] | 可执行可读 | 1=允许从标记为不可读的页面加载数据（配合 SVM） |
+| **SUM** [18] | 监管者用户访问 | 1=允许 S-mode 访问用户态页面（需 PTE.U=1） |
 | **SXL** [35:34] | S-mode XLEN | RV64=10, RV32=01 |
 | **UXL** [33:32] | U-mode XLEN | RV64=10, RV32=01 |
 
@@ -185,12 +214,12 @@ RV64 mstatus 布局（关键位）:
 ```
 mtvec 布局:
 
-  XLEN-1          6 5        2 1     0
-┌───────────────────┬──────────┬───────┐
-│     BASE          │   ...    │ MODE  │
-└───────────────────┴──────────┴───────┘
+  XLEN-1                              2 1     0
+┌─────────────────────────────────────┬───────┐
+│              BASE[63:2]             │ MODE  │
+└─────────────────────────────────────┴───────┘
 
-MODE:
+MODE [1:0]:
   00 = Direct:    所有异常跳转到 BASE
   01 = Vectored:  中断跳转到 BASE + 4×cause，异常跳转到 BASE
 ```
@@ -243,6 +272,10 @@ mcause 布局:
 | 12 | 0 | 指令页错误 |
 | 13 | 0 | 加载页错误 |
 | 15 | 0 | 存储/AMO 页错误 |
+| 16 | 0 | 双重 trap（Double Trap） |
+| 17 | 0 | 保留 |
+| 18 | 0 | 软件检查（Software Check） |
+| 19 | 0 | 硬件错误（Hardware Error） |
 | 3 | 1 | M-mode 软件中断 |
 | 7 | 1 | M-mode 定时器中断 |
 | 11 | 1 | M-mode 外部中断 |
@@ -250,25 +283,28 @@ mcause 布局:
 ### 4.5 mie / mip — 中断使能 / 中断等待
 
 ```
-mie / mip 布局（关键位）:
+mie / mip 布局（标准位，bits 15:0）:
 
-  11    9    8    7    5    4    3    1
-┌─────┬────┬────┬────┬────┬────┬────┬────┐
-│ MEIE│ SEIE│  - │ MTIE│ STIE│  - │ MSIE│ SSIE│
-└─────┴────┴────┴────┴────┴────┴────┴────┘
+  13    11    9    7    5    3    1
+┌─────┬─────┬────┬────┬────┬────┬────┐
+│LCOFI│ MEIE│ SEIE│MTIE│STIE│MSIE│SSIE│
+└─────┴─────┴────┴────┴────┴────┴────┘
 
-  MEIE = M-mode External Interrupt Enable
-  MTIE = M-mode Timer Interrupt Enable
-  MSIE = M-mode Software Interrupt Enable
-  SEIE = S-mode External Interrupt Enable
-  STIE = S-mode Timer Interrupt Enable
-  SSIE = S-mode Software Interrupt Enable
+  LCOFIE = Local Counter Overflow Interrupt Enable（Sscpmf 扩展）
+  MEIE   = M-mode External Interrupt Enable
+  MTIE   = M-mode Timer Interrupt Enable
+  MSIE   = M-mode Software Interrupt Enable
+  SEIE   = S-mode External Interrupt Enable
+  STIE   = S-mode Timer Interrupt Enable
+  SSIE   = S-mode Software Interrupt Enable
 ```
 
 > **中断触发的三要素：** 中断真正触发需要同时满足三个条件：
 > 1. `mip` 对应位 = 1（中断信号存在）
 > 2. `mie` 对应位 = 1（中断被使能）
 > 3. `mstatus.MIE` = 1（全局中断使能）
+>
+> **注意：** 当中断委托给 S-mode 时（`mideleg` 对应位=1），中断是否触发还需检查 `sie`（而非 `mie`）和 `sstatus.SIE`（而非 `mstatus.MIE`）。详见 [中断与异常](./interrupts-and-exceptions.md) 中的中断路由部分。
 
 ### 4.6 mscratch — 机器暂存寄存器
 
@@ -291,11 +327,13 @@ csrrw  sp, mscratch, sp    # 交换 sp 和 mscratch
 | 页错误 | 出错的地址 |
 | 其他 | 0（或实现自定义） |
 
+> **本节要点：** M-mode 的六个核心 CSR 形成了一个互补的体系：mstatus 控制当前 CPU 状态（特权级、中断使能），mtvec 决定 trap 发生后跳到哪里，mepc/mcause/mtval 在 trap 发生时被硬件自动填充（保存 PC、原因、附加信息），mscratch 为软件提供临时存储。理解这个"三保存一定位"的模式（保存 PC/cause/value，定位 handler），就掌握了 RISC-V trap 机制的骨架。
+
 ---
 
 ## 5. S-mode 核心 CSR 详解
 
-M-mode 的 CSR 是固件的核心工具箱，而操作系统内核（S-mode）也需要自己的特权资源来管理用户程序。S-mode 的 CSR 与 M-mode 大致对称，前缀从 `m` 改为 `s`：
+M-mode 的 CSR 控制着中断使能、异常处理等全局状态（详见第 4 节），而操作系统内核（S-mode）也需要一套对称的 CSR 来管理用户程序。S-mode 的 CSR 与 M-mode 结构一致，前缀从 `m` 改为 `s`：
 
 | M-mode CSR | S-mode CSR | 说明 |
 |------------|------------|------|
@@ -345,6 +383,8 @@ PPN:  页表根节点的物理页号
 
 > **satp 写入后不会立即生效！** 需要执行 `sfence.vma` 指令来刷新 TLB。
 
+> **本节要点：** S-mode 的 CSR 几乎与 M-mode 一一对称（m→s 前缀替换），这是 RISC-V 特权架构的优雅之处——学会一套，两套都会。唯一的例外是 satp，它只在 S-mode 有意义：M-mode 不使用虚拟内存。satp 的 MODE 字段决定地址翻译的模式（Sv39/Sv48/Sv57），是 MMU 的"总开关"。更多页表细节见 [内存管理](./memory-management.md)。
+
 ---
 
 ## 6. 特权级切换
@@ -354,6 +394,7 @@ PPN:  页表根节点的物理页号
 ### 6.1 特权级提升（trap 进入）
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 stateDiagram-v2
     [*] --> U: 正常执行
     U --> S: ecall / 异常 / 中断
@@ -443,6 +484,7 @@ mideleg 示例:
 ```
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph TD
     TRAP[Trap 发生] --> CHECK{检查委托寄存器}
     CHECK --> |"已委托<br/>medeleg/mideleg 对应位=1"| S[S-mode 处理]
@@ -475,6 +517,7 @@ csrw    mideleg, t0
 在虚拟化场景中，存在两级委托链：
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph TD
     TRAP[Trap 发生] --> Q1{"M-mode 委托?"}
     Q1 --> |"medeleg/mideleg=1"| HS[HS-mode 处理]
@@ -495,6 +538,8 @@ graph TD
 | HS → VS | `hedeleg` / `hideleg` | HS 委托给 VS | Hypervisor 将部分异常/中断直接交给 Guest |
 
 > **注意：** VS-mode 不能处理所有异常。例如 I/O 访问、第二阶段页错误等必须由 HS-mode 处理（模拟设备或分配物理页），这些异常不应委托给 VS-mode。
+
+> **本节要点与回顾：** 特权级切换和委托是同一个机制的两面。第 6 节讲了"切换"——trap 发生时硬件保存 MPP/SPP 等信息，mret/sret 时恢复；第 7 节讲了"委托"——M-mode 可以决定哪些 trap 不自己处理而是交给 S-mode。实际系统中，OpenSBI 会将大多数异常和中断委托给 Linux（S-mode），自己只保留 M-mode ecall 和平台级硬件故障的处理权。这种"M-mode 做减法、S-mode 做加法"的分工是 RISC-V 系统软件的核心理念。
 
 ---
 
@@ -541,8 +586,8 @@ graph TD
 
 ## 参考资料
 
-- [RISC-V Privileged Architecture Spec v1.12](https://github.com/riscv/riscv-isa-manual/releases/tag/Priv-v1.12) — 特权架构权威文档
-- [RISC-V S-Mode Spec v1.12](https://github.com/riscv/riscv-isa-manual/releases/tag/Priv-v1.12) — S 模式 CSR 与 ecall 定义
+- [RISC-V Privileged Architecture Spec v1.13](https://github.com/riscv/riscv-isa-manual/releases/tag/Priv-v1.13) — 特权架构权威文档
+- [RISC-V S-Mode Spec v1.13](https://github.com/riscv/riscv-isa-manual/releases/tag/Priv-v1.13) — S 模式 CSR 与 ecall 定义
 - [RISC-V Debug Spec v1.0](https://github.com/riscv/riscv-debug-spec/releases/tag/1.0.0-STABLE) — D-mode 调试模式规范
 
 ---

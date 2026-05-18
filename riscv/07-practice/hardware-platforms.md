@@ -1,8 +1,22 @@
 # 硬件平台与前沿方向
 
 > 从开发板选型到前沿研究，RISC-V 生态正在快速演进。了解硬件平台和未来方向，有助于规划学习和职业路径。
->
+
+## 为什么重要
+
+RISC-V 最令人兴奋的地方不是"又多了一种指令集"——而是你第一次可以用 5 块钱买到一颗 RV32EC 芯片（CH32V003），用 80 美元买到一台可以跑完整 Linux 的四核 RISC-V 单板机（VisionFive 2），用一万块买到一台 64 核的 RISC-V 服务器（Milk-V Pioneer）。这种从 MCU 到服务器全覆盖的硬件生态，在 ARM 和 x86 的世界里从未以如此开放的方式存在过。
+
+但选择多了也意味着决策成本上升：你是用 ESP32-C3 入门还是直接上 VisionFive 2？做边缘 AI 推理该选 Milk-V Duo（双核 RV64 + 小 NPU）还是等带向量扩展 V 的芯片？做 Chiplet 研究该关注 UCIe 互连标准还是 RISC-V 的 TileLink 一致性协议？本章以"按需求选板子"为主线，按入门/中端/高端/服务器四档整理当前主流 RISC-V 开发板，同时覆盖前沿方向（高性能计算、AI 加速器、Chiplet、安全可信计算）和学习路线建议。
+
 > **工程师视角**：选择硬件平台不是"买最贵的"，而是"买最适合当前阶段的"。入门时 ESP32-C3 足够理解指令集；做 Linux 驱动开发时需要 VisionFive 2；而调试服务器级芯片的固件问题，QEMU 往往比真实硬件更高效。
+
+## 学习目标
+
+- 根据学习和项目需求选择合适的 RISC-V 开发板（入门/中端/高端/服务器）
+- 区分 ESP32-C3（RV32IMAC MCU）与 VisionFive 2（RV64GC Linux SBC）的适用场景
+- 了解 RISC-V 前沿方向：向量扩展 V、Chiplet 互连、数据中心部署
+- 规划从 ISA 基础到 Linux 驱动开发的 20 周学习路线
+- 利用 RISC-V 社区资源（PLCT Lab、OSPP、邮件列表）持续学习
 
 ### 前置知识
 
@@ -19,6 +33,7 @@
 ### 1.1 按需求选择
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph TD
     Q{你的目标？} --> |"学习 ISA/汇编"| ENTRY["入门级<br/>ESP32-C3 / CH32V003<br/>几十元"]
     Q --> |"RTOS 开发"| MID["中端<br/>VisionFive 2 / Milk-V Duo<br/>几百元"]
@@ -97,6 +112,7 @@ graph TD
 ### 3.1 RISC-V 高性能计算
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph LR
     subgraph cur ["当前"]
         C1["64 核服务器<br/>SG2042"]
@@ -171,6 +187,7 @@ Chiplet:
 ### 4.1 系统软件工程师路线
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph TD
     W1["第 1-2 周<br/>ISA 基础<br/>汇编编程"]
     W2["第 3-4 周<br/>特权架构<br/>CSR + Trap"]
@@ -244,3 +261,7 @@ graph TD
 - [Kendryte K230 Documentation](https://www.canaan.io/products/k230) — 国产端侧 AI 芯片
 - [UCIe Consortium Spec v1.1](https://www.uciexpress.org/) — Chiplet 互连标准
 - [RISC-V International — Ratification Process](https://wiki.riscv.org/display/HOME/Policies) — 扩展规范化流程
+
+---
+
+→ 实验：[Lab 1 — 裸机中断框架](../08-labs/lab01-baremetal-trap-handler.md)

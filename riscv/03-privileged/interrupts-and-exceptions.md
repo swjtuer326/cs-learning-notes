@@ -4,6 +4,18 @@
 >
 > **工程师视角**：中断不是"异步事件"那么简单。在服务器 SoC 中，一个网络包到达后，从网卡 DMA → PLIC 仲裁 → CPU 中断 → 内核协议栈处理，全链路的延迟决定了系统吞吐。理解每个环节，是性能优化的起点。
 
+### 学习目标
+
+读完本文后，你将能够：
+
+- **区分** 中断与异常：异步 vs 同步、mepc 指向被中断指令 vs 触发指令
+- **复述** trap 发生时硬件自动完成的 7 步原子操作及其顺序
+- **编写** 完整的 M-mode trap handler：上下文保存 → 原因分发 → 上下文恢复 → mret
+- **理解** CLINT 和 PLIC 的分工：本地中断 vs 外部设备中断
+- **描述** PLIC 的 Claim/Complete 机制如何保证中断不丢失
+- **说明** 中断委托（mideleg）如何让 S-mode 直接处理中断
+- **解释** ecall 如何实现系统调用：参数在 a7，返回值在 a0
+
 ### 前置知识
 
 | 需要了解 | 参考文档 |
@@ -17,6 +29,7 @@
 ## 1. Trap 的分类
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph TB
     TRAP[Trap] --> INT[中断 Interrupt<br/>异步，来自外部]
     TRAP --> EXC[异常 Exception<br/>同步，指令执行产生]
@@ -26,13 +39,13 @@ graph TB
     INT --> EXT_INT[外部中断<br/>PLIC 产生]
 
     EXC --> FAULT[故障 Fault<br/>可恢复]
-    EXC --> TRAP2[陷阱 Trap<br/>主动触发]
+    EXC --> SOFT[主动陷入<br/>软件主动触发]
     EXC --> ABORT[终止 Abort<br/>不可恢复]
 
     FAULT --> PG[缺页异常]
     FAULT --> ALIGN[地址不对齐]
-    TRAP2 --> ECALL[ecall 系统调用]
-    TRAP2 --> EBREAK[ebreak 断点]
+    SOFT --> ECALL[ecall 环境调用]
+    SOFT --> EBREAK[ebreak 断点]
     ABORT --> ILL[非法指令]
 
     style INT fill:#4ecdc4,color:#fff
@@ -46,6 +59,8 @@ graph TB
 | mepc 指向 | 被中断的指令（返回后重新执行） | 触发异常的指令（可能需要跳过） |
 | 典型用途 | I/O 响应、定时器、任务调度 | 系统调用、缺页处理、错误处理 |
 
+> **本节要点：** 中断和异常统称为 trap，区别仅在于触发源（外部 vs 指令）和时机（异步 vs 同步）。RISC-V 规范中，异常按严重程度分为三类：故障（可恢复，返回后重试原指令）、主动陷入（ecall/ebreak，返回后执行下一条）、终止（不可恢复，通常终止进程）。这个分类决定了 handler 返回前是否需要调整 mepc——故障不需要，主动陷入需要 mepc+=4。
+
 ---
 
 ## 2. Trap 处理完整流程
@@ -55,6 +70,7 @@ graph TB
 当 trap 发生时，硬件原子地完成以下操作：
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 sequenceDiagram
     participant HW as 硬件
     participant CSR as CSR 寄存器
@@ -95,7 +111,7 @@ trap_entry:
     csrr   a2, mtval            # 附加信息
 
     # 3. 判断中断还是异常
-    bgez   a0, handle_exception # bit[XLEN-1]=0 → 异常
+    bgez   a0, handle_exception # mcause[XLEN-1] == 0 → exception
 
 handle_interrupt:
     andi   a0, a0, 0x7FF        # 取异常码
@@ -125,6 +141,8 @@ trap_exit:
     mret                       # 返回
 ```
 
+> **本节要点：** Trap 处理由硬件和软件分工完成。硬件负责"原子保存"——在单步内完成 7 个操作，软件不需要锁或禁用中断。软件负责"分类分发"——读取 mcause 判断中断/异常类型，跳转到对应处理函数。这层分工意味着：只要正确保存和恢复上下文，trap handler 的编写就是机械的，不存在竞态窗口。
+
 ---
 
 ## 3. 中断控制器
@@ -136,6 +154,7 @@ trap handler 负责统一调度和分发，但实际的中断信号来源于硬�
 CLINT 处理**每个核心本地**的中断：
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph LR
     subgraph CLINT
         MSIP[msip 寄存器<br/>软件中断]
@@ -178,6 +197,7 @@ timer_setup:
 PLIC 处理**外部设备**的中断，支持多中断源、优先级和多核路由：
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph TB
     subgraph devs ["外部设备"]
         D1[UART]
@@ -220,6 +240,7 @@ graph TB
 **PLIC 处理流程：**
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 sequenceDiagram
     participant DEV as 外部设备
     participant PLIC as PLIC
@@ -257,6 +278,8 @@ void handle_external_interrupt() {
 }
 ```
 
+> **本节要点：** CLINT 和 PLIC 的分工很清晰——CLINT 管"每核自己的事"（核间通信、定时器），PLIC 管"外部设备的事"。PLIC 的 Claim/Complete 两步确认机制是理解外部中断处理的关键：Claim 是"读取并确认"，Complete 是"告诉 PLIC 我处理完了"。如果忘记 Complete，该中断源将永远无法再次触发。
+
 ---
 
 ## 4. 中断嵌套
@@ -264,6 +287,7 @@ void handle_external_interrupt() {
 RISC-V 默认进入 trap 时禁止中断，不支持嵌套。要实现中断嵌套，需要软件手动重新使能中断：
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph TD
     A["正常执行<br/>MIE=1"] --> |中断1| B["trap 处理1<br/>MIE=0, MPIE=1"]
     B --> |手动设置 MIE=1| C["中断嵌套使能"]
@@ -306,6 +330,7 @@ nested_trap_entry:
 ### 5.1 中断路由
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph TD
     INT[中断信号] --> MIDELEG{mideleg<br/>是否委托?}
     MIDELEG --> |是| S_MODE[S-mode 处理<br/>sip/sie/scause]
@@ -357,6 +382,8 @@ S-mode (Linux):
   6. sret 返回
 ```
 
+> **本节要点：** S-mode 的中断处理本质上是 M-mode 的镜像——sip/sie/scause/stvec 与 mip/mie/mcause/mtvec 一一对应。关键差异在于：S-mode 的中断是通过 mideleg 委托下来的，而 Sstc 扩展更进一步，让 S-mode 可以直接写 stimecmp 设置定时器，完全绕过 M-mode。在虚拟化场景中，vstimecmp 让 Guest 也能直接设置定时器，避免了 VS→HS→M 的多级 trap 开销。
+
 ---
 
 ## 6. ecall：系统调用的实现
@@ -364,6 +391,7 @@ S-mode (Linux):
 中断与异常都是被动触发的——前者来自外部，后者是执行错误。而 `ecall` 是软件主动请求特权级提升的唯一方式，也是用户态与内核之间唯一的合法"大门"。
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 sequenceDiagram
     participant U as User Mode
     participant S as Supervisor Mode
@@ -391,6 +419,8 @@ sequenceDiagram
     ecall                 # 进入内核
     # a0 = 返回值（写入的字节数或错误码）
 ```
+
+> **本节要点：** ecall 是唯一合法的"用户态→内核态"通道，也是理解系统调用机制的最小化模型。用户程序准备好调用号（a7）和参数（a0-a5），执行 ecall 后硬件自动将 CPU 提升到 S-mode，内核通过 a7 查表找到对应函数。返回前，内核必须手动 `sepc += 4` 跳过 ecall 指令本身，否则会无限循环——这是初学者最常犯的错误。
 
 ---
 
@@ -425,7 +455,7 @@ sequenceDiagram
 
 ## 参考资料
 
-- [RISC-V Privileged Architecture Spec v1.12 — Chapter 3 (Machine-Level ISA)](https://github.com/riscv/riscv-isa-manual/releases/tag/Priv-v1.12) — Trap 处理权威定义
+- [RISC-V Privileged Architecture Spec v1.13 — Chapter 3 (Machine-Level ISA)](https://github.com/riscv/riscv-isa-manual/releases/tag/Priv-v1.13) — Trap 处理权威定义
 - [RISC-V PLIC Spec v1.0.0](https://github.com/riscv/riscv-plic-spec/releases/tag/1.0.0) — 平台级中断控制器规范
 - [SBI Specification v3.0](https://github.com/riscv-non-isa/riscv-sbi-doc/releases/tag/v3.0) — Timer/IPI/HSM 等 SBI 调用定义
 

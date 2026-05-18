@@ -4,6 +4,17 @@
 >
 > **工程师视角**：启动流程不是"固定的顺序"，而是可配置的管道。在服务器 SoC 中，你可能需要从 SPI Flash 加载 Boot ROM → DDR 训练 → 加载 OpenSBI → 加载 U-Boot → 加载 Linux，任何一个环节出错都意味着"黑屏"。掌握每个阶段的调试技巧（如 JTAG 断点、串口早期输出）是 bring-up 工程师的核心竞争力。
 
+### 学习目标
+
+读完本文后，你将能够：
+
+- **描述** RISC-V 从复位到 Linux 运行的完整四阶段启动链
+- **理解** OpenSBI 三种运行模式（FW_DYNAMIC/FW_JUMP/FW_PAYLOAD）的适用场景
+- **解释** SBI 的调用约定：a7=EID, a6=FID，以及 legacy 与新式扩展的区别
+- **说明** 设备树（FDT）如何让同一份内核镜像适配不同硬件平台
+- **对比** 嵌入式启动（DTB）与服务器启动（UEFI+ACPI）的差异
+- **了解** Linux 内核在 head.S 中的早期初始化步骤：BSS 清零 → 页表建立 → MMU 使能
+
 ### 前置知识
 
 | 需要了解 | 参考文档 |
@@ -16,6 +27,7 @@
 ## 1. 启动阶段总览
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph LR
     PWR[上电复位] --> ROM[ROM Code<br/>固化在芯片内]
     ROM --> FW[固件<br/>OpenSBI / U-Boot SPL]
@@ -59,6 +71,8 @@ satp     = 0（裸模式，不使用虚拟内存）
 所有 CSR = 实现定义的默认值
 ```
 
+> **本节要点：** RISC-V 规范有意不固定复位向量地址，留给芯片设计者根据系统架构选择。但复位后的 CPU 状态是确定的——M-mode、中断全关、MMU 关闭。这个"裸 CPU"状态是所有固件的起点：OpenSBI 从这里接管，依次点亮硬件子系统，最终通过 mret 将 CPU 交给 S-mode 的 Linux。
+
 ---
 
 ## 3. OpenSBI：RISC-V 的标准固件
@@ -68,6 +82,7 @@ satp     = 0（裸模式，不使用虚拟内存）
 ### 3.1 OpenSBI 的三种运行模式
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph TB
     subgraph fwdyn ["FW_DYNAMIC / FW_JUMP"]
         M1["OpenSBI (M-mode)"] --> |"直接跳转"| S1["Bootloader<br/>U-Boot (S-mode)"]
@@ -98,6 +113,7 @@ graph TB
 ### 3.2 OpenSBI 初始化流程
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 sequenceDiagram
     participant ROM as ROM/ZSBL
     participant SBI as OpenSBI
@@ -128,7 +144,7 @@ void sbi_init(struct sbi_scratch *scratch) {
     csr_write(CSR_MIE, 0);
 
     // 3. 设置 PMP — 允许 S-mode 访问所有内存
-    csr_write(CSR_PMPADDR0, 0x3FFFFFFFFFFFFF);  // 整个地址空间
+    csr_write(CSR_PMPADDR0, 0x3FFFFFFFFFFFFFFF);  // 整个地址空间（NAPOT 编码：-1 >> 2）
     csr_write(CSR_PMPCFG0, (PMP_A_NAPOT | PMP_R | PMP_W | PMP_X));
 
     // 4. 委托中断给 S-mode
@@ -156,6 +172,8 @@ void sbi_init(struct sbi_scratch *scratch) {
 }
 ```
 
+> **本节要点：** OpenSBI 做的事情可以从它初始化的寄存器顺序中看出来：mtvec（先确定 trap 去哪）→ mie（关闭中断门）→ PMP（让 S-mode 能访问内存）→ mideleg/medeleg（把中断和异常的处理权交出去）→ mstatus.MPP + mepc（设置 mret 后的目的地）。这六步完成后，一个 mret 就让 CPU 从 M-mode 的"裸机环境"进入了 S-mode 的"操作系统环境"。FW_DYNAMIC 模式是服务器场景的首选，因为它允许前级固件动态传递启动参数。
+
 ---
 
 ## 4. SBI（Supervisor Binary Interface）
@@ -181,18 +199,30 @@ sbi_call:
 
 ### 4.2 常用 SBI 扩展
 
+SBI 扩展分为 **Legacy（旧式）** 和 **新式（v0.2+）** 两套编码。Legacy 扩展使用 EID 0x00-0x08，每个 EID 对应一个固定功能；新式扩展使用 EID ≥ 0x10，每个扩展下再用 FID 区分函数。现代软件应优先使用新式扩展。
+
+**Legacy 扩展（EID 0x00-0x08，已废弃但仍广泛支持）：**
+
 | EID | 扩展名 | 功能 |
 |-----|--------|------|
-| 0x10 | **sbi_set_timer** | 设置定时器（下次中断时间） |
-| 0x11 | **sbi_console_putchar** | 输出字符到控制台 |
-| 0x12 | **sbi_console_getchar** | 从控制台读取字符 |
-| 0x13 | **sbi_clear_ipi** | 清除 IPI（核间中断） |
-| 0x14 | **sbi_send_ipi** | 发送 IPI |
-| 0x15 | **sbi_remote_fence_i** | 远程指令缓存刷新 |
-| 0x16 | **sbi_remote_sfence_vma** | 远程 TLB 刷新 |
-| 0x17 | **sbi_remote_sfence_vma_asid** | 远程 TLB 按 ASID 刷新 |
-| 0x18 | **sbi_shutdown** | 关机 |
-| 0x4D44 | **sbi_dbcn** | 调试控制台（新规范） |
+| 0x00 | **sbi_set_timer** | 设置定时器（下次中断时间） |
+| 0x01 | **sbi_console_putchar** | 输出字符到控制台 |
+| 0x02 | **sbi_console_getchar** | 从控制台读取字符 |
+| 0x03 | **sbi_clear_ipi** | 清除 IPI（核间中断） |
+| 0x04 | **sbi_send_ipi** | 发送 IPI |
+| 0x05 | **sbi_remote_fence_i** | 远程指令缓存刷新 |
+| 0x06 | **sbi_remote_sfence_vma** | 远程 TLB 刷新 |
+| 0x07 | **sbi_remote_sfence_vma_asid** | 远程 TLB 按 ASID 刷新 |
+| 0x08 | **sbi_shutdown** | 关机 |
+
+**新式扩展（EID ≥ 0x10，推荐）：**
+
+| EID | 扩展名 | 功能 |
+|-----|--------|------|
+| 0x10 | **Timer** | 定时器（替代 legacy sbi_set_timer） |
+| 0x4442434E | **sbi_dbcn** | 调试控制台（替代 legacy putchar/getchar） |
+| 0x48534D | **HSM** | Hart 状态管理（启动/停止/暂停） |
+| 0x53525354 | **SRST** | 系统重置（关机/重启） |
 
 ```c
 // Linux 中使用 SBI 的示例
@@ -223,6 +253,8 @@ void sbi_set_timer(uint64_t stime_value) {
 }
 ```
 
+> **本节要点：** SBI 的本质是一套"M-mode 服务发现协议"——S-mode 通过 ecall 向 M-mode 请求服务，M-mode 根据 a7（扩展 ID）和 a6（函数 ID）分发。Legacy 扩展虽然简单但已被标记为废弃，新式扩展（Timer/HSM/SRST/DBcn）提供了更清晰的扩展性。SBI 的设计哲学是"M-mode 提供机制，S-mode 制定策略"——比如定时器中断由 M-mode 的硬件产生，但调度策略完全由 S-mode 的 Linux 控制。
+
 ---
 
 ## 5. Linux 启动流程
@@ -230,6 +262,7 @@ void sbi_set_timer(uint64_t stime_value) {
 ### 5.1 完整启动链
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph TD
     PWR[上电] --> ROM[ROM Code]
     ROM --> ZSBL[ZSBL<br/>Zero Stage Boot Loader]
@@ -318,6 +351,7 @@ start_kernel()
 Linux 的启动链涉及多级引导程序，步骤多、灵活性高。而 RTOS 面向的是资源受限的嵌入式场景，启动通常更直接——往往省去 Bootloader 阶段，固件直接从 ROM 跳转到 RTOS 本体。
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph LR
     PWR[上电] --> ROM[ROM Code]
     ROM --> RTOS[RTOS 固件<br/>直接运行]
@@ -347,6 +381,7 @@ Zephyr RISC-V 启动流程:
 ### 7.1 服务器启动 vs 嵌入式启动
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph TB
     subgraph embedded ["嵌入式启动（Device Tree）"]
         E1[ROM] --> E2[OpenSBI]
@@ -382,6 +417,7 @@ graph TB
 RISC-V 的 UEFI 实现基于 TianoCore EDK2，由社区维护：
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 sequenceDiagram
     participant ROM as ROM/Flash
     participant SBI as OpenSBI (M-mode)
@@ -452,6 +488,8 @@ qemu-system-riscv64 \
 ```
 
 > **服务器启动的关键差异：** 使用 `virtio-*-pci` 而非 `virtio-*-device`，因为 UEFI 模式下需要 PCIe 枚举。ACPI 模式下，内核不再依赖设备树，而是通过 ACPI 表发现硬件。
+
+> **本节要点：** UEFI+ACPI 与嵌入式 DTB 路径的核心差异在于标准化程度。嵌入式路径简单直接但每块板子需要单独的设备树；服务器路径复杂但硬件抽象化——ACPI 表将 CPU 拓扑、中断控制器、NUMA 节点、PCIe 拓扑等全部用标准数据结构描述，内核无需修改即可适配不同服务器。RISC-V 的 UEFI 实现（edk2）虽然仍处于追赶阶段，但已经能支撑完整的 Linux 启动流程。
 
 ---
 

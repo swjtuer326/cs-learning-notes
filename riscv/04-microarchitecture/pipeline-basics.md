@@ -1,8 +1,23 @@
 # 流水线基础
 
 > 如果把 CPU 比作一家工厂，流水线就是让不同工位同时开工的秘诀。理解流水线如何运作、哪里会"堵车"、如何疏通，是读懂现代处理器微架构的第一课。
->
+
+## 为什么重要
+
+现代处理器的性能核心秘密藏在一条不到 20 级的流水线里。不管你是写内核驱动、做编译器优化、还是调试性能瓶颈，流水线行为都是那条看不见的"隐形之手"：一段 C 代码有没有被编译器调度好，取决于目标 CPU 能不能通过转发（forwarding）消除 Load-Use 停顿；一个 `if` 语句该不该改成 `cmov`，取决于分支预测器在你这个场景下的准确率。
+
+本章从单周期处理器讲起，逐层递进到经典 5 级流水线的完整设计，覆盖三种流水线冒险（数据/控制/结构）及其解决策略。读完本章，你将能够解释现代 CPU 为什么需要分支预测器，理解编译器指令调度的目标是什么，并具备分析简单流水线性能的基本能力。
+
 > **工程师视角**：流水线冒险不只是考试题——在写内核自旋锁或设备驱动时，你的代码会直接在流水线上执行。Load-Use 冒险导致的停顿、分支预测失败导致的刷新，都会转化为可测量的性能损失。理解这些机制，才能写出"对流水线友好"的代码。
+
+## 学习目标
+
+- 解释单周期处理器为什么"又慢又浪费"
+- 描述经典 5 级流水线每阶段的工作内容和关键硬件
+- 区分三种流水线冒险：RAW/WAR/WAW 数据冒险、控制冒险、结构冒险
+- 解释转发（forwarding）和流水线停顿（stall）的工作原理及其取舍
+- 对比静态与动态分支预测策略，理解 2-bit 饱和计数器的状态机
+- 计算给定场景下流水线的 CPI 和加速比
 
 ### 前置知识
 
@@ -18,6 +33,7 @@
 单周期处理器就像一间手工作坊——来一件活，做完一件，再做下一件。每条指令在一个时钟周期内完成全部操作：
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph LR
     subgraph scalar ["单周期执行"]
         I1["指令1<br/>取指→译码→执行→访存→写回"]
@@ -42,6 +58,7 @@ graph LR
 5 级流水线把指令拆成 5 个工位，不同指令的不同工位可以重叠执行：
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph TD
     subgraph pipe ["5 级流水线"]
         IF["IF<br/>取指<br/>I-Cache"]
@@ -118,6 +135,7 @@ SUB:          [IF]  [ID]  [EX]  [MEM] [WB]
 不等写回，直接从流水线寄存器中拿结果：
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph LR
     EX1["ADD EX<br/>ALU 结果已出"] --> |"转发路径"| ID2["SUB EX<br/>直接使用"]
     EX1 --> MEM1["ADD MEM"]
@@ -190,6 +208,7 @@ BEQ:    [IF]  [ID]  [EX]  [MEM] [WB]
 ### 4.2 分支预测：猜一条路先走
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph TD
     FETCH[取指] --> PREDICT{分支预测}
     PREDICT --> |"预测不跳转"| CONTINUE[继续顺序取指]

@@ -11,6 +11,16 @@
 | RISC-V ISA 定位与模块化设计 | [RISC-V 概览](../01-basics/riscv-overview.md) |
 | CPU 寄存器文件与流水线概念 | [体系结构基础](../01-basics/computer-architecture-fundamentals.md) |
 
+### 学习目标
+
+读完本章后，你应该能够：
+
+1. **理解寄存器用途**：区分 caller-saved 和 callee-saved 寄存器，理解 x0 硬连线为 0 的设计意义
+2. **识别六种指令格式**：能一眼从编码中判断 R/I/S/B/U/J 类型，理解立即数为何打乱排列
+3. **使用完整 RV32I 指令集**：能独立编写包含算术、访存、分支、跳转的完整汇编程序
+4. **区分 RV32I 与 RV64I**：知道哪些指令是 RV64I 新增的，以及 W 后缀的语义
+5. **理解编码规律**：掌握 opcode 的低 2 位为何始终为 11，以及 funct3/funct7 如何复用
+
 ---
 
 ## 1. 寄存器文件
@@ -40,6 +50,7 @@ RISC-V 有 32 个通用寄存器（x0-x31），其中 x0 硬连线为 0。
 ### Caller-saved vs Callee-saved
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph LR
     subgraph caller ["Caller-saved 临时/参数"]
         T["t0-t6<br/>a0-a7<br/>ra"]
@@ -123,6 +134,19 @@ J-type 立即数编码（21-bit 有符号，bit 0 固定为 0）:
 
 > **为什么打乱？** 符号位（imm 的最高位）始终放在指令的最高位（bit 31），这样硬件做符号扩展时只需读取 bit 31，不需要从中间位提取。其他位的排列则尽量与 I/S-type 共享位位置，减少硬件多路选择器的复杂度。
 
+#### 六种格式如何覆盖全部指令？
+
+理解了格式之后，你可能会问：这些格式分别对应哪些指令？不妨在脑中建立这个映射：
+
+- **R-type** → 所有 "rd = rs1 OP rs2" 的运算：ADD, SUB, SLT, XOR…但 RV64I 的 W 后缀指令也复用了 R-type 格式（通过 funct7 区分 ADDW 和 SUBW）
+- **I-type** → 三类：立即数算术（ADDI, SLLI…）、加载（所有 L* 指令，包括 RV64I 的 LWU）、环境操作（CSR 读写）
+- **S-type** → 所有存储指令（SB, SH, SW, SD）。注意它牺牲 rs2 来提供第二个操作数，没有 rd 字段
+- **B-type** → 6 条条件分支。立即数为 ±4 KiB 范围，且最低位永远为 0（因为 RISC-V 支持压缩指令，但分支目标仍然需要 2 字节对齐）
+- **U-type** → LUI 和 AUIPC，仅两条。它们提供 20-bit 立即数左移 12 位的能力，是构造任意 32/64 位常数的"上半部分"
+- **J-type** → 仅 JAL，提供 ±1 MiB 跳转范围
+
+> **常见误区**：`JALR` 是 I-type 而非 J-type！它的立即数是 12-bit 有符号数，用于相对基址寄存器的偏移。
+
 ---
 
 ## 3. 指令详解
@@ -175,6 +199,7 @@ RISC-V 是 Load-Store 架构，只有这两类指令可以访问内存。
 | `LH rd, offset(rs1)` | 加载半字 | 16-bit | ✅ 符号扩展 |
 | `LHU rd, offset(rs1)` | 加载无符号半字 | 16-bit | ❌ 零扩展 |
 | `LW rd, offset(rs1)` | 加载字 | 32-bit | RV64 中符号扩展到 64 位 |
+| `LWU rd, offset(rs1)` | 加载无符号字（RV64） | 32-bit | 零扩展到 64 位 |
 | `LD rd, offset(rs1)` | 加载双字（RV64） | 64-bit | — |
 
 #### 存储指令（S-type）
@@ -249,6 +274,18 @@ lui   t0, 0x12346        # t0 = 0x12346000 (高 20 位 +1)
 addi  t0, t0, -1         # t0 = 0x12345FFF (-1 = 0xFFF 符号扩展)
 ```
 
+#### 指令集设计的几个关键权衡
+
+在进入速查表之前，值得停下来思考：为什么 RV32I 是这样设计的？理解这些"取舍"比死记硬背指令表更有价值：
+
+**为什么没有 MOV / NOT / NEG？** 因为 x0=0。`ADD rd, rs, x0` 就是 MOV，`XORI rd, rs, -1` 就是 NOT，`SUB rd, x0, rs` 就是 NEG。每减少一条专用指令，就减少一点译码逻辑的面积和延迟。
+
+**为什么只有 BEQ/BNE/BLT/BGE/BLTU/BGEU，而没有 BLE/BGT？** 交换操作数即可。`BLE rs1, rs2` 就是 `BGE rs2, rs1`。这保持了分支指令恰好 6 条，完美填满 funct3 的 3 个 bit（当然，不是全部编码都用满了——实际上还有 100 和 101 是保留的）。
+
+**为什么 SLLI/SRLI/SRAI 的移位量只用到低 5-bit（RV32）或低 6-bit（RV64）？** 因为寄存器的位宽就是 32 或 64，移位超过位宽没有意义。I-type 的立即数字段是 12-bit，移位指令只使用其中一部分，剩余高位被 funct7 复用——SLLI 的 funct7=0000000，SRLI=0000000，SRAI=0100000，通过 funct3 和 funct7 联合解码来区分。
+
+这些设计让 RV32I 的硬件解码器极其简洁——很大程度上，指令字中的每个 bit 位置都有固定含义，不需要复杂的多级译码。
+
 ---
 
 ## 4. RV32I 完整指令速查表
@@ -260,14 +297,14 @@ addi  t0, t0, -1         # t0 = 0x12345FFF (-1 = 0xFFF 符号扩展)
 │ 算术运算  │ ADD SUB ADDI SLT SLTU SLTI SLTIU            │
 │ 逻辑运算  │ AND OR XOR ANDI ORI XORI                    │
 │ 移位运算  │ SLL SRL SRA SLLI SRLI SRAI                  │
-│ 加载     │ LB LBU LH LHU LW                            │
-│ 存储     │ SB SH SW                                     │
-│ 条件分支  │ BEQ BNE BLT BGE BLTU BGEU                   │
-│ 跳转     │ JAL JALR                                     │
-│ 上位立即数│ LUI AUIPC                                    │
-│ 系统     │ ECALL EBREAK FENCE                           │
+│ 加载      │ LB LBU LH LHU LW                            │
+│ 存储      │ SB SH SW                                     │
+│ 条件分支   │ BEQ BNE BLT BGE BLTU BGEU                   │
+│ 跳转       │ JAL JALR                                    │
+│ 上位立即数 │ LUI AUIPC                                    │
+│ 系统       │ ECALL EBREAK FENCE                           │
 ├──────────┼──────────────────────────────────────────────┤
-│ 合计     │ 40 条指令（不含 Zicsr 和 Zifencei）         │
+│ 合计      │ 40 条指令（不含 Zicsr 和 Zifencei）         │
 └──────────┴──────────────────────────────────────────────┘
 ```
 
@@ -277,7 +314,7 @@ addi  t0, t0, -1         # t0 = 0x12345FFF (-1 = 0xFFF 符号扩展)
 
 ## 5. RV64I 的扩展
 
-RV64I 在 RV32I 基础上增加了 **W 后缀指令**，用于在 64 位寄存器上执行 32 位操作：
+RV64I 在 RV32I 基础上增加了 **W 后缀指令**（32 位运算并符号扩展至 64 位）、**64 位访存指令**、以及 **无符号字加载（LWU）**——后者是 RV64I 特有的指令，用于从内存读取 32 位无符号值并零扩展到 64 位：
 
 | 指令 | 功能 |
 |------|------|
@@ -290,16 +327,26 @@ RV64I 在 RV32I 基础上增加了 **W 后缀指令**，用于在 64 位寄存�
 | `SLLW rd, rs1, rs2` | 32 位逻辑左移，结果符号扩展 |
 | `SRLW rd, rs1, rs2` | 32 位逻辑右移，结果符号扩展 |
 | `SRAW rd, rs1, rs2` | 32 位算术右移，结果符号扩展 |
+| `LWU rd, offset(rs1)` | 加载无符号字（32-bit），零扩展到 64 位 |
 | `LD rd, offset(rs1)` | 加载双字（64-bit） |
 | `SD rs2, offset(rs1)` | 存储双字（64-bit） |
 
 > **W 的含义：** Word = 32 位。W 后缀指令只使用寄存器的低 32 位进行运算，然后将结果符号扩展到 64 位。这是为了兼容 32 位代码和 `int` 类型操作。
 
+#### LW vs LWU：理解有符号/无符号字加载的区别
+
+在 64 位环境中，从内存加载 32 位数据有两种方式：
+
+- **LW**：将 32 位数据符号扩展到 64 位。适用于 `int32_t` 类型的值（因为 C 语言的 `int` 是有符号的，扩展到 64 位时负数的 bit [63:32] 全是 1）
+- **LWU**：将 32 位数据零扩展到 64 位。适用于 `uint32_t` 类型的值（无符号扩展，bit [63:32] 全是 0）
+
+这也是为什么 RV64I 需要 LWU——RV32I 中寄存器就是 32 位的，不需要扩展；但在 RV64I 中，寄存器是 64 位的，需要明确指定"这个 32 位值是无符号的"。实际上，编译器在处理 `uint32_t` 变量时默认就会生成 LWU 而非 LW。
+
 ---
 
 ## 6. 指令编码规律
 
-RISC-V 的 opcode 编码有清晰的规律：
+理解了指令的功能之后，最后来看一下它们的编码规律。RISC-V 的 opcode 编码不是随意分配的，而是有清晰的设计模式——这使得硬件译码器更简单，也方便你快速识别反汇编输出中的指令类型：
 
 | opcode[4:0] | 类型 |
 |-------------|------|
@@ -320,19 +367,25 @@ RISC-V 的 opcode 编码有清晰的规律：
 
 ## 小结
 
-| 要点 | 说明 |
-|------|------|
-| 40 条指令足够 | RV32I 虽然精简，但图灵完备 |
-| x0=0 消除冗余 | 不需要 MOV、NOP、CLR 等专用指令 |
-| 格式规整 | 6 种格式，立即数符号位统一在 bit 31 |
-| Load-Store 架构 | 运算和访存分离，简化流水线 |
-| RV64 加 W 后缀 | 优雅地支持 32 位操作 |
+回顾本章的内容脉络：我们从**寄存器**出发，了解了 RISC-V 的 32 个通用寄存器和调用约定；然后进入**指令格式**——6 种格式如何以最少的硬件代价覆盖所有操作；接着逐类学习了**40 条 RV32I 指令**——算术逻辑、访存、分支跳转、立即数构造；最后扩展到 **RV64I 的 12 条新增指令**——W 后缀操作和 64 位访存。
+
+如果只记住几件事，那应该是这四点：
+
+**RV32I 只有 40 条指令，但它是图灵完备的。** 精简不是功能弱，而是设计克制。每一条指令的存在都有明确理由，不该有的指令都通过 x0 或操作数交换来"免费"获得。
+
+**x0=0 是寄存器层面最聪明的设计。** 它消灭了 MOV、NOP、CLR、NEG 等"伪指令"，每条省下的指令都是硬件译码器的面积和延迟。
+
+**六种格式覆盖所有指令，JALR 也是 I-type。** 记住格式→指令的映射：R→运算、I→立即数/加载/环境、S→存储、B→分支、U→长立即数、J→跳转。JALR 不是 J-type，新手常犯这个错误。
+
+**RV64I 通过 W 后缀优雅地支持 32 位操作，通过 LWU 填补了无符号 32 位加载的空白。** 编译器在处理 `int` 和 `uint32_t` 时会自动选择合适的指令，但理解背后的扩展策略有助于阅读反汇编。
+
+掌握了这 40 条指令和 6 种格式，你就具备了阅读任何 RISC-V 反汇编的基本能力。接下来，我们将探索标准扩展——M（乘除法）、A（原子操作）、F/D（浮点）、C（压缩指令）等——它们构建在 RV32I/RV64I 之上，理解本章内容后学习扩展会事半功倍。
 
 ---
 
 ## 参考资料
 
-- [RISC-V Unprivileged ISA Spec v20240411 — 第 2 章 RV32I/RV64I](https://github.com/riscv/riscv-isa-manual/releases/tag/20240411) — 整数指令集权威定义
+- [RISC-V Unprivileged ISA Spec v20260517 — 第 2 章 RV32I/RV64I](https://github.com/riscv/riscv-isa-manual/releases/tag/20260517) — 整数指令集权威定义
 - [David Patterson & Andrew Waterman — *The RISC-V Reader*](http://www.riscvbook.com/) — 便携入门手册，指令编码速查
 - [RISC-V Assembly Programmer's Manual](https://github.com/riscv-non-isa/riscv-asm-manual/blob/master/riscv-asm.md) — 汇编编程实践指南
 

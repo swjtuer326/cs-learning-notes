@@ -1,8 +1,23 @@
 # 开源 RISC-V 核心
 
 > 了解开源核心就像了解汽车发动机——你不需要自己造，但要知道哪台发动机适合你的赛道。从教学级的"小排量"到服务器级的"V12"，RISC-V 的开源生态应有尽有。
->
+
+## 为什么重要
+
+RISC-V 最独特的力量不在于指令集本身，而在于它催生了从 2 级流水线到 6-wide 乱序的一系列可自由获取、可任意修改的处理器核心实现。这意味着你不必再从零开始设计 CPU——你可以在 Rocket（5 级顺序）上跑 Linux，在 BOOM（乱序超标量）上研究分支预测算法，或者在蜂鸟 E203（2 级极简）上用几百行 Verilog 理解处理器设计的全部要素。
+
+本章从 Rocket Chip（被称作 RISC-V 生态的"参考实现"）出发，依次介绍 BOOM、香山、CVA6、蜂鸟 E203 五大核心的微架构特征和适用场景，最后给出一棵决策树帮助你在"选型"时做判断。读完本章，你会知道为什么香山用了 TAGE-SC 分支预测器而不是简单的 GShare，CVA6 为什么把 5 级流水线扩到 6 级，以及在做 MCU 方案时为什么选蜂鸟而不是 Rocket。
+
 > **工程师视角**：选核心不是选"性能最高的"，而是选"最适合当前产品的"。做 MCU 选蜂鸟 E203，做 Linux SBC 选 CVA6，做服务器选香山。更重要的是，开源核心让你可以深入 RTL 理解硬件行为——当内核在特定核心上触发无法解释的 bug 时，查看 RTL 的 LSU 或 MMU 实现往往能找到根因。
+
+## 学习目标
+
+- 按性能/功耗/复杂度维度对 5 个主流开源 RISC-V 核心进行分级
+- 对比 Rocket 与 BOOM 在微架构上的差异及其性能-面积权衡
+- 理解香山南湖的 6-wide 乱序设计如何在特定领域挑战 ARM Cortex-A 系列
+- 解释 CVA6 的 6 级流水线中 Issue 级的"缓冲"作用
+- 描述蜂鸟 E203 的 2 级流水线为何适合 MCU/教学场景
+- 根据项目需求（FPGA/ASIC/教学/产品）做出核心选型决策
 
 ### 前置知识
 
@@ -16,6 +31,7 @@
 ## 1. 开源核心全景：一张地图
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph TB
     subgraph high ["高性能服务器级"]
         BOOM["BOOM<br/>伯克利 乱序超标量<br/>3-4 宽发射"]
@@ -78,6 +94,7 @@ Rocket 核心结构:
 Rocket Chip 不仅是核心，更是一个 SoC 生成框架：
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph TB
     CONFIG["配置文件<br/>Scala 参数化"] --> GENERATOR["Rocket Chip Generator"]
     GENERATOR --> CORE["Rocket Core<br/>（可配置参数）"]
@@ -112,6 +129,7 @@ graph TB
 ### 3.2 BOOM 的微架构
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph TB
     subgraph frontend ["前端"]
         FETCH["取指<br/>2-4 条/周期"]
@@ -311,6 +329,7 @@ E203 流水线:
 ## 8. 如何选择开源核心：决策树
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph TD
     Q1{你的目标？} --> |"学习处理器设计"| LEARN["蜂鸟 E203 / PicoRV32<br/>代码简单，有配套书籍"]
     Q1 --> |"研究高性能架构"| RESEARCH["BOOM / 香山<br/>乱序超标量"]

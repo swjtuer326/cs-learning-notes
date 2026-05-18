@@ -202,8 +202,9 @@ _start:
     call    timer_init
 
     /* 7. 使能 M-mode 全局中断和定时器中断 */
-    li      t0, (1 << 3) | (1 << 7)   /* mstatus: MIE+MPIE; mie: MSIE+MTIE */
+    li      t0, (1 << 3)              /* mstatus.MIE = 1 */
     csrw    mstatus, t0
+    li      t0, (1 << 7)              /* mie.MTIE = 1 (M-mode timer interrupt) */
     csrw    mie, t0
 
     /* 8. 进入 C 代码 */
