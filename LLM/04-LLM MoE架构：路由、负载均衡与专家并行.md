@@ -42,7 +42,7 @@ MoE 经历了从 1991 年的概念提出到 2026 年成为超大规模模型标�
 | 2024.1 | *DeepSeekMoE* | 细粒度专家分割 + 共享专家隔离 | 提出"专家专精化"理论，v2 架构影响后续几乎所有 MoE 设计 |
 | 2024.12 | *DeepSeek-V3* | 671B 总参 / 37B 激活，Aux-Loss-Free 负载均衡，FP8 训练 | **无辅助损失均衡**成为新范式，FP8 证明大规模 MoE 训练可行 |
 | 2025.4 | *DeepSeek-V3.2* | 引入 DSA (DeepSeek Sparse Attention) | 将注意力稀疏化与 MoE 稀疏化形成统一设计语言 |
-| 2026.4 | *DeepSeek-V4* | 1.6T 总参 / 49B 激活，Hash Routing + MegaMoE + mHC | **迄今最大开源 MoE**，极稀疏 + 混合注意力深度协同 |
+| 2026.4 | *DeepSeek-V4* | 1.6T 总参 / 49B 激活，Hash Routing + MegaMoE2 + mHC | **迄今最大开源 MoE**，极稀疏 + 混合注意力深度协同 |
 
 ### 1.2 演进趋势总结
 
@@ -50,7 +50,7 @@ MoE 经历了从 1991 年的概念提出到 2026 年成为超大规模模型标�
 
 **趋势一：专家粒度从粗到细。** GShard/Switch Transformer 时代每层 8-16 个大专家 → DeepSeek-V3/V4 时代每层 256-384 个小专家。细粒度带来的核心收益不是参数数量，而是**组合灵活性**——更多专家意味着更多可能的激活组合，每个 token 可以找到更匹配的专家子集。代价是路由难度上升（256 选 8 vs 8 选 2）和通信开销增加。
 
-**趋势二：路由激活比持续下降。** Mixtral 时期激活比例约 28%（2/8），V3 时期降到约 5.5%（8/256），V4-Pro 降到 3.1%（6/384）。每降一个百分点，意味着在相同推理 FLOPs 下可以容纳 1.3-1.5× 的总参数。但更低的激活比例也意味着每个 expert 在单个 micro-batch 中看到的 token 更少——梯度噪声更大，训练稳定性更难保证。
+**趋势二：路由激活比持续下降。** Mixtral 时期参数激活比约 28%（13B/47B，8 选 2），V3 时期降到约 5.5%（37B/671B，256 选 8），V4-Pro 降到 3.1%（49B/1.6T，384 选 6）。每降一个百分点，意味着在相同推理 FLOPs 下可以容纳 1.3-1.5× 的总参数。但更低的激活比例也意味着每个 expert 在单个 micro-batch 中看到的 token 更少——梯度噪声更大，训练稳定性更难保证。
 
 **趋势三：负载均衡从"损失惩罚"走向"无损失偏置"。** 第一代用辅助损失（auxiliary loss）强制均衡，但辅助损失与主任务 loss 之间存在根本冲突——过大则损害模型质量，过小则负载失衡。DeepSeek-V3 提出的偏置更新机制（bias-based adjustment）解耦了均衡目标与梯度优化：偏置项仅影响路由决策（谁被选中），不影响 gating 权重和 loss 计算。这成为 2025 年后的事实标准。
 
@@ -268,7 +268,7 @@ $$\text{expert\_id} = \text{Hash}(\text{token\_id}) \bmod E$$
 
 DeepSeek-V4 提出 Anticipatory Routing：在训练步 $t$，不等当前 batch 的 Router 计算完成，而是用历史参数 $\theta_{t-\Delta t}$ 预计算路由索引。
 
-**动机**：在 DualPipe 流水线调度下，Router 计算和 All-to-All dispatch 之间存在依赖链。如果等 Router 算完再 dispatch，A2A 通信期间 GPU 空闲。预计算路由索引让 dispatch 可以提前启动，与计算重叠——这是大规模 EP 场景下隐藏通信延迟的关键技术。
+**动机**：在流水线调度下，Router 计算和 All-to-All dispatch 之间存在依赖链。如果等 Router 算完再 dispatch，A2A 通信期间 GPU 空闲。预计算路由索引让 dispatch 可以提前启动，与计算重叠——这是大规模 EP 场景下隐藏通信延迟的关键技术。
 
 ---
 
@@ -341,17 +341,17 @@ MoE 训练的核心通信模式是 All-to-All：
 - Dispatch 发送量：$14\text{KB} \times \text{batch\_size} \times \text{seq\_len}$
 - Combine 接收量：同上
 
-在典型训练配置（micro-batch=1，seq_len=4096，4 DP）下，每个 GPU 每步的 A2A 通信量约 $14\text{KB} \times 4096 \times \frac{256}{64} \approx 2.3\text{MB}$。看似不大，但频率极高（每个 MoE 层都要做），且 A2A 的 cross-rank 特性意味着 NVLink 域内带宽和跨节点 IB 带宽都需要考虑。
+在典型训练配置下，每个 GPU 每步的 A2A token dispatch 通信量在 5-7 MB 量级。看似不大，但频率极高（每个 MoE 层都要做），且 A2A 的 cross-rank 特性意味着 NVLink 域内带宽和跨节点 IB 带宽都需要考虑。
 
-### 7.2 MegaMoE：通信-计算融合 Kernel
+### 7.2 MegaMoE2：通信-计算融合 Kernel
 
-DeepSeek-V4 提出的 MegaMoE 将 MoE 层的五个阶段融合为单个 kernel：
+DeepSeek-V4 提出的 MegaMoE2 将 MoE 层的五个阶段融合为单个 kernel：
 
 ```
 朴素方案（5 个独立 kernel，串行）:
   Dispatch → Linear-1 → Activation → Linear-2 → Combine
 
-MegaMoE（融合 + wave 流水线）:
+MegaMoE2（融合 + wave 流水线）:
   Wave1: Dispatch → [Linear-1 → Act → Linear-2]    │
   Wave2:           Dispatch → [Linear-1 → Act → Linear-2] → Combine
                   ↑ 通信                   ↑ 计算         ↑ 通信
@@ -438,7 +438,7 @@ ERNIE 5.0 是支持文本+图像+视频+音频的原生统一自回归模型，�
 ## 参考资料
 
 - [DeepSeek-V3 Technical Report](https://arxiv.org/abs/2412.19437) — DeepSeekMoE 架构、Aux-Loss-Free 负载均衡、FP8 训练
-- [DeepSeek-V4 Technical Report](https://huggingface.co/deepseek-ai/DeepSeek-V4-Pro/blob/main/DeepSeek_V4.pdf) — CSA+HCA 混合注意力、Hash Routing、MegaMoE 通信优化
+- [DeepSeek-V4 Technical Report](https://huggingface.co/deepseek-ai/DeepSeek-V4-Pro/blob/main/DeepSeek_V4.pdf) — CSA+HCA 混合注意力、Hash Routing、MegaMoE2 通信优化
 - [Qwen3 Technical Report](https://arxiv.org/abs/2505.09388) — 128 Expert 无共享设计、Global Batch 负载均衡
 - [Kimi-K2 Technical Report](https://arxiv.org/abs/2507.06262) — 384 Expert / Sparsity=48 / Sparsity Scaling Law
 - [GLM-5 Technical Report](https://arxiv.org/abs/2512.16046) — 256 Expert + Shared、DP-aware Routing、DSA Indexer

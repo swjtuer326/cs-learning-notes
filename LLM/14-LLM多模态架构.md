@@ -85,6 +85,8 @@ flowchart TD
 
 ### 1.3 多模态架构的四种范式
 
+> **说明**：以下 A/B/C/D 四种范式的分类为本文作者的归纳总结（非直接引用 MLLM Survey（Yin et al., 2023）的框架，该综述使用 Encoder/Connector/LLM 三模块分类法），旨在帮助读者理解不同多模态模型在架构层面的本质差异。
+
 ```mermaid
 %%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 flowchart TD

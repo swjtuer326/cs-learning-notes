@@ -1072,44 +1072,19 @@ Kimi-K2 的实证结果：
 
 ### 14.6 DeepSeek-V4 的混合 Newton-Schulz 迭代
 
-DeepSeek-V4 对 Muon 的 Newton-Schulz 迭代做了工程优化——**两阶段混合迭代**：
+DeepSeek-V4 对 Muon 的 Newton-Schulz 迭代做了工程优化——**两阶段混合系数迭代**，共 10 次迭代：
 
 ```
-阶段 1: 快速收敛 (前 k 步)
-  使用低精度迭代（如 3-5 步 NS）
+阶段 1: 快速收敛 (前 8 步)
+  使用系数 (a, b, c) = (3.4445, -4.7750, 2.0315)
   目标: 快速逼近正交矩阵方向
-  特点: 计算量小，收敛快
 
-阶段 2: 精确正交化 (后续步骤)
-  使用高精度迭代（如 7-10 步 NS）
-  目标: 精确满足 O^T O ≈ I
-  特点: 梯度方向更准确
+阶段 2: 精确稳定 (后 2 步)
+  使用系数 (a, b, c) = (2, -1.5, 0.5)
+  目标: 将奇异值精确稳定在 1 附近
 ```
 
-优势：
-- 大多数 step 只需阶段 1 的粗粒度正交化（梯度方向大致对即可）
-- 每隔若干 step 执行一次阶段 2 的精确校正
-- 相比全精度迭代，**计算量降低约 40%**
-
-### 14.7 float16 Polar Express 修复
-
-**问题**：DeepSeek-V4 在使用 bf16 执行 Muon 的 Newton-Schulz 迭代时，偶尔出现 loss spike。
-
-根因：bf16 的 7-bit 尾数精度不足，在 NS 迭代的矩阵乘积累积中产生舍入误差，导致正交化不精确。
-
-**Polar Express 修复**：将 Newton-Schulz 迭代中关键的矩阵乘法改为 **float16 执行 + float32 累加**：
-
-```python
-# 伪代码
-def ns_iteration_fp16(G):
-    # 关键矩阵乘法用 fp16 计算（比 bf16 多 3-bit 尾数） + fp32 累加
-    G_fp16 = G.to(torch.float16)
-    A = torch.matmul(G_fp16.T, G_fp16)  # fp16 乘, fp32 累加
-    # 后续迭代步骤...
-    return O
-```
-
-fp16 有 10-bit 尾数（vs bf16 的 7-bit），足以满足 NS 迭代的精度需求；同时 fp32 累加避免了中间舍入误差的累积。实验结果：**bf16 的 loss spike 完全消除**。
+两阶段使用不同的系数而非不同精度——阶段 1 的系数驱动快速收敛，阶段 2 的系数确保最终稳定。
 
 ---
 
@@ -1119,52 +1094,30 @@ fp16 有 10-bit 尾数（vs bf16 的 7-bit），足以满足 NS 迭代的精度�
 
 ### 15.1 DeepSeek-V3/V4 MTP 架构
 
-DeepSeek-V3 最早引入 MTP（D=1 深度），V4 扩展至 D=3——即预测未来 3 个 token。
+DeepSeek-V3 最早引入 MTP，V4 保持相同的 **D=1 深度**（即预测 1 个额外 token）。
 
-**核心设计**：每个 MTP 模块是一个**顺序因果链**——第 k 个 MTP 模块的输入依赖于第 k-1 个 MTP 模块的输出。
+**核心设计**：MTP 模块只增加 1 层额外的 Transformer Block，输入为主模型 hidden states 与下一位 token embedding 的拼接。
 
 ```
-MTP 深度 D=3 的数据流:
+MTP (D=1) 数据流:
 
   Main Model Output (hidden_states at position i)
          │
          ▼
   ┌─────────────────────────────────────────────┐
-  │  MTP Module k=1                             │
-  │  input = RMSNorm([h_i^(0); Emb(token_i)])   │
+  │  MTP Module                                 │
+  │  input = RMSNorm([h_i; Emb(token_{i+1})])   │
   │       ↓                                     │
-  │  Transformer Block → output head → p(t_i+1) │
+  │  Transformer Block → Shared Output Head     │
   │       ↓                                     │
-  │  h_i^(1)  (输出 hidden states)               │
-  └──────────┬──────────────────────────────────┘
-             │
-             ▼
-  ┌─────────────────────────────────────────────┐
-  │  MTP Module k=2                             │
-  │  input = RMSNorm([h_i^(1); Emb(token_i+1)]) │
-  │       ↓                                     │
-  │  Transformer Block → output head → p(t_i+2) │
-  │       ↓                                     │
-  │  h_i^(2)                                    │
-  └──────────┬──────────────────────────────────┘
-             │
-             ▼
-  ┌─────────────────────────────────────────────┐
-  │  MTP Module k=3                             │
-  │  input = RMSNorm([h_i^(2); Emb(token_i+2)]) │
-  │       ↓                                     │
-  │  Transformer Block → output head → p(t_i+3) │
+  │  p(t_{i+1})   (对未来 1 个 token 的预测)      │
   └─────────────────────────────────────────────┘
 ```
 
-**输入构造**：第 k 个 MTP 模块的输入是两部分拼接后过 RMSNorm：
-- 第 k-1 个 MTP 模块的输出 hidden states $h_i^{(k-1)}$
-- 对未来 token $t_{i+k}$ 的 embedding（训练时用 ground truth，推理时用上一轮预测结果）
-
 **参数共享**：
 - Embedding 层和 Output Head（LM Head）与主模型**完全共享**
-- 每个 MTP 模块有自己的 Transformer Block（参数独立）
-- D=3 时增加约 3 个额外 Transformer layer 的参数量
+- MTP 模块有自己独立的 Transformer Block
+- D=1 时增加约 1 层额外 Transformer layer 的参数量
 
 ### 15.2 训练与推理
 
@@ -1173,40 +1126,31 @@ MTP 深度 D=3 的数据流:
 主模型损失 $\mathcal{L}_{\text{main}}$ 与 MTP 损失加权求和：
 
 $$
-\mathcal{L} = \mathcal{L}_{\text{main}} + \lambda \cdot \sum_{k=1}^{D} \mathcal{L}_{\text{MTP}}^{(k)}
+\mathcal{L} = \mathcal{L}_{\text{main}} + \lambda \cdot \mathcal{L}_{\text{MTP}}
 $$
 
-| 训练超参 | DeepSeek-V3 (D=1) | DeepSeek-V4 (D=3) |
+| 训练超参 | DeepSeek-V3 (D=1) | DeepSeek-V4 (D=1) |
 |----------|-------------------|-------------------|
 | MTP loss weight ($\lambda$) | 0.3 | 0.3 → 0.1 (warmup decay) |
-| FLOPs 开销 | ~3% | ~7-9% |
-| 额外参数量 | ~1 层 | ~3 层 |
+| FLOPs 开销 | ~3% | ~3% |
+| 额外参数量 | ~1 层 | ~1 层 |
 
-$\lambda$ 衰减策略：训练初期 $\lambda=0.3$ 让模型快速学会多 token 预测，随着主模型收敛逐步降至 $\lambda=0.1$，让最终优化目标回归主模型质量。
+V4 的 MTP 配置与 V3 相同（D=1），但引入了 $\lambda$ 衰减策略：训练初期 $\lambda=0.3$ 让模型快速学会多 token 预测，随着主模型收敛逐步降至 $\lambda=0.1$，让最终优化目标回归主模型质量。
 
 **推理阶段的投机解码复用**：
 
-训练好的 MTP 模块直接作为投机解码的草稿模型 (Draft Model)：
+训练好的 MTP 模块可直接作为投机解码的草稿模型 (Draft Model)，预测 1 个额外 token：
 
 ```
-MTP 投机解码流程:
+MTP 投机解码流程 (D=1):
 
 1. 主模型生成第一个 token
-2. 将主模型 hidden states 送入 MTP-1 → 预测 token 2（草稿）
-3. 将 MTP-1 输出送入 MTP-2 → 预测 token 3（草稿）
-4. 将 MTP-2 输出送入 MTP-3 → 预测 token 4（草稿）
-5. 主模型一次前向验证 4 个 token（原 token + 3 个草稿）
-6. 匹配成功则接受，失败则回退重采样
+2. 将主模型 hidden states 送入 MTP 模块 → 预测 token 2（草稿）
+3. 主模型一次前向同时验证原 token + 草稿 token
+4. 匹配成功则接受草稿 token，失败则回退重采样
 ```
 
-DeepSeek-V4 的实测效果：
-
-| 指标 | 数值 |
-|------|------|
-| 第 2 个 token 接受率 | **85-90%** |
-| 第 3 个 token 接受率 | 70-80% |
-| 第 4 个 token 接受率 | 55-65% |
-| 端到端吞吐提升 (TPS) | **~1.8×** |
+典型效果：第 2 个 token 接受率约 **85-90%**。
 
 ### 15.3 GLM-5 MTP 变体
 

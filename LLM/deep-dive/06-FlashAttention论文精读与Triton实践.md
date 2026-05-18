@@ -748,7 +748,7 @@ ncu --import profile.ncu-rep
 > **关键原则**：
 > 1. **IO-aware 是核心**：FlashAttention 的成功在于理解显存层次，而非新数学
 > 2. **Tiling 是通用技术**：几乎所有大矩阵运算都可以用 tiling 优化
-> 3. **Triton 是学习利器**：比 CUDA 简单 10×，性能可达 80-90%
+> 3. **Triton 上手门槛低**：比 CUDA 简单 10×，性能可达 80-90%
 > 4. **先跑通再优化**：正确性 > 性能，用 torch.profiler 找到真正的瓶颈
 > 5. **硬件在进化**：FA1→FA2→FA3 的演进 = 算法适配新硬件特性
 

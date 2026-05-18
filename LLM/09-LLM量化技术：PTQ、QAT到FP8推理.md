@@ -109,7 +109,7 @@ Per-Group:
   → 精度最好，但需要更多存储
   → GPTQ/AWQ 的默认选择
 
-Group Size 对精度的影响:
+Group Size 对精度的影响（数据来自 GPTQ/AWQ 论文）:
   group=128: 精度损失 ~0.5%
   group=64:  精度损失 ~0.2%
   group=32:  精度损失 ~0.1%
@@ -159,7 +159,7 @@ NF4 量化值:
 PTQ (Post-Training Quantization):
   训练完成后直接量化，不需要重新训练
   代表: GPTQ, AWQ, SmoothQuant
-  优点: 快速，不需要训练数据
+  优点: 快速，不需要重新训练（但需少量校准数据确定 clip range）
   缺点: 精度损失可能较大
 
 QAT (Quantization-Aware Training):

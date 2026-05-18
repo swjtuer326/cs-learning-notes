@@ -13,7 +13,7 @@
 | EP | Expert Parallelism | 专家并行，将 MoE 专家分布到不同 GPU |
 | ZeRO | Zero Redundancy Optimizer | 零冗余优化器，分片优化器状态/梯度/参数以节省显存 |
 | NCCL | NVIDIA Collective Communications Library | NVIDIA 集合通信库，GPU 间 All-Reduce 等通信的实现 |
-| FSDP | Fully Sharded Data Parallel | PyTorch 原生的全分片数据并行，类似 ZeRO-3 |
+| FSDP | Fully Sharded Data Parallel | PyTorch 原生的分片数据并行，ShardingStrategy 支持 ZeRO-2 (SHARD_GRAD_OP) 到 ZeRO-3 (FULL_SHARD) 多级配置 |
 
 ### 前置知识
 
@@ -32,7 +32,7 @@
 5. [流水线并行 (PP)](#流水线并行-pp)
 6. [序列并行 (SP)](#序列并行-sp)
 7. [专家并行 (EP)](#专家并行-ep)
-8. [3D 并行：组合策略](#3d-并行组合策略)
+8. [3D/4D 并行：组合策略](#3d4d-并行组合策略)
 9. [通信原语与 NCCL](#通信原语与-nccl)
 10. [通信-计算 Overlap](#通信-计算-overlap)
 11. [自动并行搜索](#自动并行搜索)
@@ -269,22 +269,33 @@ FFN:
 
 TP 通信量分析 (每层, 每个 token):
 
-设 $b$ 为 batch size，$s$ 为序列长度，$d$ 为隐藏维度（d_model）：
+设 $b$ 为 batch size，$s$ 为序列长度，$d$ 为隐藏维度（d_model），$N$ 为 TP 并行度：
+
+每层共 4 次 All-Reduce（Attention O 投影 + FFN 输出，前向/反向各一次）
+每次 All-Reduce 操作的张量大小为 $bsd$ 元素 = $2bsd$ bytes (FP16)
+All-Reduce 通信量精确公式 = $\frac{2(N-1)}{N} \times (\text{张量大小})$（见 §9.1 推导）
 
 Attention:
-  f (All-Reduce O): $2 \times b \times s \times d \times 2\text{ bytes} = 4bsd \text{ bytes}$
-  b (All-Reduce grad): $4bsd \text{ bytes}$
+  f (All-Reduce O): $\frac{4(N-1)}{N} bsd$ bytes
+  b (All-Reduce grad): $\frac{4(N-1)}{N} bsd$ bytes
 
 FFN:
-  f (All-Reduce): $4bsd \text{ bytes}$
-  b (All-Reduce grad): $4bsd \text{ bytes}$
+  f (All-Reduce): $\frac{4(N-1)}{N} bsd$ bytes
+  b (All-Reduce grad): $\frac{4(N-1)}{N} bsd$ bytes
 
-总计: $16bsd \text{ bytes per layer per step}$
+总计: $\frac{16(N-1)}{N} bsd$ bytes per layer per step
 
-对于 Llama-3-8B ($d$=4096, $b$=1, $s$=4096):
-  $$16 \times 1 \times 4096 \times 4096 = 256\text{MB} \text{ per layer}$$
-  × 32 layers = 8.2GB per step
-  
+常见 TP 度的通信量（以 $bsd$ 为单位）：
+  TP=2: $\frac{N-1}{N} = 0.5 \to 8bsd$ bytes
+  TP=4: $\frac{N-1}{N} = 0.75 \to 12bsd$ bytes
+  TP=8: $\frac{N-1}{N} \approx 0.875 \to 14bsd$ bytes
+  大 N 近似: $\frac{16(N-1)}{N} \approx 16 \to 16bsd$ bytes
+
+对于 Llama-3-8B ($d$=4096, $b$=1, $s$=4096, TP=2):
+  $$8 \times 1 \times 4096 \times 4096 = 128\text{MB} \text{ per layer}$$
+  × 32 layers ≈ 4.1GB per step
+  TP=4 时: $12bsd$ = 192MB per layer，≈ 6.1GB per step
+
 → TP 通信量极大，必须在 NVLink 域内 (同一节点)
 → 跨节点 TP 不可行 (带宽不够)
 
@@ -402,16 +413,34 @@ SP-Ring (Ring Attention):
   通信: 2 × P2P send/recv per layer
   通信量: $2 \times b \times s \times d \times 2\text{ bytes}$ (与 Ulysses 相同)
 
+All-Gather CP (Llama 3 采用):
+  将序列按位置切分（同 SP-Ring），但使用 All-Gather 聚合 K, V：
+  
+  GPU 0: tokens 0..s/4-1
+  GPU 1: tokens s/4..s/2-1
+  ...
+  
+  Attention 前: All-Gather K, V → 每个 GPU 获得完整 K, V
+  Attention 计算: 各 GPU 用本地 Q 与完整 K, V 计算
+  Attention 后: 无需额外通信（输出保持切分）
+  
+  通信: 2 × All-Gather (K, V) per layer
+  通信量: $2 \times \frac{N-1}{N} \times 2 \times b \times s \times d \times 2\text{ bytes}$（K+V 各一份）
+  
+  → 实现比 Ring/Ulysses 更简单，通信量随 $N$ 增大趋近 All-to-All
+  → Llama 3 在 4D 并行 (TP × CP × PP × DP) 中以此作为 CP 维度
+
 ### 6.3 SP 对比
 
-| 维度 | SP-Ulysses | SP-Ring (Ring Attention) |
-|------|-----------|--------------------------|
-| **切分维度** | Head 维度 | 序列位置 |
-| **通信模式** | All-to-All | P2P Ring |
-| **通信量** | 2bsd bytes | 2bsd bytes |
-| **负载均衡** | 好 (head 均匀) | 好 (序列均匀) |
-| **GQA 兼容** | 需要 h_kv 整除 SP | 天然兼容 |
-| **实现复杂度** | 中 | 高 (需要异步通信) |
+| 维度 | SP-Ulysses | SP-Ring (Ring Attention) | All-Gather CP (Llama 3) |
+|------|-----------|--------------------------|--------------------------|
+| **切分维度** | Head 维度 | 序列位置 | 序列位置 |
+| **通信模式** | All-to-All | P2P Ring | All-Gather (K, V) |
+| **通信量** | $2bsd$ bytes | $2bsd$ bytes | $\frac{4(N-1)}{N} bsd$ bytes |
+| **负载均衡** | 好 (head 均匀) | 好 (序列均匀) | 好 (序列均匀) |
+| **GQA 兼容** | 需要 $h_{kv}$ 整除 SP | 天然兼容 | 天然兼容 |
+| **实现复杂度** | 中 | 高 (需要异步通信) | 低 |
+| **代表实现** | DeepSpeed Ulysses | Ring Attention (Liu et al.) | Meta Llama 3 (4D 并行) |
 
 ---
 
@@ -454,7 +483,7 @@ EP 通信 (All-to-All):
 
 ---
 
-## 3D 并行：组合策略
+## 3D/4D 并行：组合策略
 
 ### 8.1 为什么需要组合
 
@@ -467,9 +496,10 @@ ZeRO-3: 通信量大，大规模时成为瓶颈
 
 → 组合多种策略，取长补短
 
-### 8.2 典型 3D 并行配置
+### 8.2 典型 3D/4D 并行配置
 
-3D 并行 = DP × TP × PP
+3D 并行 = DP × TP × PP（基础组合）
+4D 并行 = DP × TP × PP × CP（Llama 3 实际采用，增加 Context Parallelism 维度）
 
 GPU 拓扑:
   ┌─────────────────────────────────────────┐
@@ -487,9 +517,11 @@ GPU 拓扑:
   总 GPU: 2 × 2 × 4 = 16
 
 配置公式:
-  $N_{\text{gpu}} = DP \times TP \times PP$
+  $N_{\text{gpu}} = DP \times TP \times PP$（3D）
+  $N_{\text{gpu}} = DP \times TP \times PP \times CP$（4D，Llama 3）
 
   TP: 限制在 NVLink 域内 (通常 ≤ 8)
+  CP: 可与 TP 协同，限制在同节点或同 NVSwitch 域内
   PP: 可以跨节点 (通信量小)
   DP: 可以跨节点 (ZeRO 优化)
 
@@ -657,7 +689,7 @@ Overlap:
 |------|---------|------|---------|
 | **Megatron-LM** | TP + PP + DP + SP | 性能极致，但配置复杂 | 大规模训练 (>100B) |
 | **DeepSpeed** | ZeRO-1/2/3 + TP + PP | 易用，ZeRO 系列强大 | 中小规模训练 |
-| **FSDP (PyTorch)** | ZeRO-3 等价 | PyTorch 原生，生态好 | 中小规模训练 |
+| **FSDP (PyTorch)** | ZeRO-2/3 (可配) | PyTorch 原生，生态好；Llama 3 训练使用 ~ZeRO-2 级别分片，组合 TP、PP | 中小规模训练 |
 | **ColossalAI** | 多种并行 | 灵活，支持异构 | 研究和实验 |
 | **torchtitan** | TP + PP + DP | Meta 官方，简洁 | 学习和小规模 |
 
@@ -686,7 +718,7 @@ Overlap:
 > **关键原则**：
 > 1. **通信是瓶颈**：TP 通信量大但延迟低 (NVLink)，PP 通信量小但 bubble 大
 > 2. **ZeRO-3 是万能钥匙**：几乎任何模型都能训练，但通信开销大
-> 3. **3D 并行是工业标准**：TP(节点内) × PP(跨节点) × DP(数据并行)
+> 3. **3D/4D 并行是工业标准**：基础 3D = TP(节点内) × PP(跨节点) × DP(数据并行)；Llama 3 扩展为 4D (增加 CP 维度)
 > 4. **显存和通信是硬币两面**：省显存 = 增加通信，需要权衡
 > 5. **先跑通再优化**：默认配置能跑通 > 手动调优到极致
 
@@ -717,7 +749,7 @@ Kimi K2.5 的 DEP (Decoupled Encoder Process) 将视觉编码器前向、Backbon
 > **关键原则**：
 > 1. **通信是瓶颈**：TP 通信量大但延迟低 (NVLink)，PP 通信量小但 bubble 大
 > 2. **ZeRO-3 是万能钥匙**：几乎任何模型都能训练，但通信开销大
-> 3. **3D 并行是工业标准**：TP(节点内) × PP(跨节点) × DP(数据并行)
+> 3. **3D/4D 并行是工业标准**：基础 3D = TP(节点内) × PP(跨节点) × DP(数据并行)；Llama 3 扩展为 4D (增加 CP 维度)
 > 4. **显存和通信是硬币两面**：省显存 = 增加通信，需要权衡
 > 5. **先跑通再优化**：默认配置能跑通 > 手动调优到极致
 > 6. **进阶训练系统工程**：[DualPipe / MegMoE / Fabric-Aware → 详见 06-训练系统与稳定性](./06-LLM训练系统与稳定性.md)

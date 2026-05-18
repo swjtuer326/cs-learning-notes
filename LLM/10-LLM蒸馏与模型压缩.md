@@ -129,7 +129,7 @@ Ministral 3 提出了当前最完整的模型压缩管线——**Cascade Distill
   └────────┬───────┘
            ▼
   ┌─────────────────────────────────────────────────────┐
-  │ 产出: 3 个尺寸的学生模型 (如 1B / 3B / 8B)            │
+  │ 产出: 3 个尺寸的学生模型 (14B / 8B / 3B)             │
   └─────────────────────────────────────────────────────┘
 ```
 
@@ -240,9 +240,11 @@ Forward KL 的形式为：
 
 $$D_{\text{KL}}(p_t \| p_s) = \mathbb{E}_{x \sim p_t} \left[ \log \frac{p_t(x)}{p_s(x)} \right] = -\mathbb{E}_{x \sim p_t}[\log p_s(x)] + \text{const} \tag{3}$$
 
-其中 $p_t$ 是教师分布，$p_s$ 是学生分布。Forward KL 天然鼓励学生覆盖教师的所有高概率区域（mean-seeking），而 L2 回归是 mode-seeking——两者存在目标冲突。加权只会让冲突模糊化，纯 Forward KL 在一致性和收敛速度上均优于混合损失。
+其中 $p_t$ 是教师分布，$p_s$ 是学生分布。Forward KL 天然鼓励学生覆盖教师的所有高概率区域（mean-seeking），而 Reverse KL 是 mode-seeking——两者存在目标冲突。
 
-**结论**：Ministral 3 的 TP 建议中明确写道——"我们尝试了 Forward KL、Reverse KL、L2 回归和它们的加权组合，Forward KL 始终表现最好。"
+> **注意**：Ministral 3 论文仅报告了 Forward KL 的结果，该对比表的星级评估来自文献中关于蒸馏损失的理论分析（如 KD Survey Xu 2024 中关于 Forward/Reverse KL 的讨论），并非 Ministral 3 的直接实验对比。
+
+**结论**：Ministral 3 发现使用纯 Forward KL 蒸馏目标优于将其与 next-token prediction 目标进行加权组合。
 
 ### 2.4 教师模型选择
 
@@ -261,7 +263,7 @@ Ministral 3 发现了一个关键洞察：**Post-Trained 教师 > Pre-Trained �
       ★★ 与目标用途的分布差距大
 ```
 
-**Capacity Gap 现象**：教师和学生的参数量差距过大时，学生无法完全模仿教师。但在 Post-Training 阶段，即使教师远大于学生，学生仍能有效学习——因为 Post-Training 引入的"行为模式"（如何推理、如何表达偏好）比预训练阶段的知识更容易压缩。
+**Capacity Gap 现象**：教师和学生的参数量差距过大时，学生无法完全模仿教师。Ministral 3 独立验证了此前工作（Busbridge et al., 2025）中的发现——但在 Post-Training 阶段，即使教师远大于学生，学生仍能有效学习；因为 Post-Training 引入的"行为模式"（如何推理、如何表达偏好）比预训练阶段的知识更容易压缩。
 
 ---
 

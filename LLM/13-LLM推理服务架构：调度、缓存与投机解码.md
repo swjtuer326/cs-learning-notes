@@ -620,8 +620,8 @@ LLM 推理 SLA 指标:
 
 > **关键原则**：
 > 1. **Continuous Batching 是必选项**：任何生产级推理服务都应该使用
-> 2. **Prefix Caching 是免费午餐**：对 system prompt 固定的场景效果显著
-> 3. **Speculative Decoding 是加速利器**：3-4× 加速，但需要额外训练
+> 2. **Prefix Caching 开销极低**：对 system prompt 固定的场景效果显著
+> 3. **Speculative Decoding 可显著加速**：3-4× 加速，但需要额外训练
 > 4. **Disaggregated Serving 是未来方向**：分离 Prefill/Decode 独立优化
 > 5. **监控是生产的基础**：没有监控就没有 SLA 保障
 
