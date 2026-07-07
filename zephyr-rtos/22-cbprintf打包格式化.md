@@ -67,7 +67,7 @@ Zephyr 用三层拆解对应这四个问题：
 
 ### 2.1 回调签名：一个字符一次
 
-源码 [include/zephyr/sys/cbprintf.h:276-297](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/sys/cbprintf.h)：
+源码 [include/zephyr/sys/cbprintf.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/sys/cbprintf.h#L276-L297)：
 
 ```c
 /** @brief Signature for a cbprintf callback function.
@@ -86,7 +86,7 @@ typedef int (*cbprintf_cb)(/* int c, void *ctx */);
 
 ### 2.2 调用链：cbprintf → cbvprintf → z_cbvprintf_impl
 
-源码 [lib/os/cbprintf.c:11-21](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/lib/os/cbprintf.c)：
+源码 [lib/os/cbprintf.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/lib/os/cbprintf.c#L11-L21)：
 
 ```c
 int cbprintf(cbprintf_cb out, void *ctx, const char *format, ...)
@@ -102,7 +102,7 @@ int cbprintf(cbprintf_cb out, void *ctx, const char *format, ...)
 }
 ```
 
-源码 [include/zephyr/sys/cbprintf.h:747-752](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/sys/cbprintf.h) 的 `cbvprintf` 内联：
+源码 [include/zephyr/sys/cbprintf.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/sys/cbprintf.h#L747-L752) 的 `cbvprintf` 内联：
 
 ```c
 static inline
@@ -146,7 +146,7 @@ flowchart TD
 
 ### 2.3 libc 替代：fprintfcb / printfcb / snprintfcb
 
-源码 [lib/os/cbprintf.c:52-119](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/lib/os/cbprintf.c) 给出一组 `cb` 后缀的 libc 替代函数。`vfprintfcb` 的实现极简：
+源码 [lib/os/cbprintf.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/lib/os/cbprintf.c#L52-L119) 给出一组 `cb` 后缀的 libc 替代函数。`vfprintfcb` 的实现极简：
 
 ```c
 int vfprintfcb(FILE *stream, const char *format, va_list ap)
@@ -173,7 +173,7 @@ int vfprintfcb(FILE *stream, const char *format, va_list ap)
 
 ### 3.2 包格式：header + 参数区 + 字符串区
 
-源码 [include/zephyr/sys/cbprintf.h:45-107](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/sys/cbprintf.h)：
+源码 [include/zephyr/sys/cbprintf.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/sys/cbprintf.h#L45-L107)：
 
 ```c
 struct cbprintf_package_desc {
@@ -212,7 +212,7 @@ struct cbprintf_package_hdr_ext {
 
 ### 3.3 打包流程：扫描 fmt + 拷贝 va_list
 
-`cbvprintf_package` 的核心逻辑在 [lib/os/cbprintf_packaged.c:233-817](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/lib/os/cbprintf_packaged.c)。它一边扫描格式串 `fmt`，一边按格式说明符从 `va_list` 取参数并拷贝到包缓冲：
+`cbvprintf_package` 的核心逻辑在 [lib/os/cbprintf_packaged.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/lib/os/cbprintf_packaged.c#L233-L817)。它一边扫描格式串 `fmt`，一边按格式说明符从 `va_list` 取参数并拷贝到包缓冲：
 
 1. **跳过 desc 头**——预留 `sizeof(*pkg_hdr)` 字节，最后回填
 2. **存格式串指针**——`*(const char **)buf = fmt`，假设 `fmt` 在 rodata
@@ -234,7 +234,7 @@ struct cbprintf_package_hdr_ext {
 
 ### 3.4 解包流程：cbpprintf_external
 
-源码 [lib/os/cbprintf_packaged.c:831-872](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/lib/os/cbprintf_packaged.c)：
+源码 [lib/os/cbprintf_packaged.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/lib/os/cbprintf_packaged.c#L831-L872)：
 
 ```c
 int cbpprintf_external(cbprintf_cb out,
@@ -278,7 +278,7 @@ int cbpprintf_external(cbprintf_cb out,
 
 ### 3.5 跨架构 va_list 构造
 
-源码 [lib/os/cbprintf_packaged.c:49-194](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/lib/os/cbprintf_packaged.c) 为每种架构单独实现 `cbprintf_via_va_list`，因为 `va_list` 的内存布局是 ABI 定义的，各架构不同：
+源码 [lib/os/cbprintf_packaged.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/lib/os/cbprintf_packaged.c#L49-L194) 为每种架构单独实现 `cbprintf_via_va_list`，因为 `va_list` 的内存布局是 ABI 定义的，各架构不同：
 
 | 架构 | va_list 结构 | 关键字段 |
 |------|--------------|----------|
@@ -304,7 +304,7 @@ int cbpprintf_external(cbprintf_cb out,
 - `CONFIG_CBPRINTF_NANO`——选择 [lib/os/cbprintf_nano.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/lib/os/cbprintf_nano.c)
 - `CONFIG_CBPRINTF_COMPLETE`（默认）——选择 [lib/os/cbprintf_complete.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/lib/os/cbprintf_complete.c)
 
-源码 [lib/os/Kconfig.cbprintf:4-25](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/lib/os/Kconfig.cbprintf) 注释甚至给出了 NANO 的代码尺寸节省："80: -53% / 982 B"——在某些基准配置下 NANO 比 COMPLETE 小 982 字节，相对减少 53%。
+源码 [lib/os/Kconfig.cbprintf](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/lib/os/Kconfig.cbprintf#L4-L25) 注释甚至给出了 NANO 的代码尺寸节省："80: -53% / 982 B"——在某些基准配置下 NANO 比 COMPLETE 小 982 字节，相对减少 53%。
 
 ### 4.2 功能对比
 
@@ -328,7 +328,7 @@ int cbpprintf_external(cbprintf_cb out,
 
 ### 4.3 NANO 的关键代码
 
-源码 [lib/os/cbprintf_nano.c:76-98](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/lib/os/cbprintf_nano.c)：
+源码 [lib/os/cbprintf_nano.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/lib/os/cbprintf_nano.c#L76-L98)：
 
 ```c
 int z_cbvprintf_impl(cbprintf_cb __out, void *ctx, const char *fmt,
@@ -367,7 +367,7 @@ NANO 用 `OUTC` 宏直接调 `out`，不检查返回值：
 
 ### 4.4 COMPLETE 的关键代码
 
-源码 [lib/os/cbprintf_complete.c:1380-1392](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/lib/os/cbprintf_complete.c) 的 `OUTC`：
+源码 [lib/os/cbprintf_complete.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/lib/os/cbprintf_complete.c#L1380-L1392) 的 `OUTC`：
 
 ```c
 #define OUTC(c) do { \
@@ -380,7 +380,7 @@ NANO 用 `OUTC` 宏直接调 `out`，不检查返回值：
 } while (false)
 ```
 
-COMPLETE 用 `struct conversion` 把每个转换说明符的所有属性（flags、width、precision、length_mod、specifier）解析后存起来，再统一处理。源码 [lib/os/cbprintf_complete.c:188-307](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/lib/os/cbprintf_complete.c) 的 `struct conversion` 有 20+ 个 bit 字段记录所有属性——这是 COMPLETE 比 NANO 大的主因。
+COMPLETE 用 `struct conversion` 把每个转换说明符的所有属性（flags、width、precision、length_mod、specifier）解析后存起来，再统一处理。源码 [lib/os/cbprintf_complete.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/lib/os/cbprintf_complete.c#L188-L307) 的 `struct conversion` 有 20+ 个 bit 字段记录所有属性——这是 COMPLETE 比 NANO 大的主因。
 
 ### 4.5 选择策略
 
@@ -426,7 +426,7 @@ flowchart TD
 
 ### 5.1 printk 与 cbprintf 的关系
 
-`printk` 不是独立实现的格式化器——它复用 cbprintf 引擎。源码 [lib/os/printk.c:100-143](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/lib/os/printk.c)：
+`printk` 不是独立实现的格式化器——它复用 cbprintf 引擎。源码 [lib/os/printk.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/lib/os/printk.c#L100-L143)：
 
 ```c
 void vprintk(const char *fmt, va_list ap)
@@ -470,7 +470,7 @@ void vprintk(const char *fmt, va_list ap)
 
 ### 5.3 三种输出路径
 
-源码 [lib/os/printk.c:100-143](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/lib/os/printk.c) 展示 `vprintk` 的三条路径：
+源码 [lib/os/printk.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/lib/os/printk.c#L100-L143) 展示 `vprintk` 的三条路径：
 
 | 路径 | 条件 | 回调 | 同步 |
 |------|------|------|------|
@@ -484,7 +484,7 @@ void vprintk(const char *fmt, va_list ap)
 
 ### 5.4 snprintk：字符串版本
 
-源码 [lib/os/printk.c:231-254](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/lib/os/printk.c)：
+源码 [lib/os/printk.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/lib/os/printk.c#L231-L254)：
 
 ```c
 int vsnprintk(char *str, size_t size, const char *fmt, va_list ap)
@@ -529,7 +529,7 @@ Zephyr 日志系统的拆解（详见 [23-Logging日志系统](./23-Logging日�
 2. **包入队：`mpsc_pbuf` 投递**——见 [19 章](./19-无锁数据结构深入.md) §9，多 ISR 安全
 3. **日志线程：`cbpprintf` 解包格式化**——可以安全用浮点、可以阻塞在 UART
 
-源码 [subsys/logging/log_msg.c:348-413](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/logging/log_msg.c) 的 `z_log_msg_runtime_vcreate` 给出实战路径：
+源码 [subsys/logging/log_msg.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/logging/log_msg.c#L348-L413) 的 `z_log_msg_runtime_vcreate` 给出实战路径：
 
 ```c
 void z_log_msg_runtime_vcreate(uint8_t domain_id, const void *source,
@@ -630,7 +630,7 @@ cbprintf 的策略：**rodata 字符串存指针，非 rodata 字符串内联到
 
 ### 7.2 rodata 判定
 
-源码 [lib/os/cbprintf_packaged.c:33-43](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/lib/os/cbprintf_packaged.c)：
+源码 [lib/os/cbprintf_packaged.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/lib/os/cbprintf_packaged.c#L33-L43)：
 
 ```c
 static inline bool ptr_in_rodata(const char *addr)
@@ -647,7 +647,7 @@ static inline bool ptr_in_rodata(const char *addr)
 
 ### 7.3 三种字符串处理策略
 
-源码 [lib/os/cbprintf_packaged.c:614-680](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/lib/os/cbprintf_packaged.c)：
+源码 [lib/os/cbprintf_packaged.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/lib/os/cbprintf_packaged.c#L614-L680)：
 
 ```c
 if (is_str_arg) {
@@ -696,7 +696,7 @@ process_string:
 2. 包消费端用 `cbprintf_package_convert` 把 RO 字符串内容拷贝到包体（变 FSC 包）
 3. FSC 包是完全自包含的——可以序列化到文件、跨核 IPC、甚至离线解码
 
-源码 [include/zephyr/sys/cbprintf.h:624-632](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/sys/cbprintf.h) 的 `cbprintf_fsc_package`：
+源码 [include/zephyr/sys/cbprintf.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/sys/cbprintf.h#L624-L632) 的 `cbprintf_fsc_package`：
 
 ```c
 static inline int cbprintf_fsc_package(void *in_packaged, size_t in_len,
@@ -720,7 +720,7 @@ FSC (Fully Self-Contained, 完全自包含) 包是把所有 RO 与 RW 字符串�
 
 ### 8.1 打包时的对齐处理
 
-源码 [lib/os/cbprintf_packaged.c:556-597](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/lib/os/cbprintf_packaged.c)：
+源码 [lib/os/cbprintf_packaged.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/lib/os/cbprintf_packaged.c#L556-L597)：
 
 ```c
 case 'f':
@@ -754,7 +754,7 @@ case 'G': {
 }
 ```
 
-**关键设计**：浮点参数按 `double` 或 `long double` 的对齐要求填充到包缓冲。源码 [include/zephyr/sys/cbprintf.h:140-143](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/sys/cbprintf.h) 把 `CBPRINTF_PACKAGE_ALIGNMENT` 设为 `long double` 大小（如果支持）或 `long long` 大小：
+**关键设计**：浮点参数按 `double` 或 `long double` 的对齐要求填充到包缓冲。源码 [include/zephyr/sys/cbprintf.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/sys/cbprintf.h#L140-L143) 把 `CBPRINTF_PACKAGE_ALIGNMENT` 设为 `long double` 大小（如果支持）或 `long long` 大小：
 
 ```c
 #define CBPRINTF_PACKAGE_ALIGNMENT \
@@ -766,7 +766,7 @@ case 'G': {
 
 ### 8.2 SPARC 的特殊处理
 
-源码 [include/zephyr/sys/cbprintf_internal.h:71-85](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/sys/cbprintf_internal.h) 注释解释：
+源码 [include/zephyr/sys/cbprintf_internal.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/sys/cbprintf_internal.h#L71-L85) 注释解释：
 
 > "The SPARC V8 ABI guarantees that the arguments of a variable argument list function are stored on the stack at addresses which are 32-bit aligned. It means that variables of type uint64_t and double may not be properly aligned on the stack."
 
@@ -806,7 +806,7 @@ default:
 
 ### 9.1 例子 1：格式化到内存缓冲
 
-最简场景——把 `cbprintf` 当 `snprintf` 用。源码 [lib/os/cbprintf.c:98-119](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/lib/os/cbprintf.c) 的 `vsnprintfcb` 已是参考实现，这里给出简化版：
+最简场景——把 `cbprintf` 当 `snprintf` 用。源码 [lib/os/cbprintf.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/lib/os/cbprintf.c#L98-L119) 的 `vsnprintfcb` 已是参考实现，这里给出简化版：
 
 ```c
 #include <zephyr/sys/cbprintf.h>

@@ -142,7 +142,7 @@ Zephyr 应用本身不实现 boot 逻辑，只通过 [include/zephyr/dfu/mcuboot
 
 ### 2.3 镜像头格式
 
-MCUboot 镜像在 slot 开头有固定头，[mcuboot.c:60-103](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/dfu/boot/mcuboot.c#L60-L103) 定义了 v1 头格式：
+MCUboot 镜像在 slot 开头有固定头，[mcuboot.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/dfu/boot/mcuboot.c#L60-L103) 定义了 v1 头格式：
 
 ```c
 /* mcuboot.c:60-63 — 头魔数与大小，MCUboot 实现强约束 */
@@ -167,7 +167,7 @@ struct mcuboot_v1_raw_header {
 } __packed;
 ```
 
-`boot_read_v1_header()`（[mcuboot.c:300-347](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/dfu/boot/mcuboot.c#L300-L347)）做两件事：读出头、校验魔数与 `header_size ≥ 32`。校验失败返回 `-EIO`，调用者据此判断该 slot 是否有有效镜像。
+`boot_read_v1_header()`（[mcuboot.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/dfu/boot/mcuboot.c#L300-L347)）做两件事：读出头、校验魔数与 `header_size ≥ 32`。校验失败返回 `-EIO`，调用者据此判断该 slot 是否有有效镜像。
 
 > **核心要点**：镜像头放版本与大小，trailer 放切换状态——头是"静态描述"，trailer 是"动态状态"。两者分离是因为头由 imgtool 签名时写死，trailer 由 boot loader / 应用在运行期反复改写。flash 只能从 1 写到 0（除非先擦除），把频繁改写的 trailer 与签名固定的头分开，避免改 trailer 触发头的重签。
 
@@ -179,7 +179,7 @@ struct mcuboot_v1_raw_header {
 
 ### 3.1 trailer 的位置与内容
 
-trailer 位于 slot 的**末尾**，[mcuboot.c:502-505](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/dfu/boot/mcuboot.c#L502-L505) 给出状态字段偏移：
+trailer 位于 slot 的**末尾**，[mcuboot.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/dfu/boot/mcuboot.c#L502-L505) 给出状态字段偏移：
 
 ```c
 ssize_t boot_get_trailer_status_offset(size_t area_size)
@@ -211,7 +211,7 @@ ssize_t boot_get_trailer_status_offset(size_t area_size)
 
 ### 3.3 五种 swap_type 状态
 
-[include/zephyr/dfu/mcuboot.h:37-80](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/dfu/mcuboot.h#L37-L80) 定义了五种切换类型，构成 slot 的状态机：
+[include/zephyr/dfu/mcuboot.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/dfu/mcuboot.h#L37-L80) 定义了五种切换类型，构成 slot 的状态机：
 
 ```mermaid
 %%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
@@ -249,7 +249,7 @@ stateDiagram-v2
 
 ## 4. 三种升级策略：swap/overwrite/RAM-load
 
-> 第三章的 trailer 状态机回答了"怎么切换"，但"切换时 flash 上具体发生什么"取决于升级策略。MCUboot 支持多种策略，Zephyr 在 [modules/Kconfig.mcuboot:189](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/modules/Kconfig.mcuboot#L189) 暴露为 `choice MCUBOOT_BOOTLOADER_MODE`。本节对比三种主流策略的本质差异。
+> 第三章的 trailer 状态机回答了"怎么切换"，但"切换时 flash 上具体发生什么"取决于升级策略。MCUboot 支持多种策略，Zephyr 在 [modules/Kconfig.mcuboot](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/modules/Kconfig.mcuboot#L189) 暴露为 `choice MCUBOOT_BOOTLOADER_MODE`。本节对比三种主流策略的本质差异。
 
 ### 4.1 三种策略对比图
 
@@ -301,7 +301,7 @@ flowchart LR
 
 ### 4.3 RAM-Load 模式的多 slot 支持
 
-RAM-Load 模式有一个独特能力——支持最多 16 个 slot。 [mcuboot.c:29-44](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/dfu/boot/mcuboot.c#L29-L44) 定义了 `SLOT0_PARTITION` 到 `SLOT15_PARTITION`：
+RAM-Load 模式有一个独特能力——支持最多 16 个 slot。 [mcuboot.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/dfu/boot/mcuboot.c#L29-L44) 定义了 `SLOT0_PARTITION` 到 `SLOT15_PARTITION`：
 
 ```c
 /* mcuboot.c:29-44 — RAM LOAD 模式支持最多 16 个 slot */
@@ -313,7 +313,7 @@ RAM-Load 模式有一个独特能力——支持最多 16 个 slot。 [mcuboot.c
 
 为什么 RAM-Load 需要 16 个 slot？因为 RAM-Load 不做 swap，每个 slot 可以独立存放一个版本。MCUboot 在启动时通过 [blinfo_lookup(BLINFO_RUNNING_SLOT, ...)](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/dfu/boot/mcuboot.c#L116) 查询当前运行 slot，再遍历所有 slot 选最高版本。这适合"多版本仓库"场景——设备可保留多个历史版本，按需回退到任意一个。
 
-`boot_fetch_active_slot()`（[mcuboot.c:111-210](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/dfu/boot/mcuboot.c#L111-L210)）通过 `blinfo`（bootloader info）从 retention 区域读取当前 slot 号，再映射回 `PARTITION_ID`。retention 区域是 RAM/寄存器中由 MCUboot 写入的小段信息，复位不丢失——这是 RAM-Load 模式下"知道自己在跑哪个 slot"的关键。
+`boot_fetch_active_slot()`（[mcuboot.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/dfu/boot/mcuboot.c#L111-L210)）通过 `blinfo`（bootloader info）从 retention 区域读取当前 slot 号，再映射回 `PARTITION_ID`。retention 区域是 RAM/寄存器中由 MCUboot 写入的小段信息，复位不丢失——这是 RAM-Load 模式下"知道自己在跑哪个 slot"的关键。
 
 ### 4.4 选择策略的决策树
 
@@ -396,7 +396,7 @@ flowchart TD
 };
 ```
 
-`zephyr,code-partition` 这一行是关键——[mcuboot.c:83](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/dfu/boot/mcuboot.c#L83) 用它定位"当前运行 slot"：
+`zephyr,code-partition` 这一行是关键——[mcuboot.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/dfu/boot/mcuboot.c#L83) 用它定位"当前运行 slot"：
 
 ```c
 /* mcuboot.c:83 — 非 RAM-LOAD 模式下，活动 slot 来自 chosen 节点 */
@@ -405,7 +405,7 @@ flowchart TD
 
 ### 5.2 flash_area 结构与 API
 
-[include/zephyr/storage/flash_map.h:57-71](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/storage/flash_map.h#L57-L71) 定义核心结构：
+[include/zephyr/storage/flash_map.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/storage/flash_map.h#L57-L71) 定义核心结构：
 
 ```c
 /* flash_map.h:57-71 — flash 分区抽象 */
@@ -434,11 +434,11 @@ int flash_area_read(const struct flash_area *fa, off_t off, void *dst, size_t le
 }
 ```
 
-`flash_area_open(id, &fa)` 通过 ID 查表返回 `const struct flash_area *`，[flash_map.c:29-49](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/storage/flash_map/flash_map.c#L29-L49)。这个表是编译期生成的（见 5.3）。
+`flash_area_open(id, &fa)` 通过 ID 查表返回 `const struct flash_area *`，[flash_map.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/storage/flash_map/flash_map.c#L29-L49)。这个表是编译期生成的（见 5.3）。
 
 ### 5.3 编译期生成 flash_map 表
 
-[flash_map_default.c:61-68](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/storage/flash_map/flash_map_default.c#L61-L68) 展示了表的生成魔法：
+[flash_map_default.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/storage/flash_map/flash_map_default.c#L61-L68) 展示了表的生成魔法：
 
 ```c
 /* flash_map_default.c:61-68 — 编译期从设备树生成全局 flash_map 表 */
@@ -504,7 +504,7 @@ int flash_area_check_int_sha256(const struct flash_area *fa,
 
 ### 6.2 stream_flash_ctx 结构
 
-stream_flash 的核心是 [stream_flash.c:368-428](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/storage/stream/stream_flash.c#L368-L428) 初始化的上下文：
+stream_flash 的核心是 [stream_flash.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/storage/stream/stream_flash.c#L368-L428) 初始化的上下文：
 
 ```c
 /* stream_flash 初始化：绑定 flash 设备、缓冲、写入范围 */
@@ -529,7 +529,7 @@ int stream_flash_init(struct stream_flash_ctx *ctx, const struct device *fdev,
 
 ### 6.3 流式写入的编号步骤
 
-`stream_flash_buffered_write()`（[stream_flash.c:261-303](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/storage/stream/stream_flash.c#L261-L303)）是核心入口。一次写入的完整步骤：
+`stream_flash_buffered_write()`（[stream_flash.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/storage/stream/stream_flash.c#L261-L303)）是核心入口。一次写入的完整步骤：
 
 ```
 1. 校验 ctx 非空，检查剩余空间是否够 (bytes_written + buf_bytes + len ≤ available)
@@ -546,7 +546,7 @@ int stream_flash_init(struct stream_flash_ctx *ctx, const struct device *fdev,
 4. 若 flush=true 且 buf_bytes > 0: 再调一次 flash_sync() 强制写
 ```
 
-`stream_flash_erase_to_append()`（[stream_flash.c:83-130](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/storage/stream/stream_flash.c#L83-L130)）是流式擦除的关键——它不是一次擦整个 slot，而是"写到哪擦到哪"：
+`stream_flash_erase_to_append()`（[stream_flash.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/storage/stream/stream_flash.c#L83-L130)）是流式擦除的关键——它不是一次擦整个 slot，而是"写到哪擦到哪"：
 
 ```c
 /* stream_flash.c:83-130 — 只擦下一个不够写的 page，已擦过的不再擦 */
@@ -566,7 +566,7 @@ static int stream_flash_erase_to_append(struct stream_flash_ctx *ctx, size_t siz
 
 ### 6.4 进度保存与断点续传
 
-[stream_flash.c:430-504](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/storage/stream/stream_flash.c#L430-L504) 提供三个进度保存函数，依赖 [25 章 Settings](./25-Settings键值持久化.md)：
+[stream_flash.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/storage/stream/stream_flash.c#L430-L504) 提供三个进度保存函数，依赖 [25 章 Settings](./25-Settings键值持久化.md)：
 
 | 函数 | 作用 |
 |------|------|
@@ -574,7 +574,7 @@ static int stream_flash_erase_to_append(struct stream_flash_ctx *ctx, size_t siz
 | `stream_flash_progress_save(ctx, key)` | 把当前 `bytes_written` 存到 settings |
 | `stream_flash_progress_clear(ctx, key)` | 删除进度记录（升级完成后清理） |
 
-为什么需要进度保存？OTA 镜像可能几 MB，传输中途设备断电/重启很常见。没有进度保存，每次重启都要从头传；有了进度保存，重启后 `stream_flash_progress_load` 恢复 `bytes_written`，从断点续传。hawkbit 的 `CONFIG_HAWKBIT_SAVE_PROGRESS` 就是基于这套机制（[hawkbit/Kconfig:234-253](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/mgmt/hawkbit/Kconfig#L234-L253)）。
+为什么需要进度保存？OTA 镜像可能几 MB，传输中途设备断电/重启很常见。没有进度保存，每次重启都要从头传；有了进度保存，重启后 `stream_flash_progress_load` 恢复 `bytes_written`，从断点续传。hawkbit 的 `CONFIG_HAWKBIT_SAVE_PROGRESS` 就是基于这套机制（[hawkbit/Kconfig](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/mgmt/hawkbit/Kconfig#L234-L253)）。
 
 ### 6.5 flash_img：stream_flash 的 OTA 封装
 
@@ -584,7 +584,7 @@ static int stream_flash_erase_to_append(struct stream_flash_ctx *ctx, size_t siz
 - `flash_img_buffered_write(ctx, data, len, flush)`：转发到 stream_flash，但额外处理 trailer。
 - `flash_img_check(ctx, fic, area_id)`：写入完成后用 `flash_area_check_int_sha256` 校验整片镜像。
 
-`scramble_mcuboot_trailer()`（[flash_img.c:71-119](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/dfu/img_util/flash_img.c#L71-L119)）是个微妙细节——在 `CONFIG_IMG_ERASE_PROGRESSIVELY` 启用时，它先把 slot 末尾的 trailer 区域提前擦除，避免新镜像写入后 trailer 还残留旧值导致 MCUboot 误判。
+`scramble_mcuboot_trailer()`（[flash_img.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/dfu/img_util/flash_img.c#L71-L119)）是个微妙细节——在 `CONFIG_IMG_ERASE_PROGRESSIVELY` 启用时，它先把 slot 末尾的 trailer 区域提前擦除，避免新镜像写入后 trailer 还残留旧值导致 MCUboot 误判。
 
 > **核心要点**：stream_flash 用"小缓冲 + 流式擦除 + 进度保存"三件套，把"写 N MB 镜像"的 RAM 占用从 O(N) 降到 O(buf_len)（默认 512 字节）。这是 MCU 能做 OTA 而不爆 RAM 的根本原因。`CONFIG_IMG_ERASE_PROGRESSIVELY` 进一步把"擦整个 slot"摊薄到写入过程中，避免 OTA 开始时几秒的 flash 擦除阻塞。
 
@@ -636,7 +636,7 @@ Data 用 CBOR（[RFC 8949](https://www.rfc-editor.org/rfc/rfc8949)）编码—�
 | **LoRaWAN** | [smp_lorawan.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/mgmt/mcumgr/transport/src/smp_lorawan.c) | `CONFIG_MCUMGR_TRANSPORT_LORAWAN` | 低功耗广域网 |
 | **Raw UART** | [smp_raw_uart.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/mgmt/mcumgr/transport/src/smp_raw_uart.c) | `CONFIG_MCUMGR_TRANSPORT_RAW_UART` | 无编码的裸 UART |
 
-UDP 传输（[smp_udp.c:48-76](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/mgmt/mcumgr/transport/src/smp_udp.c#L48-L76)）在独立线程里收包，配置结构体含 socket、信号量、栈：
+UDP 传输（[smp_udp.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/mgmt/mcumgr/transport/src/smp_udp.c#L48-L76)）在独立线程里收包，配置结构体含 socket、信号量、栈：
 
 ```c
 /* smp_udp.c:48-76 — UDP 传输每个协议版本一份配置 */
@@ -655,7 +655,7 @@ struct config {
 
 ### 7.3 IMG 管理组命令
 
-OTA 用的是 IMG（Image）管理组，[subsys/mgmt/mcumgr/grp/img_mgmt/](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/mgmt/mcumgr/grp/img_mgmt/) 实现。命令 ID 在 [include/zephyr/mgmt/mcumgr/grp/img_mgmt/img_mgmt.h:65-71](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/mgmt/mcumgr/grp/img_mgmt/img_mgmt.h#L65) 定义：
+OTA 用的是 IMG（Image）管理组，[subsys/mgmt/mcumgr/grp/img_mgmt/](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/mgmt/mcumgr/grp/img_mgmt/) 实现。命令 ID 在 [include/zephyr/mgmt/mcumgr/grp/img_mgmt/img_mgmt.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/mgmt/mcumgr/grp/img_mgmt/img_mgmt.h#L65-L71) 定义：
 
 | Command ID | 宏名 | 命令 | Zephyr 是否实现 | 作用 |
 |------------|------|------|----------------|------|
@@ -667,9 +667,9 @@ OTA 用的是 IMG（Image）管理组，[subsys/mgmt/mcumgr/grp/img_mgmt/](file:
 | `5` | `IMG_MGMT_ID_ERASE` | ERASE | 是（write） | 擦除指定 slot |
 | `6` | `IMG_MGMT_ID_SLOT_INFO` | SLOT_INFO | 是（read，需 `CONFIG_MCUMGR_GRP_IMG_SLOT_INFO`） | 查询 slot 详细信息 |
 
-> **如何读这张表**：MCUmgr 规范定义了 7 个命令 ID，但 Zephyr 的 [img_mgmt.c:1113-1138](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/mgmt/mcumgr/grp/img_mgmt/src/img_mgmt.c#L1113) 只注册了 4 个 handler：STATE、UPLOAD、ERASE、SLOT_INFO。注意"设置 trailer 标志（test/permanent/confirm）"不是独立命令，而是通过 STATE 命令的 write 操作（`img_mgmt_state_write`）完成。FILE/CORELIST/CORELOAD 是 mcumgr 规范为其他系统保留的命令，Zephyr 不实现。
+> **如何读这张表**：MCUmgr 规范定义了 7 个命令 ID，但 Zephyr 的 [img_mgmt.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/mgmt/mcumgr/grp/img_mgmt/src/img_mgmt.c#L1113-L1138) 只注册了 4 个 handler：STATE、UPLOAD、ERASE、SLOT_INFO。注意"设置 trailer 标志（test/permanent/confirm）"不是独立命令，而是通过 STATE 命令的 write 操作（`img_mgmt_state_write`）完成。FILE/CORELIST/CORELOAD 是 mcumgr 规范为其他系统保留的命令，Zephyr 不实现。
 
-[img_mgmt_state.c:48-53](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/mgmt/mcumgr/grp/img_mgmt/src/img_mgmt_state.c#L48-L53) 定义了 STATE 命令返回的 slot 标志位：
+[img_mgmt_state.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/mgmt/mcumgr/grp/img_mgmt/src/img_mgmt_state.c#L48-L53) 定义了 STATE 命令返回的 slot 标志位：
 
 ```c
 /* img_mgmt_state.c:48-53 — slot 状态标志位 */
@@ -681,7 +681,7 @@ OTA 用的是 IMG（Image）管理组，[subsys/mgmt/mcumgr/grp/img_mgmt/](file:
 
 ### 7.4 SMP 工作队列模型
 
-[subsys/mgmt/mcumgr/transport/src/smp.c:30-44](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/mgmt/mcumgr/transport/src/smp.c#L30-L44) 展示了 SMP 的并发模型：
+[subsys/mgmt/mcumgr/transport/src/smp.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/mgmt/mcumgr/transport/src/smp.c#L30-L44) 展示了 SMP 的并发模型：
 
 ```c
 /* smp.c:30-44 — SMP 用独立工作队列处理请求 */
@@ -736,7 +736,7 @@ flowchart LR
 
 ### 8.2 hawkBit 客户端依赖
 
-[hawkbit/Kconfig:4-23](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/mgmt/hawkbit/Kconfig#L4-L23) 列出了完整依赖链：
+[hawkbit/Kconfig](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/mgmt/hawkbit/Kconfig#L4-L23) 列出了完整依赖链：
 
 ```kconfig
 menuconfig HAWKBIT
@@ -766,7 +766,7 @@ menuconfig HAWKBIT
 
 [hawkbit.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/mgmt/hawkbit/hawkbit.c) 用 Zephyr 的 SMF（State Machine Framework）组织轮询流程。主要状态：
 
-1. **IDLE**：等待 `poll_interval`（默认 5 分钟，[Kconfig:29-37](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/mgmt/hawkbit/Kconfig#L29-L37)）。
+1. **IDLE**：等待 `poll_interval`（默认 5 分钟，[Kconfig](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/mgmt/hawkbit/Kconfig#L29-L37)）。
 2. **POLL**：向 hawkBit 服务器发 HTTP GET，查询是否有新版本。
 3. **DOWNLOAD**：HTTP GET 镜像二进制，流式写入 slot1。
 4. **INSTALL**：调 `boot_request_upgrade()` 标记 trailer。
@@ -774,12 +774,12 @@ menuconfig HAWKBIT
 
 ### 8.4 认证与安全
 
-hawkBit DDI（Direct Device Integration）API 支持两种认证（[Kconfig:102-123](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/mgmt/hawkbit/Kconfig#L102-L123)）：
+hawkBit DDI（Direct Device Integration）API 支持两种认证（[Kconfig](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/mgmt/hawkbit/Kconfig#L102-L123)）：
 
 - **Target Security Token**：每个设备一个唯一 token，需先在服务器注册设备。
 - **Gateway Security Token**：一组设备共享 token，设备可自注册。
 
-[hawkbit.c:61-71](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/mgmt/hawkbit/hawkbit.c#L61-L71) 构造 Authorization 头：
+[hawkbit.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/mgmt/hawkbit/hawkbit.c#L61-L71) 构造 Authorization 头：
 
 ```c
 /* hawkbit.c:61-71 — HTTP 认证头 */
@@ -796,11 +796,11 @@ hawkBit DDI（Direct Device Integration）API 支持两种认证（[Kconfig:102-
 #endif
 ```
 
-`CONFIG_HAWKBIT_USE_TLS`（[Kconfig:168-200](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/mgmt/hawkbit/Kconfig#L168-L200)）启用 TLS 加密传输——OTA 镜像与认证 token 都不能明文走公网。
+`CONFIG_HAWKBIT_USE_TLS`（[Kconfig](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/mgmt/hawkbit/Kconfig#L168-L200)）启用 TLS 加密传输——OTA 镜像与认证 token 都不能明文走公网。
 
 ### 8.5 进度保存与确认
 
-`CONFIG_HAWKBIT_SAVE_PROGRESS`（[Kconfig:234-253](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/mgmt/hawkbit/Kconfig#L234-L253)）复用 stream_flash 的进度机制——下载中途断网/断电，下次从 `bytes_written` 续传，不重头下。`CONFIG_HAWKBIT_CONFIRM_IMG_ON_INIT`（[Kconfig:254-260](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/mgmt/hawkbit/Kconfig#L254-L260)）让 hawkbit 客户端启动时自动确认当前镜像——避免应用层忘记确认导致反复回滚。
+`CONFIG_HAWKBIT_SAVE_PROGRESS`（[Kconfig](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/mgmt/hawkbit/Kconfig#L234-L253)）复用 stream_flash 的进度机制——下载中途断网/断电，下次从 `bytes_written` 续传，不重头下。`CONFIG_HAWKBIT_CONFIRM_IMG_ON_INIT`（[Kconfig](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/mgmt/hawkbit/Kconfig#L254-L260)）让 hawkbit 客户端启动时自动确认当前镜像——避免应用层忘记确认导致反复回滚。
 
 > **核心要点**：hawkbit 把"云端轮询 + HTTP 下载 + 状态机驱动 + 进度保存"封装成一个开箱即用的 OTA 客户端，下层复用 stream_flash + flash_img + MCUboot 链路。它是 Zephyr OTA 栈的"最高层封装"——产品化部署时只需配置服务器地址、token、poll 间隔即可。
 
@@ -1086,7 +1086,7 @@ flowchart TD
 2. **签名密钥不匹配**——imgtool 用的私钥与 MCUboot 编译时内置的公钥不一致，验签失败。
 3. **slot 大小不够**——slot1 必须能装下镜像 + trailer 对齐空间，否则 stream_flash 返回 `-ENOMEM`。
 4. **DIRECT-XIP 模式忘了擦 slot1**——DIRECT-XIP 不写 slot1 也能切，但旧 trailer 残留会误导 MCUboot。
-5. **CONFIG_IMG_BLOCK_BUF_SIZE 不是 write_block_size 的整数倍**——[flash_img.c:63-66](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/dfu/img_util/flash_img.c#L63-L66) 的 BUILD_ASSERT 会编译失败。
+5. **CONFIG_IMG_BLOCK_BUF_SIZE 不是 write_block_size 的整数倍**——[flash_img.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/dfu/img_util/flash_img.c#L63-L66) 的 BUILD_ASSERT 会编译失败。
 6. **网络未就绪就调 hawkbit**——UDP 传输需等 `network_ready_sem`，hawkbit 需等 IP 获取。
 
 > **核心要点**：MCU OTA 是"用软件复杂性换硬件简单性"的典型——flash 小、RAM 小、无 FS、无 MMU，所有"安全/回滚/断电恢复"都得靠软件层（trailer 状态机 + stream_flash + SMP）补齐。理解这条链路，就理解了嵌入式产品化的核心基础设施。

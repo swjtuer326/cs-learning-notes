@@ -94,10 +94,10 @@ struct k_mem_domain {
 逐字段说明：
 
 - `k_mem_partition.start`：分区的起始**虚拟/线性地址**（在 identity-mapped 系统中等于物理地址）。对齐要求由架构决定，MPU 通常要求 `start` 对齐到 `size`。
-- `k_mem_partition.size`：分区大小。**`size == 0` 是哨兵值**，表示该分区槽位空闲——`k_mem_domain_add_partition` 据此查找空槽（见 [mem_domain.c:228-233](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/mem_domain.c)）。
+- `k_mem_partition.size`：分区大小。**`size == 0` 是哨兵值**，表示该分区槽位空闲——`k_mem_domain_add_partition` 据此查找空槽（见 [mem_domain.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/mem_domain.c#L228-L233)）。
 - `k_mem_partition.attr`：访问属性，类型 `k_mem_partition_attr_t` 由各架构自定义。ARMv8-M 中是包含 `rbar`（权限/XN 位）与 `mair_idx`（缓存策略索引）的小结构体。
 - `k_mem_domain.arch`：仅当 `CONFIG_ARCH_MEM_DOMAIN_DATA` 打开时存在。MMU 架构用它存放该域的页表指针；纯 MPU 架构不需要此字段。
-- `k_mem_domain.partitions[]`：定长数组，容量 `CONFIG_MAX_DOMAIN_PARTITIONS`（默认 16，见 [kernel/Kconfig.mem_domain:8-14](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/Kconfig.mem_domain)）。
+- `k_mem_domain.partitions[]`：定长数组，容量 `CONFIG_MAX_DOMAIN_PARTITIONS`（默认 16，见 [kernel/Kconfig.mem_domain](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/Kconfig.mem_domain#L8-L14)）。
 - `k_mem_domain.thread_mem_domain_list`：仅当 `CONFIG_MEM_DOMAIN_HAS_THREAD_LIST` 打开时存在。用于枚举域内所有线程（例如 deinit 时检查是否还有线程）。
 
 > **核心要点**：`k_mem_domain` 把"权限集合"与"成员线程"耦合在一起——一个域既包含若干分区，也关联若干线程。同域线程共享这些分区的访问权；跨域线程互相隔离。
@@ -150,7 +150,7 @@ int arch_mem_domain_max_partitions_get(void)
 
 ### 2.3 check_add_partition 的五重校验
 
-每次添加分区都经过 `check_add_partition`（[mem_domain.c:24-86](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/mem_domain.c)），它依次检查五类错误：
+每次添加分区都经过 `check_add_partition`（[mem_domain.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/mem_domain.c#L24-L86)），它依次检查五类错误：
 
 1. **NULL 检查**：分区指针非空
 2. **W^X 检查**（若 `CONFIG_EXECUTE_XOR_WRITE` 启用）：分区不能同时可写与可执行
@@ -235,7 +235,7 @@ ARMv8-M 的权限宏定义在 [file:///home/pbw/rtos/cs-learning-notes/zephyr-pr
 
 ### 3.2 权限字段的两部分
 
-ARMv8-M 的 `k_mem_partition_attr_t` 是一个结构体（[arm_mpu_v8.h:362-369](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/arch/arm/mpu/arm_mpu_v8.h)）：
+ARMv8-M 的 `k_mem_partition_attr_t` 是一个结构体（[arm_mpu_v8.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/arch/arm/mpu/arm_mpu_v8.h#L362-L369)）：
 
 ```c
 typedef struct {
@@ -258,7 +258,7 @@ typedef struct {
 
 ### 3.3 缓存变体
 
-对于 DMA 缓冲区或多核共享区，需要关闭缓存。Zephyr 提供 `_NOCACHE` 变体（[arm_mpu_v8.h:437-456](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/arch/arm/mpu/arm_mpu_v8.h)）：
+对于 DMA 缓冲区或多核共享区，需要关闭缓存。Zephyr 提供 `_NOCACHE` 变体（[arm_mpu_v8.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/arch/arm/mpu/arm_mpu_v8.h#L437-L456)）：
 
 ```c
 #define K_MEM_PARTITION_P_RW_U_RW_NOCACHE \
@@ -290,7 +290,7 @@ W^X（Write XOR Execute）要求：**同一内存区域不能同时可写与可�
 
 ### 4.2 在 Zephyr 中的落地
 
-W^X 由 [kernel/Kconfig:987-998](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/Kconfig) 定义：
+W^X 由 [kernel/Kconfig](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/Kconfig#L987-L998) 定义：
 
 ```kconfig
 config EXECUTE_XOR_WRITE
@@ -308,7 +308,7 @@ config EXECUTE_XOR_WRITE
 - `USERSPACE`：W^X 只对用户态有意义（内核态本身不受内存域约束）
 - `ARCH_HAS_EXECUTABLE_PAGE_BIT`：架构必须有独立的"可执行"位。ARMv7-M 的 MPU 没有 XN 位时无法支持；ARMv8-M、x86、ARC 都有
 
-启用后，`check_add_partition` 中加入检查（[mem_domain.c:36-46](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/mem_domain.c)）：
+启用后，`check_add_partition` 中加入检查（[mem_domain.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/mem_domain.c#L36-L46)）：
 
 ```c
 #ifdef CONFIG_EXECUTE_XOR_WRITE
@@ -321,7 +321,7 @@ config EXECUTE_XOR_WRITE
 #endif
 ```
 
-`K_MEM_PARTITION_IS_EXECUTABLE` 与 `K_MEM_PARTITION_IS_WRITABLE` 由各架构定义。ARMv8-M（[arm_mpu_v8.h:409-432](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/arch/arm/mpu/arm_mpu_v8.h)）：
+`K_MEM_PARTITION_IS_EXECUTABLE` 与 `K_MEM_PARTITION_IS_WRITABLE` 由各架构定义。ARMv8-M（[arm_mpu_v8.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/arch/arm/mpu/arm_mpu_v8.h#L409-L432)）：
 
 ```c
 #define K_MEM_PARTITION_IS_WRITABLE(attr) \
@@ -367,7 +367,7 @@ config EXECUTE_XOR_WRITE
 
 ### 5.2 Zephyr 的统一抽象
 
-官方文档（[memory_domain.rst:6-13](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/doc/kernel/usermode/memory_domain.rst)）明确：
+官方文档（[memory_domain.rst](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/doc/kernel/usermode/memory_domain.rst#L6-L13)）明确：
 
 > Zephyr 的内存保护设计面向带 MPU 的 MCU。对于带分页 MMU 的架构（如 x86），MMU 被当作"分区数无限的 MPU"使用——通过 identity page table（恒等映射页表）实现。
 
@@ -400,7 +400,7 @@ flowchart LR
 
 ### 5.3 栈隔离的根本差异
 
-MPU 与 MMU 在 Zephyr 中最显著的行为差异是**同域线程能否互访栈**。由 [kernel/Kconfig.mem_domain:57-84](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/Kconfig.mem_domain) 控制：
+MPU 与 MMU 在 Zephyr 中最显著的行为差异是**同域线程能否互访栈**。由 [kernel/Kconfig.mem_domain](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/Kconfig.mem_domain#L57-L84) 控制：
 
 ```kconfig
 config ARCH_MEM_DOMAIN_SUPPORTS_ISOLATED_STACKS
@@ -492,7 +492,7 @@ K_APP_DMEM(my_part) int counter_a = 0;
 K_APP_BMEM(my_part) uint8_t rx_buf[128];
 ```
 
-`K_APP_DMEM` 与 `K_APP_BMEM` 是段属性宏（[app_memdomain.h:51-61](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/app_memory/app_memdomain.h)）：
+`K_APP_DMEM` 与 `K_APP_BMEM` 是段属性宏（[app_memdomain.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/app_memory/app_memdomain.h#L51-L61)）：
 
 ```c
 #define K_APP_DMEM_SECTION(id) data_smem_##id##_data
@@ -516,11 +516,11 @@ K_APP_BMEM(my_part) uint8_t rx_buf[128];
 4. 启动期：`K_APPMEM_PARTITION_DEFINE` 定义的 `k_mem_partition` 用这些符号初始化 `start`/`size`
 5. 启动期：`z_app_region` 结构体记录 BSS 边界，供启动代码清零
 
-> **核心要点**：`K_APPMEM_PARTITION_DEFINE` 把"分区定义"从手动算地址变为"声明 + 标注变量"。构建系统负责聚合、对齐、生成符号。代价是分区属性固定为 `K_MEM_PARTITION_P_RW_U_RW`（自动分区只支持读写，不支持只读或可执行——见 [memory_domain.rst:241-245](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/doc/kernel/usermode/memory_domain.rst)）。
+> **核心要点**：`K_APPMEM_PARTITION_DEFINE` 把"分区定义"从手动算地址变为"声明 + 标注变量"。构建系统负责聚合、对齐、生成符号。代价是分区属性固定为 `K_MEM_PARTITION_P_RW_U_RW`（自动分区只支持读写，不支持只读或可执行——见 [memory_domain.rst](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/doc/kernel/usermode/memory_domain.rst#L241-L245)）。
 
 ### 6.4 预定义分区
 
-Zephyr 预定义了若干分区（[memory_domain.rst:304-319](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/doc/kernel/usermode/memory_domain.rst)）：
+Zephyr 预定义了若干分区（[memory_domain.rst](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/doc/kernel/usermode/memory_domain.rst#L304-L319)）：
 
 | 分区名 | 用途 |
 |--------|------|
@@ -528,7 +528,7 @@ Zephyr 预定义了若干分区（[memory_domain.rst:304-319](file:///home/pbw/r
 | `z_libc_partition` | C 库与运行时全局变量，加入默认域 |
 | `k_mbedtls_partition` | mbedTLS 库全局变量 |
 
-`z_libc_partition` 在 `init_mem_domain_module` 中被加入 `k_mem_domain_default`（[mem_domain.c:414-418](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/mem_domain.c)），确保所有未指定域的线程都能用 C 库。
+`z_libc_partition` 在 `init_mem_domain_module` 中被加入 `k_mem_domain_default`（[mem_domain.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/mem_domain.c#L414-L418)），确保所有未指定域的线程都能用 C 库。
 
 ---
 
@@ -538,7 +538,7 @@ Zephyr 预定义了若干分区（[memory_domain.rst:304-319](file:///home/pbw/r
 
 ### 7.1 加入流程
 
-`k_mem_domain_add_thread`（[mem_domain.c:379-395](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/mem_domain.c)）的逻辑：
+`k_mem_domain_add_thread`（[mem_domain.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/mem_domain.c#L379-L395)）的逻辑：
 
 ```c
 int k_mem_domain_add_thread(struct k_mem_domain *domain, k_tid_t thread)
@@ -555,7 +555,7 @@ int k_mem_domain_add_thread(struct k_mem_domain *domain, k_tid_t thread)
 }
 ```
 
-注意第 12 章 §8.3 提到"没有 `k_mem_domain_remove_thread`"——线程加入新域时**自动从原域移除**。`remove_thread_locked` 与 `add_thread_locked` 的内部工作（[mem_domain.c:308-349](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/mem_domain.c)）：
+注意第 12 章 §8.3 提到"没有 `k_mem_domain_remove_thread`"——线程加入新域时**自动从原域移除**。`remove_thread_locked` 与 `add_thread_locked` 的内部工作（[mem_domain.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/mem_domain.c#L308-L349)）：
 
 ```c
 static int add_thread_locked(struct k_mem_domain *domain, k_tid_t thread)
@@ -577,7 +577,7 @@ static int add_thread_locked(struct k_mem_domain *domain, k_tid_t thread)
 
 ### 7.2 继承机制
 
-新线程创建时**继承父线程的内存域**。这在 `z_mem_domain_init_thread`（[mem_domain.c:352-363](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/mem_domain.c)）实现：
+新线程创建时**继承父线程的内存域**。这在 `z_mem_domain_init_thread`（[mem_domain.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/mem_domain.c#L352-L363)）实现：
 
 ```c
 void z_mem_domain_init_thread(struct k_thread *thread)
@@ -595,13 +595,13 @@ void z_mem_domain_init_thread(struct k_thread *thread)
 
 ### 7.3 默认域
 
-所有线程都必须属于某个域。`k_mem_domain_default` 是默认域，在 `init_mem_domain_module` 中初始化（[mem_domain.c:411](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/mem_domain.c)）：
+所有线程都必须属于某个域。`k_mem_domain_default` 是默认域，在 `init_mem_domain_module` 中初始化（[mem_domain.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/mem_domain.c#L411)）：
 
 ```c
 ret = k_mem_domain_init(&k_mem_domain_default, 0, NULL);
 ```
 
-主线程（main thread）启动时属于默认域。默认域包含 `z_libc_partition`（若存在），确保任何线程都能使用 C 库全局变量。默认域**不可销毁**——`k_mem_domain_deinit` 显式检查（[mem_domain.c:173-177](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/mem_domain.c)）：
+主线程（main thread）启动时属于默认域。默认域包含 `z_libc_partition`（若存在），确保任何线程都能使用 C 库全局变量。默认域**不可销毁**——`k_mem_domain_deinit` 显式检查（[mem_domain.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/mem_domain.c#L173-L177)）：
 
 ```c
 if (domain == &k_mem_domain_default) {
@@ -632,7 +632,7 @@ if (domain == &k_mem_domain_default) {
 
 ### 8.2 同步 API 的取舍
 
-`CONFIG_ARCH_MEM_DOMAIN_SYNCHRONOUS_API` 是一个隐藏 Kconfig（[kernel/Kconfig.mem_domain:29-55](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/Kconfig.mem_domain)）。它的含义是：**架构层要求在域/分区/线程变更时立即同步更新硬件**。
+`CONFIG_ARCH_MEM_DOMAIN_SYNCHRONOUS_API` 是一个隐藏 Kconfig（[kernel/Kconfig.mem_domain](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/Kconfig.mem_domain#L29-L55)）。它的含义是：**架构层要求在域/分区/线程变更时立即同步更新硬件**。
 
 Kconfig 帮助文本给出了关键判断标准：
 

@@ -248,7 +248,7 @@ shell 主线程阻塞在 `k_event_wait`，一旦有信号就进入对应处理�
 
 ### 3.1 命令数据结构
 
-每条命令在内存里是一个 `struct shell_static_entry`（[include/zephyr/shell/shell.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/shell/shell.h) 第 283 行）：
+每条命令在内存里是一个 `struct shell_static_entry`（[include/zephyr/shell/shell.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/shell/shell.h#L283)）：
 
 ```c
 struct shell_static_entry {
@@ -275,7 +275,7 @@ union shell_cmd_entry {
 
 ### 3.2 `SHELL_CMD_REGISTER` 的展开
 
-以第 1 章的 `SHELL_CMD_REGISTER(uptime, NULL, "Show system uptime.", cmd_uptime_show)` 为例，宏展开后（[include/zephyr/shell/shell.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/shell/shell.h) 第 447 行的 `SHELL_CMD_REGISTER` 调用第 390 行的 `SHELL_CMD_ARG_REGISTER`）：
+以第 1 章的 `SHELL_CMD_REGISTER(uptime, NULL, "Show system uptime.", cmd_uptime_show)` 为例，宏展开后（[include/zephyr/shell/shell.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/shell/shell.h#L447)的 `SHELL_CMD_REGISTER` 调用`SHELL_CMD_ARG_REGISTER`）：
 
 ```c
 /* 1. 定义命令静态条目 */
@@ -314,14 +314,14 @@ shell 实际上用了三个 section 来分别存放三类命令入口：
 
 ### 3.4 命令查找：从字符串到 handler
 
-用户敲下 `kernel thread list` 后，shell 用 `z_shell_get_last_command` 逐级查找（[subsys/shell/shell_utils.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/shell/shell_utils.c) 第 366 行）：
+用户敲下 `kernel thread list` 后，shell 用 `z_shell_get_last_command` 逐级查找（[subsys/shell/shell_utils.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/shell/shell_utils.c#L366)）：
 
 1. 在 `shell_root_cmds` section 里 `strcmp` 找 `kernel` → 返回 root entry
 2. 沿 root entry 的 `subcmd` 指针，找子命令 `thread`
 3. 沿 `thread` 的 `subcmd`，找子命令 `list`
 4. `list` 的 `handler` 非空，调用 `cmd_kernel_thread_list(sh, argc, argv)`
 
-`z_shell_cmd_get` 是底层"取第 idx 个子命令"的函数，它会判断 `subcmd` 指针落在哪个 section：如果是 `shell_dynamic_subcmds` 区间就调 `dynamic_get(idx, entry)`，如果是 `shell_subcmds` 区间就按 section 数组取，否则按普通静态数组取（[subsys/shell/shell_utils.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/shell/shell_utils.c) 第 285-325 行）。
+`z_shell_cmd_get` 是底层"取第 idx 个子命令"的函数，它会判断 `subcmd` 指针落在哪个 section：如果是 `shell_dynamic_subcmds` 区间就调 `dynamic_get(idx, entry)`，如果是 `shell_subcmds` 区间就按 section 数组取，否则按普通静态数组取（[subsys/shell/shell_utils.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/shell/shell_utils.c#L285-L325)）。
 
 ---
 
@@ -432,7 +432,7 @@ SHELL_CMD_REGISTER(dictionary, &sub_dict, NULL, NULL);
 
 ### 5.1 命令历史：`k_heap` + `sys_dlist`
 
-命令历史用 `K_HEAP_DEFINE` 分配一个固定大小堆（默认 512 字节，`CONFIG_SHELL_HISTORY_BUFFER`），每个历史条目是 `sys_dnode_t` 节点 + 长度 + 数据（[subsys/shell/shell_history.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/shell/shell_history.c) 第 17 行）：
+命令历史用 `K_HEAP_DEFINE` 分配一个固定大小堆（默认 512 字节，`CONFIG_SHELL_HISTORY_BUFFER`），每个历史条目是 `sys_dnode_t` 节点 + 长度 + 数据（[subsys/shell/shell_history.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/shell/shell_history.c#L17)）：
 
 ```c
 struct shell_history_item {
@@ -507,7 +507,7 @@ flowchart LR
 
 ### 6.1 Tab 补全算法
 
-按 Tab 时 shell 调用 `tab_handle`（[subsys/shell/shell.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/shell/shell.c) 第 829 行），流程如下：
+按 Tab 时 shell 调用 `tab_handle`（[subsys/shell/shell.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/shell/shell.c#L829)），流程如下：
 
 1. `tab_prepare`：把光标位置之前的命令复制到 `temp_buff`，按空格拆成 `argv`，找到当前正在补全的"父命令"
 2. `find_completion_candidates`：遍历父命令的所有子命令，用 `strncmp(candidate, prefix, len) == 0` 找出所有以已输入前缀开头的候选
@@ -528,7 +528,7 @@ thread  ticks
 
 ### 6.2 帮助系统：自由文本 vs 结构化
 
-每个命令的 `help` 字段可以是两种形式之一，`shell_help_is_structured` 用一个 magic number 区分（[include/zephyr/shell/shell.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/shell/shell.h) 第 327 行）：
+每个命令的 `help` 字段可以是两种形式之一，`shell_help_is_structured` 用一个 magic number 区分（[include/zephyr/shell/shell.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/shell/shell.h#L327)）：
 
 **自由文本**（老式）：
 
@@ -547,7 +547,7 @@ SHELL_CMD_ARG_REGISTER(devmem, &sub_devmem,
     cmd_devmem, 2, 2);
 ```
 
-`SHELL_HELP` 宏把 description 与 usage 打包成带 magic 的结构体，shell 打印时分别渲染——description 用整段文字，usage 用"Usage: devmem ..."格式。结构化帮助的好处是终端能自动对齐、换行不切词（[subsys/shell/shell_help.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/shell/shell_help.c) 第 116 行的 `formatted_structured_help_print`）。
+`SHELL_HELP` 宏把 description 与 usage 打包成带 magic 的结构体，shell 打印时分别渲染——description 用整段文字，usage 用"Usage: devmem ..."格式。结构化帮助的好处是终端能自动对齐、换行不切词（[subsys/shell/shell_help.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/shell/shell_help.c#L116)的 `formatted_structured_help_print`）。
 
 按 `-h` 或 `--help` 会自动触发帮助打印（`CONFIG_SHELL_HELP_OPT_PARSE=y` 时），shell 在 `execute` 路径里检查 `argv` 是否含帮助标志，是则不调用 handler 直接打印帮助。
 
@@ -602,7 +602,7 @@ flowchart LR
 
 ### 7.2 三态：ENABLED / DISABLED / PANIC
 
-shell_log_backend 有三种状态（[include/zephyr/shell/shell_log_backend.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/shell/shell_log_backend.h) 第 22 行）：
+shell_log_backend 有三种状态（[include/zephyr/shell/shell_log_backend.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/shell/shell_log_backend.h#L22)）：
 
 | 状态 | 含义 | 进入条件 |
 |------|------|----------|
@@ -611,11 +611,11 @@ shell_log_backend 有三种状态（[include/zephyr/shell/shell_log_backend.h](f
 | `SHELL_LOG_BACKEND_DISABLED` | 暂停，日志直接丢弃 | Ctrl+T 切换或 `log_backend_disable` |
 | `SHELL_LOG_BACKEND_PANIC` | panic 模式，同步直接打印（绕过 mpsc_pbuf） | `log_panic` 触发 |
 
-panic 模式的存在是因为系统崩溃后不能再依赖线程调度——shell 线程可能再也跑不起来了。此时 shell_log_backend 切到同步模式：每条日志立即调 `process_log_msg` 直接打印到后端（[subsys/shell/shell_log_backend.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/shell/shell_log_backend.c) 第 83 行的 `panic` 函数）。同时后端的 `enable(blocking_tx=true)` 让 UART 切到轮询模式，不再依赖中断。
+panic 模式的存在是因为系统崩溃后不能再依赖线程调度——shell 线程可能再也跑不起来了。此时 shell_log_backend 切到同步模式：每条日志立即调 `process_log_msg` 直接打印到后端（[subsys/shell/shell_log_backend.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/shell/shell_log_backend.c#L83)的 `panic` 函数）。同时后端的 `enable(blocking_tx=true)` 让 UART 切到轮询模式，不再依赖中断。
 
 ### 7.3 Ctrl+T 切换
 
-按下 Ctrl+T 触发 `toggle_logs_output`（[subsys/shell/shell.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/shell/shell.c) 第 814 行）：
+按下 Ctrl+T 触发 `toggle_logs_output`（[subsys/shell/shell.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/shell/shell.c#L814)）：
 
 ```c
 if (backend->control_block->state == SHELL_LOG_BACKEND_ENABLED) {
@@ -652,7 +652,7 @@ if (backend->control_block->state == SHELL_LOG_BACKEND_ENABLED) {
 
 ### 8.2 UART 后端：三种 API
 
-UART 后端最复杂——同一份代码支持三种 UART API（[subsys/shell/backends/Kconfig.backends](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/shell/backends/Kconfig.backends) 第 54 行的 `choice SHELL_BACKEND_SERIAL_API`）：
+UART 后端最复杂——同一份代码支持三种 UART API（[subsys/shell/backends/Kconfig.backends](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/shell/backends/Kconfig.backends#L54)的 `choice SHELL_BACKEND_SERIAL_API`）：
 
 | API 模式 | Kconfig | 工作方式 | 适用 |
 |----------|---------|----------|------|
@@ -662,7 +662,7 @@ UART 后端最复杂——同一份代码支持三种 UART API（[subsys/shell/b
 
 三种 API 共用 `shell_uart_transport_api`，只是 `init`/`write`/`read` 内部实现不同。Interrupt driven 模式还支持 DTR 检测（`CONFIG_SHELL_BACKEND_SERIAL_CHECK_DTR`）——只有 DTR 信号有效（终端真连着）才发数据，避免无终端时空发字符。SMP 转义字节（mcumgr 用）也在这一层过滤。
 
-UART 后端的初始化是 `SYS_INIT` 自动触发的（[subsys/shell/backends/shell_uart.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/shell/backends/shell_uart.c) 第 564 行）：
+UART 后端的初始化是 `SYS_INIT` 自动触发的（[subsys/shell/backends/shell_uart.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/shell/backends/shell_uart.c#L564)）：
 
 ```c
 static int enable_shell_uart(void)
@@ -679,7 +679,7 @@ SYS_INIT(enable_shell_uart, POST_KERNEL, CONFIG_SHELL_BACKEND_SERIAL_INIT_PRIORI
 
 ### 8.3 RTT 后端：定时轮询 + 主机在线检测
 
-RTT 后端没有"中断"——SEGGER RTT 是主机主动轮询的共享内存协议。shell RTT 后端用 `k_timer` 每 10ms 检查下行缓冲是否有数据（[subsys/shell/backends/shell_rtt.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/shell/backends/shell_rtt.c) 第 37 行的 `timer_handler`）。
+RTT 后端没有"中断"——SEGGER RTT 是主机主动轮询的共享内存协议。shell RTT 后端用 `k_timer` 每 10ms 检查下行缓冲是否有数据（[subsys/shell/backends/shell_rtt.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/shell/backends/shell_rtt.c#L37)的 `timer_handler`）。
 
 写数据时用 `SEGGER_RTT_WriteSkipNoLock`，如果主机没及时读走（`SEGGER_RTT_HasDataUp` 一直为真），retry 计数耗尽就认为"主机不在"，丢弃后续数据。`host_present` 标志避免无主机时反复阻塞。
 
@@ -739,7 +739,7 @@ flowchart TD
 
 > **如何读这张图**：三个开发者通过三种不同后端连进同一台设备，每个后端有自己的 ctx（命令缓冲、光标、历史互不干扰），但共享同一份命令树。`uptime` handler 被调用时收到的 `sh` 参数指向调用它的实例——handler 内部用 `shell_print(sh, ...)` 输出会自动回到正确的终端。
 
-`backends` 内置命令（[subsys/shell/shell_cmds.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/shell/shell_cmds.c) 第 222 行）用 `STRUCT_SECTION_FOREACH(shell, obj)` 遍历所有 shell 实例，列出当前活跃的后端：
+`backends` 内置命令（[subsys/shell/shell_cmds.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/shell/shell_cmds.c#L222)）用 `STRUCT_SECTION_FOREACH(shell, obj)` 遍历所有 shell 实例，列出当前活跃的后端：
 
 ```
 uart:~$ shell backends
@@ -817,7 +817,7 @@ SHELL_CMD_ARG_REGISTER(devmem, &sub_devmem,
 
 ### 9.3 动态命令：枚举设备
 
-`device list` 命令的 Tab 补全能列出所有 device 名（[subsys/shell/modules/device_service.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/shell/modules/device_service.c) 第 123 行）：
+`device list` 命令的 Tab 补全能列出所有 device 名（[subsys/shell/modules/device_service.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/shell/modules/device_service.c#L123)）：
 
 ```c
 static void device_name_lookup(size_t idx,
@@ -844,7 +844,7 @@ SHELL_CMD_REGISTER(device, &sub_device, "Device commands", NULL);
 
 ### 9.4 命令执行的完整编号步骤
 
-用户敲下回车到 handler 执行完毕，shell 走完以下步骤（[subsys/shell/shell.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/shell/shell.c) 第 631 行的 `execute` 函数）：
+用户敲下回车到 handler 执行完毕，shell 走完以下步骤（[subsys/shell/shell.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/shell/shell.c#L631)的 `execute` 函数）：
 
 1. **光标移到行尾**：`z_shell_op_cursor_end_move` + 换行，让 prompt 与命令历史整洁
 2. **历史保存**：`history_put` 把当前命令塞进历史链表（与最近一条相同则跳过）

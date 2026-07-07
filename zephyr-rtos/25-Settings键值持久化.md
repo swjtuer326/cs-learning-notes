@@ -633,7 +633,7 @@ struct zms_ate {
 } __packed;
 ```
 
-> **核心要点**：ZMS 的 ATE 与 NVS 的 ATE 设计同源——元数据（id、len、crc）与数据分离，ATE 从扇区末尾向前生长、数据从扇区开头向后生长。扇区的"空 ATE"（empty ATE）用 `metadata` 字段写入 `ZMS_MAGIC_NUMBER | ZMS_DEFAULT_VERSION`（见 [zms.c:851-852](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/kvss/zms/zms.c)），作为扇区有效性与版本标识，掉电后 `zms_mount` 能识别损坏或部分初始化的扇区并跳过。`crc8` 字段让单条 ATE 损坏可被检测，配合 `data_crc` 实现两级完整性校验。
+> **核心要点**：ZMS 的 ATE 与 NVS 的 ATE 设计同源——元数据（id、len、crc）与数据分离，ATE 从扇区末尾向前生长、数据从扇区开头向后生长。扇区的"空 ATE"（empty ATE）用 `metadata` 字段写入 `ZMS_MAGIC_NUMBER | ZMS_DEFAULT_VERSION`（见 [zms.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/kvss/zms/zms.c#L851-L852)），作为扇区有效性与版本标识，掉电后 `zms_mount` 能识别损坏或部分初始化的扇区并跳过。`crc8` 字段让单条 ATE 损坏可被检测，配合 `data_crc` 实现两级完整性校验。
 
 ### 7.2 写入流程：hash + 冲突处理
 

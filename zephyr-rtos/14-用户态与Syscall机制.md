@@ -55,7 +55,7 @@ Zephyr 的用户态机制就是回答"如何在不信任部分代码的前提下
 
 ### 1.2 Zephyr 的设计选择
 
-Zephyr 用户态的核心设计见 [overview.rst](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/doc/kernel/usermode/overview.rst) 第 6-95 行。整理为三条原则：
+Zephyr 用户态的核心设计见 [overview.rst](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/doc/kernel/usermode/overview.rst#L6-L95)。整理为三条原则：
 
 | 原则 | 含义 | 工程后果 |
 |------|------|----------|
@@ -98,7 +98,7 @@ Zephyr 用户态的核心设计见 [overview.rst](file:///home/pbw/rtos/cs-learn
 
 ### 2.2 Zephyr 的两类线程
 
-Zephyr 在硬件模式之上抽象出两类线程，定义见 [overview.rst](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/doc/kernel/usermode/overview.rst) 第 30-50 行：
+Zephyr 在硬件模式之上抽象出两类线程，定义见 [overview.rst](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/doc/kernel/usermode/overview.rst#L30-L50)：
 
 - **supervisor 线程**：跑在特权模式，能直接访问所有内核数据结构与外设寄存器，调用 `k_*` API 走直接函数调用，零开销
 - **user 线程**：跑在用户模式，只能访问自己的栈、所属内存域的分区、程序文本；调用 `k_*` API 必须走 syscall 陷入
@@ -107,7 +107,7 @@ Zephyr 在硬件模式之上抽象出两类线程，定义见 [overview.rst](fil
 
 ### 2.3 编译期标注：__ZEPHYR_SUPERVISOR__ / __ZEPHYR_USER__
 
-Zephyr 在构建期通过宏标注每个 C 文件的运行模式，让编译器能选最优路径。判定逻辑见 [syscall.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/syscall.h) 第 91-107 行：
+Zephyr 在构建期通过宏标注每个 C 文件的运行模式，让编译器能选最优路径。判定逻辑见 [syscall.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/syscall.h#L91-L107)：
 
 ```c
 /* True if a syscall function must trap to the kernel, usually a
@@ -135,7 +135,7 @@ static ALWAYS_INLINE bool z_syscall_trap(void)
 - **`__ZEPHYR_USER__` 已定义**：该文件所有代码跑在用户模式，`z_syscall_trap()` 恒返回 `true`，syscall 入口函数被编译成"无条件走 SVC 陷入"
 - **都没定义**：编译期无法决定，运行时调 `arch_is_user_context()` 检查当前 CPU 模式
 
-`arch_is_user_context()` 的 ARM 实现见 [arch/arm/syscall.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/arch/arm/syscall.h) 第 175-188 行：
+`arch_is_user_context()` 的 ARM 实现见 [arch/arm/syscall.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/arch/arm/syscall.h#L175-L188)：
 
 ```c
 static inline bool arch_is_user_context(void)
@@ -164,12 +164,12 @@ static inline bool arch_is_user_context(void)
 
 | 视角 | `__syscall` 的含义 |
 |------|--------------------|
-| C 编译器 | `static inline`（见 [toolchain/common.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/toolchain/common.h) 第 182 行 `#define __syscall static inline`） |
+| C 编译器 | `static inline`（见 [toolchain/common.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/toolchain/common.h#L182) `#define __syscall static inline`） |
 | `parse_syscalls.py` | 一个标记："这个函数原型需要被生成 syscall 三件套" |
 
 这意味着 `__syscall` 标注的函数原型在 C 编译器看来只是一个 `static inline` 声明——函数体由 `gen_syscalls.py` 生成的另一个 `static inline` 提供。而 `parse_syscalls.py` 用正则扫描所有头文件，找出 `__syscall` 开头的函数原型，把它们送进生成流水线。
 
-正则定义见 [parse_syscalls.py](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/scripts/build/parse_syscalls.py) 第 36-45 行：
+正则定义见 [parse_syscalls.py](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/scripts/build/parse_syscalls.py#L36-L45)：
 
 ```python
 syscall_regex = re.compile(
@@ -188,7 +188,7 @@ syscall_regex = re.compile(
 
 ### 3.2 三条限制
 
-由于 `parse_syscalls.py` 用简陋的正则解析 C 原型，对开发者施加了三条限制（见 [syscalls.rst](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/doc/kernel/usermode/syscalls.rst) 第 60-72 行）：
+由于 `parse_syscalls.py` 用简陋的正则解析 C 原型，对开发者施加了三条限制（见 [syscalls.rst](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/doc/kernel/usermode/syscalls.rst#L60-L72)）：
 
 1. `__syscall` 必须是原型第一个 token
 2. 数组参数必须用指针表达：`int foo[]` 不行，要写 `int *foo`
@@ -226,20 +226,20 @@ flowchart TD
 
 ### 4.1 三类函数的关系
 
-每个 syscall 在源码中表现为三个函数，命名约定见 [syscall.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/syscall.h) 第 23-48 行注释。以 `k_sem_init` 为例：
+每个 syscall 在源码中表现为三个函数，命名约定见 [syscall.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/syscall.h#L23-L48)注释。以 `k_sem_init` 为例：
 
 | 函数 | 命名 | 位置 | 职责 |
 |------|------|------|------|
 | **入口（invocation）** | `k_sem_init` | 生成在 `syscalls/kernel.h` | 用户/supervisor 都调它；判断模式后选直接调实现或走 SVC |
-| **实现（implementation）** | `z_impl_k_sem_init` | [kernel/sem.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/sem.c) 第 45 行 | 真正干活；假设参数已校验 |
-| **验证（verifier）** | `z_vrfy_k_sem_init` | [kernel/sem.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/sem.c) 第 76 行 | 校验参数后调实现 |
+| **实现（implementation）** | `z_impl_k_sem_init` | [kernel/sem.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/sem.c#L45) | 真正干活；假设参数已校验 |
+| **验证（verifier）** | `z_vrfy_k_sem_init` | [kernel/sem.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/sem.c#L76) | 校验参数后调实现 |
 | **解 marshalling** | `z_mrsh_k_sem_init` | 生成在 `syscalls/k_sem_init_mrsh.c` | 把 6 个 `uintptr_t` 寄存器参数还原为 C 类型，调 `z_vrfy_*` |
 
 三类函数（入口/实现/验证）由开发者手写或半手写，第四类（解 marshalling）完全由 `gen_syscalls.py` 生成。下面分别看每类的源码形态。
 
 ### 4.2 入口函数：生成的 static inline
 
-`gen_syscalls.py` 的 `wrapper_defs()` 函数（[gen_syscalls.py](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/scripts/build/gen_syscalls.py) 第 229-340 行）生成入口函数。以 `k_sem_init(struct k_sem *sem, unsigned int initial_count, unsigned int limit)` 为例，生成结果类似（简化版，实际还含 tracing 宏）：
+`gen_syscalls.py` 的 `wrapper_defs()` 函数（[gen_syscalls.py](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/scripts/build/gen_syscalls.py#L229-L340)）生成入口函数。以 `k_sem_init(struct k_sem *sem, unsigned int initial_count, unsigned int limit)` 为例，生成结果类似（简化版，实际还含 tracing 宏）：
 
 ```c
 extern int z_impl_k_sem_init(struct k_sem *sem, unsigned int initial_count,
@@ -270,7 +270,7 @@ static inline int k_sem_init(struct k_sem *sem, unsigned int initial_count,
 3. **`__pinned_func`**：标记此函数必须驻留在总是可执行的内存区域（不被换出），因为 syscall 入口可能在缺页中断路径上被调用
 4. **`arch_syscall_invoke3`**：根据参数个数选 invoke0~invoke6，最终发出 `svc` 指令
 
-`arch_syscall_invoke3` 的 ARM Cortex-M 实现见 [arch/arm/syscall.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/arch/arm/syscall.h) 第 109-126 行：
+`arch_syscall_invoke3` 的 ARM Cortex-M 实现见 [arch/arm/syscall.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/arch/arm/syscall.h#L109-L126)：
 
 ```c
 static inline uintptr_t arch_syscall_invoke3(uintptr_t arg1, uintptr_t arg2,
@@ -297,7 +297,7 @@ static inline uintptr_t arch_syscall_invoke3(uintptr_t arg1, uintptr_t arg2,
 
 ### 4.3 实现函数：开发者手写
 
-实现函数 `z_impl_k_sem_init` 是真正的业务代码，[kernel/sem.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/sem.c) 第 45-73 行：
+实现函数 `z_impl_k_sem_init` 是真正的业务代码，[kernel/sem.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/sem.c#L45-L73)：
 
 ```c
 int z_impl_k_sem_init(struct k_sem *sem, unsigned int initial_count,
@@ -328,7 +328,7 @@ int z_impl_k_sem_init(struct k_sem *sem, unsigned int initial_count,
 
 ### 4.4 验证函数：开发者手写
 
-验证函数 `z_vrfy_k_sem_init` 紧跟在实现后面，[kernel/sem.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/sem.c) 第 76-83 行：
+验证函数 `z_vrfy_k_sem_init` 紧跟在实现后面，[kernel/sem.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/sem.c#L76-L83)：
 
 ```c
 #ifdef CONFIG_USERSPACE
@@ -407,13 +407,13 @@ flowchart TD
 
 ### 5.1 派发表的结构
 
-syscall 派发表 `_k_syscall_table` 是一个函数指针数组，长度 `K_SYSCALL_LIMIT`，声明见 [internal/syscall_handler.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/internal/syscall_handler.h) 第 25 行：
+syscall 派发表 `_k_syscall_table` 是一个函数指针数组，长度 `K_SYSCALL_LIMIT`，声明见 [internal/syscall_handler.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/internal/syscall_handler.h#L25)：
 
 ```c
 extern const _k_syscall_handler_t _k_syscall_table[K_SYSCALL_LIMIT];
 ```
 
-`_k_syscall_handler_t` 类型定义见 [syscall.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/syscall.h) 第 86-89 行：
+`_k_syscall_handler_t` 类型定义见 [syscall.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/syscall.h#L86-L89)：
 
 ```c
 typedef uintptr_t (*_k_syscall_handler_t)(uintptr_t arg1, uintptr_t arg2,
@@ -424,7 +424,7 @@ typedef uintptr_t (*_k_syscall_handler_t)(uintptr_t arg1, uintptr_t arg2,
 
 每个 handler 接收 6 个 `uintptr_t` 参数（来自寄存器 `r0-r3, r4-r5`）和一个 `ssf`（syscall stack frame，用于出错时打印栈帧）。返回值是 `uintptr_t`，回到用户态后被 cast 回原返回类型。
 
-派发表本身由 `gen_syscalls.py` 生成到 `syscall_dispatch.c`，模板见 [gen_syscalls.py](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/scripts/build/gen_syscalls.py) 第 50-62 行：
+派发表本身由 `gen_syscalls.py` 生成到 `syscall_dispatch.c`，模板见 [gen_syscalls.py](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/scripts/build/gen_syscalls.py#L50-L62)：
 
 ```c
 /* auto-generated by gen_syscalls.py, don't edit */
@@ -441,7 +441,7 @@ const _k_syscall_handler_t _k_syscall_table[K_SYSCALL_LIMIT] = {
 
 ### 5.2 两个特殊 handler
 
-未实现/非法 syscall 的兜底 handler 在 [kernel/userspace.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/userspace.c) 第 1012-1042 行：
+未实现/非法 syscall 的兜底 handler 在 [kernel/userspace.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/userspace.c#L1012-L1042)：
 
 ```c
 static uintptr_t handler_bad_syscall(uintptr_t bad_id, uintptr_t arg2,
@@ -465,11 +465,11 @@ static uintptr_t handler_no_syscall(uintptr_t arg1, uintptr_t arg2,
 }
 ```
 
-`handler_no_syscall` 通过 `__weak` 别名机制（[gen_syscalls.py](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/scripts/build/gen_syscalls.py) 第 116-120 行 `weak_template`）成为所有未实现 syscall 的默认指向——当 Kconfig 关掉了某子系统（如 `CONFIG_SENSOR=n`），其 `z_vrfy_*` 不会被编译，对应的 `z_mrsh_*` 也消失，弱别名让派发表槽位指向 `handler_no_syscall`，用户态一调用就杀线程。
+`handler_no_syscall` 通过 `__weak` 别名机制（[gen_syscalls.py](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/scripts/build/gen_syscalls.py#L116-L120) `weak_template`）成为所有未实现 syscall 的默认指向——当 Kconfig 关掉了某子系统（如 `CONFIG_SENSOR=n`），其 `z_vrfy_*` 不会被编译，对应的 `z_mrsh_*` 也消失，弱别名让派发表槽位指向 `handler_no_syscall`，用户态一调用就杀线程。
 
 ### 5.3 解 marshalling 函数：从 uintptr_t 还原 C 类型
 
-`z_mrsh_*` 函数把 6 个 `uintptr_t` 寄存器参数还原为原始 C 类型，然后调 `z_vrfy_*`。生成逻辑见 [gen_syscalls.py](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/scripts/build/gen_syscalls.py) 第 352-423 行 `marshall_defs()`。以 `k_sem_init` 为例，生成结果（简化）：
+`z_mrsh_*` 函数把 6 个 `uintptr_t` 寄存器参数还原为原始 C 类型，然后调 `z_vrfy_*`。生成逻辑见 [gen_syscalls.py](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/scripts/build/gen_syscalls.py#L352-L423) `marshall_defs()`。以 `k_sem_init` 为例，生成结果（简化）：
 
 ```c
 extern int z_vrfy_k_sem_init(struct k_sem *sem, unsigned int initial_count,
@@ -499,13 +499,13 @@ uintptr_t z_mrsh_k_sem_init(uintptr_t arg0, uintptr_t arg1, uintptr_t arg2,
 
 注意三个细节：
 
-1. **`_current->syscall_frame = ssf`**：把栈帧指针存到当前线程的 `syscall_frame` 字段（[include/zephyr/kernel/thread.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/kernel/thread.h) 第 341 行）。后续 `K_OOPS` 宏调 `arch_syscall_oops(_current->syscall_frame)` 时要用——这就是为什么 `k_is_in_user_syscall()` 能通过 `syscall_frame != NULL` 判断"是否正在处理 syscall"
+1. **`_current->syscall_frame = ssf`**：把栈帧指针存到当前线程的 `syscall_frame` 字段（[include/zephyr/kernel/thread.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/kernel/thread.h#L341)）。后续 `K_OOPS` 宏调 `arch_syscall_oops(_current->syscall_frame)` 时要用——这就是为什么 `k_is_in_user_syscall()` 能通过 `syscall_frame != NULL` 判断"是否正在处理 syscall"
 2. **`_current->syscall_frame = NULL`** 在返回前清空——防止下次进 syscall 之前的代码误判"还在 syscall 中"
-3. **64 位返回值**：32 位系统上 `uintptr_t` 只有 32 位，64 位返回值（如 `int64_t`）会被拆成指针参数，由 `z_mrsh_*` 写入用户栈上的临时变量，入口函数再读回来（见 [syscalls.rst](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/doc/kernel/usermode/syscalls.rst) 第 217-233 行）
+3. **64 位返回值**：32 位系统上 `uintptr_t` 只有 32 位，64 位返回值（如 `int64_t`）会被拆成指针参数，由 `z_mrsh_*` 写入用户栈上的临时变量，入口函数再读回来（见 [syscalls.rst](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/doc/kernel/usermode/syscalls.rst#L217-L233)）
 
 ### 5.4 超过 6 个参数怎么办
 
-硬件只能传 6 个寄存器参数。当 syscall 参数超过 6 个时，`gen_syscalls.py` 自动把第 6 个之后的参数打包成数组，入口函数在用户栈上分配 `more[]` 数组，把多出的参数放进去，把 `&more` 作为第 6 个参数传给 `arch_syscall_invoke6`。`z_mrsh_*` 收到后必须先用 `K_SYSCALL_MEMORY_READ(more, N * sizeof(uintptr_t))` 校验这个数组可读，再解包（[gen_syscalls.py](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/scripts/build/gen_syscalls.py) 第 271-275、380-383 行）。
+硬件只能传 6 个寄存器参数。当 syscall 参数超过 6 个时，`gen_syscalls.py` 自动把第 6 个之后的参数打包成数组，入口函数在用户栈上分配 `more[]` 数组，把多出的参数放进去，把 `&more` 作为第 6 个参数传给 `arch_syscall_invoke6`。`z_mrsh_*` 收到后必须先用 `K_SYSCALL_MEMORY_READ(more, N * sizeof(uintptr_t))` 校验这个数组可读，再解包（[gen_syscalls.py](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/scripts/build/gen_syscalls.py)）。
 
 > **核心要点**：派发表 + 解 marshalling 这两层让 syscall 派发对开发者完全透明——你只写 `__syscall` 声明 + `z_impl_*` + `z_vrfy_*`，剩下的寄存器搬运、类型还原、参数溢出处理全部由 `gen_syscalls.py` 生成。这是 Zephyr 把"易用性"与"安全性"兼顾的关键工程妥协。
 
@@ -513,7 +513,7 @@ uintptr_t z_mrsh_k_sem_init(uintptr_t arg0, uintptr_t arg1, uintptr_t arg2,
 
 ### 6.1 内核对象元数据 struct k_object
 
-每个内核对象（信号量、互斥锁、线程、设备实例等）在内核中都有一份元数据 `struct k_object`，定义见 [sys/internal/kobject_internal.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/sys/internal/kobject_internal.h) 第 61-67 行：
+每个内核对象（信号量、互斥锁、线程、设备实例等）在内核中都有一份元数据 `struct k_object`，定义见 [sys/internal/kobject_internal.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/sys/internal/kobject_internal.h#L61-L67)：
 
 ```c
 struct k_object {
@@ -529,12 +529,12 @@ struct k_object {
 
 - `name`：内核对象的实际内存地址——`k_object_find()` 用它做查找键
 - `perms[]`：权限位图，第 i 位为 1 表示"线程 i 有权限访问此对象"。`CONFIG_MAX_THREAD_BYTES` 默认 1（8 个线程），可配到 8（64 个线程）
-- `type`：对象类型枚举（`K_OBJ_SEM`、`K_OBJ_MUTEX`、`K_OBJ_THREAD`...），定义见 [sys/kobject.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/sys/kobject.h) 第 30-44 行
+- `type`：对象类型枚举（`K_OBJ_SEM`、`K_OBJ_MUTEX`、`K_OBJ_THREAD`...），定义见 [sys/kobject.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/sys/kobject.h#L30-L44)
 - `flags`：状态位——`K_OBJ_FLAG_INITIALIZED`（已初始化）、`K_OBJ_FLAG_PUBLIC`（公开）、`K_OBJ_FLAG_ALLOC`（动态分配）、`K_OBJ_FLAG_DRIVER`（驱动对象）
 
 ### 6.2 gperf 哈希表：从对象地址找元数据
 
-`k_object_find()` 接收一个对象指针，返回它的 `struct k_object *` 元数据。实现见 [kernel/userspace.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/userspace.c) 第 486-506 行：
+`k_object_find()` 接收一个对象指针，返回它的 `struct k_object *` 元数据。实现见 [kernel/userspace.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/userspace.c#L486-L506)：
 
 ```c
 struct k_object *k_object_find(const void *obj)
@@ -555,13 +555,13 @@ struct k_object *k_object_find(const void *obj)
 }
 ```
 
-`z_object_gperf_find()` 由 gperf 工具从 `gen_kobject_list.py` 生成的脚本编译而来。`gen_kobject_list.py`（[scripts/build/gen_kobject_list.py](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/scripts/build/gen_kobject_list.py)）扫描 `zephyr_prebuilt.elf` 的 DWARF 调试信息，找出所有顶层定义的内核对象（信号量、互斥锁、线程栈、`struct device` 等），生成完美哈希函数把它们映射到 `struct k_object` 元数据。生成过程见该脚本第 7-52 行的文档字符串。
+`z_object_gperf_find()` 由 gperf 工具从 `gen_kobject_list.py` 生成的脚本编译而来。`gen_kobject_list.py`（[scripts/build/gen_kobject_list.py](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/scripts/build/gen_kobject_list.py)）扫描 `zephyr_prebuilt.elf` 的 DWARF 调试信息，找出所有顶层定义的内核对象（信号量、互斥锁、线程栈、`struct device` 等），生成完美哈希函数把它们映射到 `struct k_object` 元数据。生成过程见该脚本文档字符串。
 
 > **为什么用 gperf？** 因为内核对象数量在编译时已知（几十到几百个），完美哈希能做到 O(1) 查找且无冲突。这在 syscall 热路径上很关键——每次 `K_SYSCALL_OBJ` 校验都要查一次。
 
 ### 6.3 对象类型枚举
 
-`enum k_objects` 定义见 [sys/kobject.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/sys/kobject.h) 第 30-44 行：
+`enum k_objects` 定义见 [sys/kobject.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/sys/kobject.h#L30-L44)：
 
 ```c
 enum k_objects {
@@ -571,7 +571,7 @@ enum k_objects {
 };
 ```
 
-`kobj-types-enum.h` 是生成的，列出所有内核对象类型与驱动子系统类型。脚本中的内核对象白名单见 [gen_kobject_list.py](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/scripts/build/gen_kobject_list.py) 第 92-122 行：
+`kobj-types-enum.h` 是生成的，列出所有内核对象类型与驱动子系统类型。脚本中的内核对象白名单见 [gen_kobject_list.py](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/scripts/build/gen_kobject_list.py#L92-L122)：
 
 ```python
 kobjects = OrderedDict([
@@ -600,7 +600,7 @@ kobjects = OrderedDict([
 
 ### 6.4 权限校验三步
 
-`K_SYSCALL_OBJ(ptr, type)` 宏（[internal/syscall_handler.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/internal/syscall_handler.h) 第 542-546、613-614 行）展开后调用 `k_object_validate()`，校验逻辑见 [kernel/userspace.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/userspace.c) 第 754-785 行：
+`K_SYSCALL_OBJ(ptr, type)` 宏（[internal/syscall_handler.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/internal/syscall_handler.h)）展开后调用 `k_object_validate()`，校验逻辑见 [kernel/userspace.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/userspace.c#L754-L785)：
 
 ```c
 int k_object_validate(struct k_object *ko, enum k_objects otype,
@@ -641,7 +641,7 @@ int k_object_validate(struct k_object *ko, enum k_objects otype,
 | 2. 当前线程有权限 | `-EPERM` | 对象合法但当前线程没被授权 |
 | 3. 初始化状态正确 | `-EINVAL` / `-EADDRINUSE` | 对象未初始化但调用需要已初始化，或对象已初始化但调用要求未初始化（如 `k_thread_create`） |
 
-`thread_perms_test()` 检查权限的逻辑见 [kernel/userspace.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/userspace.c) 第 670-683 行：
+`thread_perms_test()` 检查权限的逻辑见 [kernel/userspace.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/userspace.c#L670-L683)：
 
 ```c
 static int thread_perms_test(struct k_object *ko)
@@ -694,7 +694,7 @@ flowchart TD
 
 ### 6.6 权限授予 API
 
-权限默认全无，必须显式授予。相关 API 见 [sys/kobject.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/sys/kobject.h) 第 65-135 行：
+权限默认全无，必须显式授予。相关 API 见 [sys/kobject.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/sys/kobject.h#L65-L135)：
 
 | API | 作用 | 谁能调 |
 |-----|------|--------|
@@ -704,15 +704,15 @@ flowchart TD
 | `k_object_access_all_grant(obj)` | 把 `obj` 标记为公开（所有线程可访问） | supervisor 或有权限的 user |
 | `K_THREAD_ACCESS_GRANT(name, ...)` | 编译期声明：线程 `name` 启动时自动获得对一批对象的权限 | 静态线程定义时用 |
 
-`K_THREAD_ACCESS_GRANT` 的妙处在于它生成的 `struct k_object_assignment` 进了一个特殊链接段，内核启动时遍历这个段批量授权。宏展开见 [sys/kobject.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/sys/kobject.h) 第 65-71 行。
+`K_THREAD_ACCESS_GRANT` 的妙处在于它生成的 `struct k_object_assignment` 进了一个特殊链接段，内核启动时遍历这个段批量授权。宏展开见 [sys/kobject.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/sys/kobject.h#L65-L71)。
 
-权限继承：`k_thread_create()` 默认让子线程继承父线程的所有对象权限（除父线程自身），实现见 [kernel/userspace.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/userspace.c) 第 622-633 行的 `k_thread_perms_inherit()`——遍历所有内核对象，把父线程有权限的 also 给子线程。
+权限继承：`k_thread_create()` 默认让子线程继承父线程的所有对象权限（除父线程自身），实现见 [kernel/userspace.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/userspace.c#L622-L633)的 `k_thread_perms_inherit()`——遍历所有内核对象，把父线程有权限的 also 给子线程。
 
 ## 7. 用户态线程的内存隔离
 
 ### 7.1 用户线程能访问什么
 
-官方文档 [overview.rst](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/doc/kernel/usermode/overview.rst) 第 30-95 行列出用户线程的内存访问策略：
+官方文档 [overview.rst](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/doc/kernel/usermode/overview.rst#L30-L95)列出用户线程的内存访问策略：
 
 | 内存区域 | 默认权限 | 备注 |
 |----------|----------|------|
@@ -734,7 +734,7 @@ flowchart TD
 
 ### 7.3 缓冲区校验：arch_buffer_validate
 
-用户线程传给 syscall 的指针必须校验可访问性。`K_SYSCALL_MEMORY_READ/WRITE` 宏最终调 `arch_buffer_validate()`，见 [internal/syscall_handler.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/internal/syscall_handler.h) 第 431-438 行：
+用户线程传给 syscall 的指针必须校验可访问性。`K_SYSCALL_MEMORY_READ/WRITE` 宏最终调 `arch_buffer_validate()`，见 [internal/syscall_handler.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/internal/syscall_handler.h#L431-L438)：
 
 ```c
 #define K_SYSCALL_MEMORY(ptr, size, write) \
@@ -757,7 +757,7 @@ flowchart TD
 
 `K_SYSCALL_MEMORY_WRITE` 只校验"调用瞬间用户线程能否写这块内存"。但用户线程可以在校验通过后、内核使用前的那一瞬间改写指针指向的内容——这就是 TOCTOU（Time Of Check to Time Of Use）漏洞。
 
-Zephyr 的防御策略见 [syscalls.rst](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/doc/kernel/usermode/syscalls.rst) 第 369-557 行：
+Zephyr 的防御策略见 [syscalls.rst](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/doc/kernel/usermode/syscalls.rst#L369-L557)：
 
 - **小数据（int、size_t、固定大小结构）**：在 `z_vrfy_*` 里栈上分配副本，用 `k_usermode_from_copy()` 把用户数据拷到副本，校验并使用副本
 - **大数据缓冲区**：允许直接传指针，但实现函数必须**只读不写或只写不读**，且不能根据缓冲区内容做控制流判断
@@ -771,7 +771,7 @@ Zephyr 的防御策略见 [syscalls.rst](file:///home/pbw/rtos/cs-learning-notes
 
 ### 8.1 为什么内核对象必须 build-time 定义
 
-官方文档 [overview.rst](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/doc/kernel/usermode/overview.rst) 第 172-188 行明确说："All kernel objects, thread stacks, and device driver instances must be defined at build time if they are to be used from user mode."
+官方文档 [overview.rst](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/doc/kernel/usermode/overview.rst#L172-L188)明确说："All kernel objects, thread stacks, and device driver instances must be defined at build time if they are to be used from user mode."
 
 原因有三：
 
@@ -781,7 +781,7 @@ Zephyr 的防御策略见 [syscalls.rst](file:///home/pbw/rtos/cs-learning-notes
 
 ### 8.2 动态对象的妥协：CONFIG_DYNAMIC_OBJECTS
 
-对于"确实需要运行时创建对象"的场景（如网络栈根据连接数动态创建 socket），Zephyr 提供 `CONFIG_DYNAMIC_OBJECTS` 选项。开启后用 `k_object_alloc()` 创建动态对象，实现见 [kernel/userspace.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/userspace.c) 第 395-447 行的 `z_object_alloc()`：
+对于"确实需要运行时创建对象"的场景（如网络栈根据连接数动态创建 socket），Zephyr 提供 `CONFIG_DYNAMIC_OBJECTS` 选项。开启后用 `k_object_alloc()` 创建动态对象，实现见 [kernel/userspace.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/userspace.c#L395-L447)的 `z_object_alloc()`：
 
 ```c
 static void *z_object_alloc(enum k_objects otype, size_t size)
@@ -836,7 +836,7 @@ static void *z_object_alloc(enum k_objects otype, size_t size)
 }
 ```
 
-动态对象的元数据 `struct dyn_obj`（[kernel/userspace.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/userspace.c) 第 169-175 行）包装了 `struct k_object`：
+动态对象的元数据 `struct dyn_obj`（[kernel/userspace.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/userspace.c#L169-L175)）包装了 `struct k_object`：
 
 ```c
 struct dyn_obj {
@@ -846,11 +846,11 @@ struct dyn_obj {
 };
 ```
 
-`k_object_find()` 查 gperf 表失败后会遍历 `obj_list` 链表查找动态对象（[kernel/userspace.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/userspace.c) 第 486-506 行）。这个链表查找是 O(n)，比 gperf 的 O(1) 慢，但动态对象数量通常远少于静态对象。
+`k_object_find()` 查 gperf 表失败后会遍历 `obj_list` 链表查找动态对象（[kernel/userspace.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/userspace.c#L486-L506)）。这个链表查找是 O(n)，比 gperf 的 O(1) 慢，但动态对象数量通常远少于静态对象。
 
 ### 8.3 自动释放：引用计数
 
-动态对象的一个关键设计是"权限即引用计数"——`K_OBJ_FLAG_ALLOC` 标记的对象在所有权限都被清空时自动释放，见 [kernel/userspace.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/userspace.c) 第 563-610 行的 `unref_check()`：
+动态对象的一个关键设计是"权限即引用计数"——`K_OBJ_FLAG_ALLOC` 标记的对象在所有权限都被清空时自动释放，见 [kernel/userspace.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/userspace.c#L563-L610)的 `unref_check()`：
 
 ```c
 static void unref_check(struct k_object *ko, uintptr_t index)
@@ -896,7 +896,7 @@ out:
 
 ### 8.4 推荐做法：预分配对象池
 
-官方文档 [kernelobjects.rst](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/doc/kernel/usermode/kernelobjects.rst) 第 75-95 行指出，对于"不确定需要多少对象"的场景，推荐**预分配对象池**而非依赖 `k_object_alloc`：
+官方文档 [kernelobjects.rst](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/doc/kernel/usermode/kernelobjects.rst#L75-L95)指出，对于"不确定需要多少对象"的场景，推荐**预分配对象池**而非依赖 `k_object_alloc`：
 
 ```c
 /* 编译期定义 4 个信号量组成的池 */
@@ -1087,15 +1087,15 @@ cat build/zephyr/include/generated/zephyr/syscalls/k_mydrv_get_status_mrsh.c
 
 | 机制 | 解决的问题 | 关键源码 |
 |------|------------|----------|
-| `__ZEPHYR_SUPERVISOR__` / `__ZEPHYR_USER__` | 编译期消除运行时分支 | [syscall.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/syscall.h) 第 91-107 行 |
-| `__syscall` 注解 + `parse_syscalls.py` | 用简陋正则扫描声明，免手写入口 | [parse_syscalls.py](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/scripts/build/parse_syscalls.py) 第 36-45 行 |
+| `__ZEPHYR_SUPERVISOR__` / `__ZEPHYR_USER__` | 编译期消除运行时分支 | [syscall.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/syscall.h#L91-L107) |
+| `__syscall` 注解 + `parse_syscalls.py` | 用简陋正则扫描声明，免手写入口 | [parse_syscalls.py](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/scripts/build/parse_syscalls.py#L36-L45) |
 | `gen_syscalls.py` 生成入口/handler/解 marshalling | 让开发者只写 `z_impl_*` 与 `z_vrfy_*` | [gen_syscalls.py](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/scripts/build/gen_syscalls.py) |
-| `_k_syscall_table[]` 派发表 | syscall ID → handler 函数指针 O(1) 查找 | [internal/syscall_handler.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/internal/syscall_handler.h) 第 25 行 |
+| `_k_syscall_table[]` 派发表 | syscall ID → handler 函数指针 O(1) 查找 | [internal/syscall_handler.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/internal/syscall_handler.h#L25) |
 | gperf 内核对象表 | 对象地址 → 元数据 O(1) 查找 | [gen_kobject_list.py](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/scripts/build/gen_kobject_list.py) |
-| `perms[]` 位图 | 每线程 1 bit 权限，O(1) 校验 | [sys/internal/kobject_internal.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/sys/internal/kobject_internal.h) 第 61-67 行 |
-| `K_SYSCALL_OBJ/MEMORY` 宏 | 校验对象类型/权限/初始化 + 缓冲区可访问性 | [internal/syscall_handler.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/internal/syscall_handler.h) 第 350-546 行 |
+| `perms[]` 位图 | 每线程 1 bit 权限，O(1) 校验 | [sys/internal/kobject_internal.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/sys/internal/kobject_internal.h#L61-L67) |
+| `K_SYSCALL_OBJ/MEMORY` 宏 | 校验对象类型/权限/初始化 + 缓冲区可访问性 | [internal/syscall_handler.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/internal/syscall_handler.h#L350-L546) |
 | `k_usermode_from/to_copy` | 防 TOCTOU | [kernel/userspace.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/userspace.c) |
-| `CONFIG_DYNAMIC_OBJECTS` | 给不可预测数量场景开口子 | [kernel/userspace.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/userspace.c) 第 395-447 行 |
+| `CONFIG_DYNAMIC_OBJECTS` | 给不可预测数量场景开口子 | [kernel/userspace.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/userspace.c#L395-L447) |
 
 ### 11.2 一句话总结
 

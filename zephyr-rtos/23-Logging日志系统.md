@@ -50,7 +50,7 @@
 
 ### 1.2 Zephyr 的三选一策略
 
-源码 [subsys/logging/Kconfig.mode:4-41](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/logging/Kconfig.mode) 用 `choice LOG_MODE` 给出三种模式：
+源码 [subsys/logging/Kconfig.mode](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/logging/Kconfig.mode#L4-L41) 用 `choice LOG_MODE` 给出三种模式：
 
 | 模式 | Kconfig | 生产者路径 | 适用场景 | flash/RAM |
 |------|---------|-----------|----------|-----------|
@@ -70,7 +70,7 @@
 
 ### 2.1 三层分工
 
-源码 [subsys/logging/log_core.c:82-91](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/logging/log_core.c) 给出了输出格式分发表：
+源码 [subsys/logging/log_core.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/logging/log_core.c#L82-L91) 给出了输出格式分发表：
 
 ```c
 static const log_format_func_t format_table[] = {
@@ -121,7 +121,7 @@ flowchart TD
 
 ### 2.2 frontend：生产端的旁路
 
-源码 [subsys/logging/Kconfig.mode:43-49](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/logging/Kconfig.mode) 定义 `LOG_FRONTEND`：
+源码 [subsys/logging/Kconfig.mode](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/logging/Kconfig.mode#L43-L49) 定义 `LOG_FRONTEND`：
 
 ```
 config LOG_FRONTEND
@@ -132,13 +132,13 @@ config LOG_FRONTEND
       level.
 ```
 
-frontend 是"在 cbprintf 打包之前"的旁路。开启 `LOG_FRONTEND` 后，每条日志在走正常 `Z_LOG_MSG_CREATE` 路径前，先调用 [include/zephyr/logging/log_frontend.h:31](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/logging/log_frontend.h) 的 `log_frontend_msg()`。典型用途是 STM ESP 追踪前端（`log_frontend_stmesp.c`），它把日志直接喂给硬件追踪端口，不经过缓冲与格式化。
+frontend 是"在 cbprintf 打包之前"的旁路。开启 `LOG_FRONTEND` 后，每条日志在走正常 `Z_LOG_MSG_CREATE` 路径前，先调用 [include/zephyr/logging/log_frontend.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/logging/log_frontend.h#L31) 的 `log_frontend_msg()`。典型用途是 STM ESP 追踪前端（`log_frontend_stmesp.c`），它把日志直接喂给硬件追踪端口，不经过缓冲与格式化。
 
-`LOG_FRONTEND_ONLY`（[Kconfig.mode:50-55](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/logging/Kconfig.mode)）更进一步——断言"没有 backend"，所有日志只走前端，省掉 backend 与 logging 线程的全部代码。
+`LOG_FRONTEND_ONLY`（[Kconfig.mode](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/logging/Kconfig.mode#L50-L55)）更进一步——断言"没有 backend"，所有日志只走前端，省掉 backend 与 logging 线程的全部代码。
 
 ### 2.3 link：跨域桥
 
-源码 [include/zephyr/logging/log_link.h:62-69](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/logging/log_link.h) 定义 `struct log_link`：
+源码 [include/zephyr/logging/log_link.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/logging/log_link.h#L62-L69) 定义 `struct log_link`：
 
 ```c
 struct log_link {
@@ -151,11 +151,11 @@ struct log_link {
 };
 ```
 
-link 的本质是"把远程域的 `log_msg` 字节流接到本地消费链"。一个 link 可以承载多个域（`domain_cnt`），每个域有自己的源（`source_cnt`）。`LOG_LINK_DEF` 宏（[log_link.h:86-110](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/logging/log_link.h)）可选地为每个 link 分配专用 `mpsc_pbuf`，专用缓冲让 logging 线程能按时间戳跨 link 比较保序（见第 7 章）。
+link 的本质是"把远程域的 `log_msg` 字节流接到本地消费链"。一个 link 可以承载多个域（`domain_cnt`），每个域有自己的源（`source_cnt`）。`LOG_LINK_DEF` 宏（[log_link.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/logging/log_link.h#L86-L110)）可选地为每个 link 分配专用 `mpsc_pbuf`，专用缓冲让 logging 线程能按时间戳跨 link 比较保序（见第 7 章）。
 
 ### 2.4 backend：消费端
 
-源码 [include/zephyr/logging/log_backend.h:63-77](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/logging/log_backend.h) 定义 backend API：
+源码 [include/zephyr/logging/log_backend.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/logging/log_backend.h#L63-L77) 定义 backend API：
 
 ```c
 struct log_backend_api {
@@ -169,7 +169,7 @@ struct log_backend_api {
 };
 ```
 
-`LOG_BACKEND_DEFINE` 宏（[log_backend.h:111-125](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/logging/log_backend.h)）用 `STRUCT_SECTION_ITERABLE(log_backend, _name)` 把 backend 静态注册到链接器 section（参考 [20 章 iterable sections](./20-Iterable%20Sections链接器魔法.md)）。`log_core.c:518` 的 `msg_process` 用 `STRUCT_SECTION_FOREACH(log_backend, backend)` 遍历所有 backend，逐个调用 `log_backend_msg_process`。
+`LOG_BACKEND_DEFINE` 宏（[log_backend.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/logging/log_backend.h#L111-L125)）用 `STRUCT_SECTION_ITERABLE(log_backend, _name)` 把 backend 静态注册到链接器 section（参考 [20 章 iterable sections](./20-Iterable%20Sections链接器魔法.md)）。`log_core.c:518` 的 `msg_process` 用 `STRUCT_SECTION_FOREACH(log_backend, backend)` 遍历所有 backend，逐个调用 `log_backend_msg_process`。
 
 > **核心要点**：三层架构的解耦点是 cbprintf 包格式的 `log_msg`。frontend 在包之前介入（最快但功能受限），link 在包之后介入（跨域搬运），backend 在包格式化时介入（最灵活但最慢）。任何一层都可以独立替换或裁剪，这是 Zephyr 日志能同时支持"极简 printk"和"多核 MIPI SyS-T 追踪"的关键。
 
@@ -181,7 +181,7 @@ struct log_backend_api {
 
 ### 3.1 log_core.c 的缓冲区配置
 
-源码 [subsys/logging/log_core.c:122-143](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/logging/log_core.c)：
+源码 [subsys/logging/log_core.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/logging/log_core.c#L122-L143)：
 
 ```c
 static STRUCT_SECTION_ITERABLE(log_msg_ptr, log_msg_ptr);
@@ -229,7 +229,7 @@ static const struct mpsc_pbuf_buffer_config mpsc_config = {
 
 ### 3.3 OVERWRITE 与阻塞的取舍
 
-源码 [subsys/logging/Kconfig.processing:17-40](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/logging/Kconfig.processing)：
+源码 [subsys/logging/Kconfig.processing](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/logging/Kconfig.processing#L17-L40)：
 
 ```
 config LOG_MODE_OVERFLOW
@@ -248,7 +248,7 @@ config LOG_BLOCK_IN_THREAD_TIMEOUT_MS
 
 `LOG_MODE_OVERFLOW` 默认开启——满则丢最旧的包。`LOG_BLOCK_IN_THREAD` 仅在**线程上下文**生效，ISR 上下文永远不阻塞。`LOG_BLOCK_IN_THREAD_TIMEOUT_MS = -1` 表示永久阻塞，但日志核心会警告"可能导致死锁"——如果 logging 线程本身也打日志，永久阻塞会自锁。
 
-源码 [subsys/logging/log_core.c:663-674](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/logging/log_core.c) 的 `msg_alloc` 实现了这套逻辑：
+源码 [subsys/logging/log_core.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/logging/log_core.c#L663-L674) 的 `msg_alloc` 实现了这套逻辑：
 
 ```c
 static struct log_msg *msg_alloc(struct mpsc_pbuf_buffer *buffer, uint32_t wlen)
@@ -274,7 +274,7 @@ static struct log_msg *msg_alloc(struct mpsc_pbuf_buffer *buffer, uint32_t wlen)
 
 ### 4.1 log_msg 的 32 bit 描述符
 
-源码 [include/zephyr/logging/log_msg.h:56-62](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/logging/log_msg.h)：
+源码 [include/zephyr/logging/log_msg.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/logging/log_msg.h#L56-L62)：
 
 ```c
 struct log_msg_desc {
@@ -302,7 +302,7 @@ struct log_msg_desc {
 
 ### 4.2 四种消息创建模式
 
-源码 [include/zephyr/logging/log_msg.h:130-149](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/logging/log_msg.h) 定义了四种创建模式：
+源码 [include/zephyr/logging/log_msg.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/logging/log_msg.h#L130-L149) 定义了四种创建模式：
 
 | 模式 | Kconfig 前提 | 路径 | 速度 | 限制 |
 |------|-------------|------|------|------|
@@ -347,7 +347,7 @@ flowchart TD
 
 ### 4.4 logging 线程的批处理
 
-源码 [subsys/logging/log_core.c:941-986](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/logging/log_core.c) 是 logging 线程的主循环：
+源码 [subsys/logging/log_core.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/logging/log_core.c#L941-L986) 是 logging 线程的主循环：
 
 ```c
 static void log_process_thread_func(void *dummy1, void *dummy2, void *dummy3)
@@ -368,7 +368,7 @@ static void log_process_thread_func(void *dummy1, void *dummy2, void *dummy3)
 }
 ```
 
-唤醒时机由 [log_core.c:165-201](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/logging/log_core.c) 的 `z_log_msg_post_finalize` 控制，涉及两个 Kconfig：
+唤醒时机由 [log_core.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/logging/log_core.c#L165-L201) 的 `z_log_msg_post_finalize` 控制，涉及两个 Kconfig：
 
 | Kconfig | 默认 | 作用 |
 |---------|------|------|
@@ -400,7 +400,7 @@ Zephyr 的方案是两层叠加：编译期用 `CONFIG_LOG_MAX_LEVEL` 全局裁�
 
 ### 5.2 编译期过滤
 
-源码 [include/zephyr/logging/log_core.h:146-154](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/logging/log_core.h)：
+源码 [include/zephyr/logging/log_core.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/logging/log_core.h#L146-L154)：
 
 ```c
 #define Z_LOG_CONST_LEVEL_CHECK(_level)                        \
@@ -426,7 +426,7 @@ Zephyr 的方案是两层叠加：编译期用 `CONFIG_LOG_MAX_LEVEL` 全局裁�
 
 ### 5.3 运行时过滤
 
-源码 [include/zephyr/logging/log_core.h:399-446](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/logging/log_core.h) 定义了过滤槽位格式：
+源码 [include/zephyr/logging/log_core.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/logging/log_core.h#L399-L446) 定义了过滤槽位格式：
 
 ```c
 #define LOG_LEVEL_BITS 3U                                    /* 每槽 3 bit */
@@ -448,7 +448,7 @@ Zephyr 的方案是两层叠加：编译期用 `CONFIG_LOG_MAX_LEVEL` 全局裁�
 
 3 bit 能编码 0-7，日志等级只用 0-4（NONE/ERR/WRN/INF/DBG）。这意味着系统最多支持 8 个 backend（无 frontend 时），或 7 个 backend + 1 个 frontend。
 
-源码 [subsys/logging/log_core.c:483-514](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/logging/log_core.c) 的 `msg_filter_check` 在 logging 线程消费时再查一次：
+源码 [subsys/logging/log_core.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/logging/log_core.c#L483-L514) 的 `msg_filter_check` 在 logging 线程消费时再查一次：
 
 ```c
 static bool msg_filter_check(struct log_backend const *backend, union log_msg_generic *msg)
@@ -500,7 +500,7 @@ flowchart TD
 
 ### 6.2 三个 Kconfig 的配合
 
-源码 [subsys/logging/Kconfig.misc:53-68](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/logging/Kconfig.misc)：
+源码 [subsys/logging/Kconfig.misc](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/logging/Kconfig.misc#L53-L68)：
 
 ```
 config LOG_FMT_SECTION
@@ -519,13 +519,13 @@ config LOG_FMT_SECTION_STRIP
 
 三步流水线：
 
-1. `LOG_FMT_SECTION`：把所有格式串集中到 `_log_strings` 链接器 section（参考 [log_msg.h:446-451](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/logging/log_msg.h) 的 `Z_LOG_MSG_STR_VAR_IN_SECTION` 宏）。
+1. `LOG_FMT_SECTION`：把所有格式串集中到 `_log_strings` 链接器 section（参考 [log_msg.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/logging/log_msg.h#L446-L451) 的 `Z_LOG_MSG_STR_VAR_IN_SECTION` 宏）。
 2. `LOG_DICTIONARY_DB`：构建字典数据库，记录每个格式串地址 → ID 的映射。
 3. `LOG_FMT_SECTION_STRIP`：用 `LINKER_DEVNULL_MEMORY` 把 `_log_strings` section 重定向到 `/dev/null`，二进制里格式串位置变成空地址，但地址本身保留作 ID。
 
 ### 6.3 输出端的字典格式
 
-源码 [subsys/logging/log_output_dict.c:15-47](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/logging/log_output_dict.c) 的 `log_dict_output_msg_process`：
+源码 [subsys/logging/log_output_dict.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/logging/log_output_dict.c#L15-L47) 的 `log_dict_output_msg_process`：
 
 ```c
 void log_dict_output_msg_process(const struct log_output *output,
@@ -587,16 +587,16 @@ bool log_cache_get(struct log_cache *cache, uintptr_t id, uint8_t **data)
 1. **SMP 同构多核**：多个 Cortex-A 核跑同一 Zephyr 镜像，日志源在内核里共享，不需 link。
 2. **异构多核**：如 Cortex-M + Cortex-A、MCU + DSP，各自跑独立 Zephyr 镜像，日志源在各自镜像里，必须通过 IPC 传输。
 
-`LOG_MULTIDOMAIN`（[Kconfig.mode:75-78](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/logging/Kconfig.mode)）针对第二种。每个远程域是一个 link，link 把远程 `log_msg` 字节流投递到本地缓冲，logging 线程统一消费。
+`LOG_MULTIDOMAIN`（[Kconfig.mode](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/logging/Kconfig.mode#L75-L78)）针对第二种。每个远程域是一个 link，link 把远程 `log_msg` 字节流投递到本地缓冲，logging 线程统一消费。
 
 ### 7.2 LOG_LINK_DEF 与专用缓冲
 
-源码 [include/zephyr/logging/log_link.h:86-110](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/logging/log_link.h) 的 `LOG_LINK_DEF` 宏关键在 `_buf_wlen` 参数：
+源码 [include/zephyr/logging/log_link.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/logging/log_link.h#L86-L110) 的 `LOG_LINK_DEF` 宏关键在 `_buf_wlen` 参数：
 
 - `_buf_wlen > 0`：link 有专用 `mpsc_pbuf`，远程消息先进专用缓冲，logging 线程跨缓冲按时间戳比较取最旧（保序）
 - `_buf_wlen = 0`：远程消息直接进主缓冲 `log_buffer`，不保序但省 RAM
 
-源码 [subsys/logging/Kconfig.links:13-20](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/logging/Kconfig.links)：
+源码 [subsys/logging/Kconfig.links](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/logging/Kconfig.links#L13-L20)：
 
 ```
 config LOG_LINK_IPC_SERVICE_BUFFER_SIZE
@@ -610,7 +610,7 @@ config LOG_LINK_IPC_SERVICE_BUFFER_SIZE
 
 ### 7.3 跨缓冲保序算法
 
-源码 [subsys/logging/log_core.c:724-788](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/logging/log_core.c) 的 `z_log_msg_claim_oldest` 是多域保序的核心：
+源码 [subsys/logging/log_core.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/logging/log_core.c#L724-L788) 的 `z_log_msg_claim_oldest` 是多域保序的核心：
 
 ```c
 union log_msg_generic *z_log_msg_claim_oldest(k_timeout_t *backoff)
@@ -638,11 +638,11 @@ union log_msg_generic *z_log_msg_claim_oldest(k_timeout_t *backoff)
 }
 ```
 
-算法思路：每个缓冲（主 + 各 link）各 claim 一条暂存，比较时间戳取最小者输出。这要求所有域用同一时间基准——`LOG_MULTIDOMAIN` 强制 `select LOG_TIMESTAMP_64BIT`（[Kconfig.mode:76-77](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/logging/Kconfig.mode)），用 64 位时间戳避免短周期回绕。
+算法思路：每个缓冲（主 + 各 link）各 claim 一条暂存，比较时间戳取最小者输出。这要求所有域用同一时间基准——`LOG_MULTIDOMAIN` 强制 `select LOG_TIMESTAMP_64BIT`（[Kconfig.mode](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/logging/Kconfig.mode#L76-L77)），用 64 位时间戳避免短周期回绕。
 
 ### 7.4 LOG_PROCESSING_LATENCY_US：容忍乱序的退避
 
-跨域日志有个固有难题：远程域的消息经 IPC 传输有延迟，可能后发先到。源码 [subsys/logging/log_core.c:758-776](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/logging/log_core.c)：
+跨域日志有个固有难题：远程域的消息经 IPC 传输有延迟，可能后发先到。源码 [subsys/logging/log_core.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/logging/log_core.c#L758-L776)：
 
 ```c
 if (CONFIG_LOG_PROCESSING_LATENCY_US > 0) {
@@ -655,7 +655,7 @@ if (CONFIG_LOG_PROCESSING_LATENCY_US > 0) {
 }
 ```
 
-`proc_latency` 在 `log_set_timestamp_func` 里计算（[log_core.c:430-431](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/logging/log_core.c)）：
+`proc_latency` 在 `log_set_timestamp_func` 里计算（[log_core.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/logging/log_core.c#L430-L431)）：
 
 ```c
 proc_latency = (freq * CONFIG_LOG_PROCESSING_LATENCY_US) / 1000000;
@@ -669,7 +669,7 @@ $$
 
 即 64MHz 时钟下 100ms 对应 640 万周期。logging 线程 claim 时检查：若最旧消息的时间戳 `t_min` 比当前时间减去 `proc_latency` 还要新（`diff > 0`），说明可能有更旧的消息还在 IPC 传输路上，退避 `diff` 个周期再试。
 
-这是延迟与保序的权衡：`LATENCY_US` 越大，保序越可靠但日志延迟越高；设为 0 则不退避，先到先处理（可能乱序）。乱序发生时 `unordered_cnt` 累加，由 `unordered_notify` 周期性报告（[log_core.c:537-542](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/logging/log_core.c)）。
+这是延迟与保序的权衡：`LATENCY_US` 越大，保序越可靠但日志延迟越高；设为 0 则不退避，先到先处理（可能乱序）。乱序发生时 `unordered_cnt` 累加，由 `unordered_notify` 周期性报告（[log_core.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/logging/log_core.c#L537-L542)）。
 
 ### 7.5 IPC service link 实现
 
@@ -686,7 +686,7 @@ static struct ipc_ept_cfg ept_cfg = {
 };
 ```
 
-远程端的 `log_multidomain_backend`（[backends/Kconfig.multidomain:4-11](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/logging/backends/Kconfig.multidomain)）把本地日志通过同一 IPC endpoint 发出。两端用 `log_multidomain_link` 共享协议（握手、域信息交换、消息转发）。
+远程端的 `log_multidomain_backend`（[backends/Kconfig.multidomain](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/logging/backends/Kconfig.multidomain#L4-L11)）把本地日志通过同一 IPC endpoint 发出。两端用 `log_multidomain_link` 共享协议（握手、域信息交换、消息转发）。
 
 > **核心要点**：多域日志保序的核心是"每缓冲各 claim 一条 + 比时间戳取最旧"。这要求所有域共享 64 位时间基准，并容忍 `LOG_PROCESSING_LATENCY_US` 的退避延迟。专用缓冲是可选的——不要保序就共用主缓冲省 RAM，要保序就每 link 一个专用缓冲。
 
@@ -698,7 +698,7 @@ static struct ipc_ept_cfg ept_cfg = {
 
 ### 8.1 后端注册与遍历
 
-源码 [include/zephyr/logging/log_backend.h:111-125](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/logging/log_backend.h) 的 `LOG_BACKEND_DEFINE` 用 `STRUCT_SECTION_ITERABLE(log_backend, _name)` 把 backend 放到链接器 section。`log_core.c:518` 的 `msg_process` 遍历：
+源码 [include/zephyr/logging/log_backend.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/logging/log_backend.h#L111-L125) 的 `LOG_BACKEND_DEFINE` 用 `STRUCT_SECTION_ITERABLE(log_backend, _name)` 把 backend 放到链接器 section。`log_core.c:518` 的 `msg_process` 遍历：
 
 ```c
 static void msg_process(union log_msg_generic *msg)
@@ -725,7 +725,7 @@ static void msg_process(union log_msg_generic *msg)
 | 字典 | `LOG_OUTPUT_DICT` | `log_dict_output_msg_process` | 二进制头 + cbprintf 包 |
 | 自定义 | `LOG_OUTPUT_CUSTOM` | `log_custom_output_msg_process` | 用户注册的回调 |
 
-backend 通过 `format_set` 在运行时切换格式。UART 后端 [subsys/logging/backends/log_backend_uart.c:137-145](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/logging/backends/log_backend_uart.c)：
+backend 通过 `format_set` 在运行时切换格式。UART 后端 [subsys/logging/backends/log_backend_uart.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/logging/backends/log_backend_uart.c#L137-L145)：
 
 ```c
 static int format_set(const struct log_backend *const backend, uint32_t log_type)
@@ -745,7 +745,7 @@ static void process(const struct log_backend *const backend, union log_msg_gener
 
 ### 8.3 UART 后端实例
 
-源码 [subsys/logging/backends/log_backend_uart.c:82-124](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/logging/backends/log_backend_uart.c) 的 `char_out` 是最终输出函数：
+源码 [subsys/logging/backends/log_backend_uart.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/logging/backends/log_backend_uart.c#L82-L124) 的 `char_out` 是最终输出函数：
 
 ```c
 static int char_out(uint8_t *data, size_t length, void *ctx)
@@ -770,7 +770,7 @@ UART 后端支持两种输出方式：
 - **轮询**：`uart_poll_out` 逐字节阻塞输出，简单但慢，panic 模式强制走这条
 - **异步 DMA**：`uart_tx` 触发 DMA 传输，`UART_TX_DONE` 回调里 `k_sem_give` 通知完成
 
-`LOG_BACKEND_UART_ASYNC`（[backends/Kconfig.uart:14-17](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/logging/backends/Kconfig.uart)）依赖 `UART_ASYNC_API`。异步模式让 CPU 不必逐字节等 UART，但 panic 时强制回退到轮询——DMA 在 panic 后可能不可用。
+`LOG_BACKEND_UART_ASYNC`（[backends/Kconfig.uart](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/logging/backends/Kconfig.uart#L14-L17)）依赖 `UART_ASYNC_API`。异步模式让 CPU 不必逐字节等 UART，但 panic 时强制回退到轮询——DMA 在 panic 后可能不可用。
 
 ### 8.4 其他后端概览
 
@@ -891,7 +891,7 @@ LOG_BACKEND_DEFINE(ring_backend, ring_backend_api, true);
 
 ### 9.3 用户态与内存域
 
-源码 [subsys/logging/log_core.c:28-31](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/logging/log_core.c)：
+源码 [subsys/logging/log_core.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/logging/log_core.c#L28-L31)：
 
 ```c
 #if CONFIG_USERSPACE && CONFIG_LOG_ALWAYS_RUNTIME
@@ -900,9 +900,9 @@ K_APPMEM_PARTITION_DEFINE(k_log_partition);
 #endif
 ```
 
-用户态线程打日志时，`z_log_msg_runtime_vcreate`（[log_msg.c:348-413](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/logging/log_msg.c)）检测到 `k_is_user_context()` 后走 `alloca` + `z_log_msg_static_create` 路径——因为用户态不能直接写内核的 `mpsc_pbuf`。`k_log_partition` 把日志相关数据分配到独立内存域，让用户态线程可访问但不越权（参考 [15 章内存域](./15-内存域与MPU保护.md)）。
+用户态线程打日志时，`z_log_msg_runtime_vcreate`（[log_msg.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/logging/log_msg.c#L348-L413)）检测到 `k_is_user_context()` 后走 `alloca` + `z_log_msg_static_create` 路径——因为用户态不能直接写内核的 `mpsc_pbuf`。`k_log_partition` 把日志相关数据分配到独立内存域，让用户态线程可访问但不越权（参考 [15 章内存域](./15-内存域与MPU保护.md)）。
 
-`LOG_ALWAYS_RUNTIME`（[Kconfig.misc:38-51](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/logging/Kconfig.misc)）在用户态、immediate 模式、无优化编译时强制开启——因为静态打包依赖编译器优化消除死代码，无优化时栈占用会爆炸。
+`LOG_ALWAYS_RUNTIME`（[Kconfig.misc](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/logging/Kconfig.misc#L38-L51)）在用户态、immediate 模式、无优化编译时强制开启——因为静态打包依赖编译器优化消除死代码，无优化时栈占用会爆炸。
 
 ---
 

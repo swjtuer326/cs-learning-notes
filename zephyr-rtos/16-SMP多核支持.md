@@ -69,7 +69,7 @@ SMP 启动看似简单（"让从核跑起来"），实际有两个同步问题�
 1. **主核必须等从核真正通电**：在从核通电前给它发指令是无意义的。`arch_cpu_start()` 是异步的——它返回后从核可能还没真正跑起来。
 2. **从核必须等主核完成初始化**：从核不能在内核数据结构（如就绪队列、调度锁）初始化完成前进入调度器，否则会读到半成品状态。
 
-Zephyr 用两个原子变量 `cpu_start_flag` 和 `ready_flag` 完成这两个握手——见 [`kernel/smp.c:21-30`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/smp.c)：
+Zephyr 用两个原子变量 `cpu_start_flag` 和 `ready_flag` 完成这两个握手——见 [`kernel/smp.c`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/smp.c#L21-L30)：
 
 ```c
 /* 0 让通电的从核等待；1 让从核继续初始化 */
@@ -81,7 +81,7 @@ static atomic_t ready_flag;
 
 ### 2.2 启动时序
 
-`z_smp_init()` 是主核侧入口，[`kernel/smp.c:222-241`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/smp.c)：
+`z_smp_init()` 是主核侧入口，[`kernel/smp.c`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/smp.c#L222-L241)：
 
 ```c
 void z_smp_init(void)
@@ -101,7 +101,7 @@ void z_smp_init(void)
 }
 ```
 
-`start_cpu()` 完成单核握手，[`kernel/smp.c:151-168`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/smp.c)：
+`start_cpu()` 完成单核握手，[`kernel/smp.c`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/smp.c#L151-L168)：
 
 ```c
 static void start_cpu(int id, struct cpu_start_cb *csc)
@@ -117,7 +117,7 @@ static void start_cpu(int id, struct cpu_start_cb *csc)
 }
 ```
 
-从核侧入口是 `smp_init_top()`，[`kernel/smp.c:110-149`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/smp.c)：
+从核侧入口是 `smp_init_top()`，[`kernel/smp.c`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/smp.c#L110-L149)：
 
 ```c
 static inline void smp_init_top(void *arg)
@@ -183,7 +183,7 @@ sequenceDiagram
 
 ### 2.3 cpu_start_cb 结构体：携带回调与定时器标志
 
-`k_smp_cpu_start()` 与 `k_smp_cpu_resume()` 的差异在于一个 `struct cpu_start_cb` 结构体，[`kernel/smp.c:36-53`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/smp.c)：
+`k_smp_cpu_start()` 与 `k_smp_cpu_resume()` 的差异在于一个 `struct cpu_start_cb` 结构体，[`kernel/smp.c`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/smp.c#L36-L53)：
 
 ```c
 static struct cpu_start_cb {
@@ -237,7 +237,7 @@ irq_unlock(key);                 /* 恢复中断状态 */
 
 Zephyr 官方文档 [`doc/kernel/services/smp/smp.rst`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/doc/kernel/services/smp/smp.rst) 在 "Legacy irq_lock() emulation" 一节明确指出："`irq_lock` 和 `irq_unlock` 在 SMP 系统上以与 legacy 版本相同的语义继续工作——它们被实现为单个全局自旋锁，带嵌套计数，并在上下文切换时能被原子地重新获取。"
 
-注意官方措辞——这就是 **legacy emulation**，不是"真正的" `irq_lock`。SMP 下 `irq_unlock` 实际上是个宏，[`include/zephyr/irq.h:284-289`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/irq.h)：
+注意官方措辞——这就是 **legacy emulation**，不是"真正的" `irq_lock`。SMP 下 `irq_unlock` 实际上是个宏，[`include/zephyr/irq.h`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/irq.h#L284-L289)：
 
 ```c
 #ifdef CONFIG_SMP
@@ -248,7 +248,7 @@ void z_smp_global_unlock(unsigned int key);
 #endif
 ```
 
-同样，`irq_lock()` 在 SMP 下被宏替换为 `z_smp_global_lock()`（定义在同文件第 256 行附近）。表面上调用的是 `irq_lock()`，实际跑的是全局自旋锁。
+同样，`irq_lock()` 在 SMP 下被宏替换为 `z_smp_global_lock()`（定义在同文件）。表面上调用的是 `irq_lock()`，实际跑的是全局自旋锁。
 
 > **核心要点**：SMP 下 `irq_lock()` 是个"假面"——宏把它替换成 `z_smp_global_lock()`。它仍然"能用"，但语义已经从"关本核中断"变成"获取一把全局自旋锁"，性能也远不如单核时的"一条指令关中断"。
 
@@ -260,7 +260,7 @@ void z_smp_global_unlock(unsigned int key);
 
 ### 4.1 实现剖析
 
-`z_smp_global_lock()` 的全部实现仅 13 行，[`kernel/smp.c:57-70`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/smp.c)：
+`z_smp_global_lock()` 的全部实现仅 13 行，[`kernel/smp.c`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/smp.c#L57-L70)：
 
 ```c
 static atomic_t global_lock;       /* 全局锁状态：0=未锁，1=已锁 */
@@ -287,7 +287,7 @@ unsigned int z_smp_global_lock(void)
 2. **CAS 自旋抢全局锁**（`atomic_cas(&global_lock, 0, 1)`）：跨核互斥靠这把原子变量。`atomic_cas` 语义是"若 `global_lock` 当前为 0，则写入 1 并返回 true；否则返回 false"。多个核同时调用，只有一个核能成功，其他核在 `arch_spin_relax()` 上自旋。
 3. **嵌套计数**（`global_lock_count`）：支持同一线程多次调用 `irq_lock()`。只有"首次"调用才真正抢锁，后续只递增计数；`irq_unlock` 时只递减计数，归零才释放全局锁。
 
-`global_lock_count` 字段定义在 thread 结构里，[`include/zephyr/kernel/thread.h:107-108`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/kernel/thread.h)：
+`global_lock_count` 字段定义在 thread 结构里，[`include/zephyr/kernel/thread.h`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/kernel/thread.h#L107-L108)：
 
 ```c
 /* Recursive count of irq_lock() calls */
@@ -298,7 +298,7 @@ uint8_t global_lock_count;
 
 ### 4.2 解锁与上下文切换
 
-`z_smp_global_unlock()` 与一个特殊函数 `z_smp_release_global_lock()` 配合，[`kernel/smp.c:72-91`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/smp.c)：
+`z_smp_global_unlock()` 与一个特殊函数 `z_smp_release_global_lock()` 配合，[`kernel/smp.c`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/smp.c#L72-L91)：
 
 ```c
 void z_smp_global_unlock(unsigned int key)
@@ -337,7 +337,7 @@ void z_smp_release_global_lock(struct k_thread *thread)
 
 如果 `z_swap()` 切换 T1 出去时不释放 `global_lock`，T2 会自旋到天荒地老。`z_swap()` 在 SMP 下会调用 `z_smp_release_global_lock(new_thread)`——但**仅当 `new_thread->base.global_lock_count == 0`** 时才释放。这有个微妙设计：如果切到的目标线程自己也持有了 `irq_lock`（计数非零），它就接手这把全局锁，不需要释放。
 
-`z_swap()` 中的相关逻辑见 [`kernel/include/kswap.h:124-139`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/include/kswap.h)：
+`z_swap()` 中的相关逻辑见 [`kernel/include/kswap.h`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/include/kswap.h#L124-L139)：
 
 ```c
 #ifdef CONFIG_SMP
@@ -435,7 +435,7 @@ flowchart TD
 
 ### 5.3 持锁切换为何非法
 
-`k_spin_lock` 的官方文档警告："Holding a spinlock when a context switch occurs is illegal."（持锁时上下文切换是非法的），见 [`include/zephyr/spinlock.h:174-176`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/spinlock.h)。原因有二：
+`k_spin_lock` 的官方文档警告："Holding a spinlock when a context switch occurs is illegal."（持锁时上下文切换是非法的），见 [`include/zephyr/spinlock.h`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/spinlock.h#L174-L176)。原因有二：
 
 1. **死锁风险**：如果线程 T1 持锁 L 时被切换出去，而切进来的线程 T2 也想获取 L，T2 会自旋等一个永远不会被释放的锁（T1 没机会运行到 `k_spin_unlock`）。
 2. **中断禁用泄漏**：`k_spin_lock` 关闭了本核中断，`k_spin_unlock` 才恢复。如果切换发生在持锁期间，新切进来的线程会在"中断关闭"状态下运行——任何 ISR 都无法响应。
@@ -461,7 +461,7 @@ IPI（Inter-Processor Interrupt）就是答案——它是一种硬件机制，�
 
 ### 6.2 IPI 的两阶段提交
 
-Zephyr 把 IPI 拆成"标记"和"发送"两阶段，[`kernel/ipi.c:19-26`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/ipi.c)：
+Zephyr 把 IPI 拆成"标记"和"发送"两阶段，[`kernel/ipi.c`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/ipi.c#L19-L26)：
 
 ```c
 void flag_ipi(uint32_t ipi_mask)
@@ -474,7 +474,7 @@ void flag_ipi(uint32_t ipi_mask)
 }
 ```
 
-`flag_ipi()` 只是把"哪些核需要 IPI"或进 `_kernel.pending_ipi` 位图，**不真正发中断**。真正的发送在 `signal_pending_ipi()`，[`kernel/ipi.c:72-96`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/ipi.c)：
+`flag_ipi()` 只是把"哪些核需要 IPI"或进 `_kernel.pending_ipi` 位图，**不真正发中断**。真正的发送在 `signal_pending_ipi()`，[`kernel/ipi.c`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/ipi.c#L72-L96)：
 
 ```c
 void signal_pending_ipi(void)
@@ -531,7 +531,7 @@ sequenceDiagram
 
 ### 6.4 IPI Work：在别的核上跑函数
 
-除了调度通知，[`kernel/ipi.c`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/ipi.c) 还提供了 `k_ipi_work` 机制——让一个核的 ISR 在其他核上同步执行一个函数。数据结构见 [`include/zephyr/kernel.h:3819-3826`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/kernel.h)：
+除了调度通知，[`kernel/ipi.c`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/ipi.c) 还提供了 `k_ipi_work` 机制——让一个核的 ISR 在其他核上同步执行一个函数。数据结构见 [`include/zephyr/kernel.h`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/kernel.h#L3819-L3826)：
 
 ```c
 struct k_ipi_work {
@@ -548,7 +548,7 @@ API 三件套：
 2. `k_ipi_work_signal()`：触发 `signal_pending_ipi()`，真正发送 IPI。
 3. `k_ipi_work_wait(work, timeout)`：等待所有目标 CPU 处理完毕（通过 `k_event` 同步）。
 
-目标核在 `z_sched_ipi()` 中调用 `ipi_work_process(&_kernel.cpus[id].ipi_workq)`，[`kernel/ipi.c:163-181`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/ipi.c)：
+目标核在 `z_sched_ipi()` 中调用 `ipi_work_process(&_kernel.cpus[id].ipi_workq)`，[`kernel/ipi.c`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/ipi.c#L163-L181)：
 
 ```c
 static void ipi_work_process(sys_dlist_t *list)
@@ -575,7 +575,7 @@ static void ipi_work_process(sys_dlist_t *list)
 
 ### 6.5 IPI 不可用时的回退
 
-不是所有 SMP 架构都实现 IPI（[`kernel/Kconfig.smp:49-58`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/Kconfig.smp)）。无 IPI 时 Zephyr 退化为：
+不是所有 SMP 架构都实现 IPI（[`kernel/Kconfig.smp`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/Kconfig.smp#L49-L58)）。无 IPI 时 Zephyr 退化为：
 
 - **`k_thread_abort` 跨核**：自旋等待目标核收到任一中断后处理 abort 标志——延迟不可控。
 - **空闲唤醒**：不进入低功耗空闲，而是在 idle 循环里高频轮询调度器状态——功耗显著上升。
@@ -601,7 +601,7 @@ static void ipi_work_process(sys_dlist_t *list)
 
 ### 7.2 SMP 下的关键调度差异
 
-SMP 调度的核心差异在于"当前线程也要进就绪队列"，[`kernel/sched.c:108-112`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/sched.c)：
+SMP 调度的核心差异在于"当前线程也要进就绪队列"，[`kernel/sched.c`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/sched.c#L108-L112)：
 
 ```c
 static inline bool should_queue_thread(struct k_thread *thread)
@@ -612,7 +612,7 @@ static inline bool should_queue_thread(struct k_thread *thread)
 
 单核下当前线程永不进队列（缓存为 `_kernel.ready_q.cache`）；SMP 下当前线程也要进队列，因为别的核可能把它选走。
 
-`next_up()` 是 SMP 调度核心，[`kernel/sched.c:184-279`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/sched.c)（关键分支）：
+`next_up()` 是 SMP 调度核心，[`kernel/sched.c`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/sched.c#L184-L279)（关键分支）：
 
 ```c
 static ALWAYS_INLINE struct k_thread *next_up(void)
@@ -642,13 +642,13 @@ static ALWAYS_INLINE struct k_thread *next_up(void)
 
 何时触发 IPI？答案是"任何让一个线程变得可运行、且其优先级可能高于其他核上当前线程的时刻"。源码中三处典型调用：
 
-1. `z_ready_thread` → `ready_thread` → `flag_ipi(ipi_mask_create(thread))`：线程就绪（如 `k_thread_resume`、`k_sem_give` 唤醒），见 [`kernel/sched.c:363`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/sched.c)。
-2. `z_thread_prio_set` 中优先级提升：`flag_ipi(IPI_CPU_MASK(cpu->id))`（定向通知该核），见 [`kernel/sched.c:755-771`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/sched.c)。
-3. `k_thread_abort` 检测到目标在另一核：`arch_sched_directed_ipi(IPI_CPU_MASK(cpu->id))`（同步等待），见 [`kernel/sched.c:449-460`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/sched.c)。
+1. `z_ready_thread` → `ready_thread` → `flag_ipi(ipi_mask_create(thread))`：线程就绪（如 `k_thread_resume`、`k_sem_give` 唤醒），见 [`kernel/sched.c`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/sched.c#L363)。
+2. `z_thread_prio_set` 中优先级提升：`flag_ipi(IPI_CPU_MASK(cpu->id))`（定向通知该核），见 [`kernel/sched.c`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/sched.c#L755-L771)。
+3. `k_thread_abort` 检测到目标在另一核：`arch_sched_directed_ipi(IPI_CPU_MASK(cpu->id))`（同步等待），见 [`kernel/sched.c`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/sched.c#L449-L460)。
 
-`ipi_mask_create()` 决定哪些核需要 IPI，[`kernel/ipi.c:29-70`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/ipi.c)。在 `CONFIG_IPI_OPTIMIZE` 关闭时，简单粗暴返回 `IPI_ALL_CPUS_MASK`（广播）；启用时逐核判断"目标核当前线程是否可被新线程抢占"，构造最小 IPI 集合。
+`ipi_mask_create()` 决定哪些核需要 IPI，[`kernel/ipi.c`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/ipi.c#L29-L70)。在 `CONFIG_IPI_OPTIMIZE` 关闭时，简单粗暴返回 `IPI_ALL_CPUS_MASK`（广播）；启用时逐核判断"目标核当前线程是否可被新线程抢占"，构造最小 IPI 集合。
 
-`IPI_CPU_MASK` 的定义见 [`kernel/include/ipi.h:14-17`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/include/ipi.h)：
+`IPI_CPU_MASK` 的定义见 [`kernel/include/ipi.h`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/include/ipi.h#L14-L17)：
 
 ```c
 #define IPI_ALL_CPUS_MASK  ((1 << CONFIG_MP_MAX_NUM_CPUS) - 1)
@@ -681,7 +681,7 @@ struct k_spinlock {
 };
 ```
 
-加锁函数 `k_spin_lock` 也用 `#ifdef CONFIG_SMP` 把 CAS/Ticket 逻辑包起来，[`include/zephyr/spinlock.h:181-213`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/spinlock.h)：
+加锁函数 `k_spin_lock` 也用 `#ifdef CONFIG_SMP` 把 CAS/Ticket 逻辑包起来，[`include/zephyr/spinlock.h`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/spinlock.h#L181-L213)：
 
 ```c
 static ALWAYS_INLINE k_spinlock_key_t k_spin_lock(struct k_spinlock *l)

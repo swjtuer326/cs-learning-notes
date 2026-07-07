@@ -86,10 +86,10 @@ Object Core 的设计灵感来自 Linux kobject——把"对象有名字、有�
 
 ## 2. k_obj_core 结构体
 
-Object Core 的全部基础建立在两个小结构体上。先看核心结构 `struct k_obj_core`，定义在 [include/zephyr/kernel/obj_core.h L121-L127](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/kernel/obj_core.h#L121)：
+Object Core 的全部基础建立在两个小结构体上。先看核心结构 `struct k_obj_core`，定义在 [include/zephyr/kernel/obj_core.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/kernel/obj_core.h#L121-L127)：
 
 ```c
-/* include/zephyr/kernel/obj_core.h L121-L127 */
+/* include/zephyr/kernel/obj_core.h */
 /** Object core structure */
 struct k_obj_core {
 	sys_snode_t        node;   /**< Object node within object type's list */
@@ -109,7 +109,7 @@ struct k_obj_core {
 容器结构 `struct k_obj_type` 紧随其后，定义在同文件 L109-L118：
 
 ```c
-/* include/zephyr/kernel/obj_core.h L109-L118 */
+/* include/zephyr/kernel/obj_core.h */
 /** Object type structure */
 struct k_obj_type {
 	sys_snode_t    node;   /**< Node within list of object types */
@@ -176,10 +176,10 @@ flowchart LR
 
 ## 3. 类型注册：K_OBJ_TYPE_ID_GEN
 
-类型 ID 是 32 位无符号整数，但 Zephyr 选择用 4 个 ASCII 字符拼出来，定义在 [include/zephyr/kernel/obj_core.h L26](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/kernel/obj_core.h#L26)：
+类型 ID 是 32 位无符号整数，但 Zephyr 选择用 4 个 ASCII 字符拼出来，定义在 [include/zephyr/kernel/obj_core.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/kernel/obj_core.h#L26)：
 
 ```c
-/* include/zephyr/kernel/obj_core.h L26 */
+/* include/zephyr/kernel/obj_core.h */
 #define K_OBJ_TYPE_ID_GEN(s)     ((s[0] << 24) | (s[1] << 16) | (s[2] << 8) | s[3])
 ```
 
@@ -199,7 +199,7 @@ id = (0x53 << 24) | (0x45 << 16) | (0x4D << 8) | 0x34
 
 ### 3.2 已注册的类型 ID
 
-[include/zephyr/kernel/obj_core.h L31-L61](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/kernel/obj_core.h#L31) 列出所有内置类型：
+[include/zephyr/kernel/obj_core.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/kernel/obj_core.h#L31-L61) 列出所有内置类型：
 
 | 宏名 | 4 字符 ID | 宿主结构 |
 |------|----------|----------|
@@ -224,10 +224,10 @@ id = (0x53 << 24) | (0x45 << 16) | (0x4D << 8) | 0x34
 
 ### 3.3 类型的初始化时机
 
-每个内置类型在 `PRE_KERNEL_1` 阶段、用 `CONFIG_KERNEL_INIT_PRIORITY_OBJECTS` 优先级通过 `SYS_INIT` 注册。以线程类型为例，[kernel/thread.c L52-L69](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/thread.c#L52)：
+每个内置类型在 `PRE_KERNEL_1` 阶段、用 `CONFIG_KERNEL_INIT_PRIORITY_OBJECTS` 优先级通过 `SYS_INIT` 注册。以线程类型为例，[kernel/thread.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/thread.c#L52-L69)：
 
 ```c
-/* kernel/thread.c L37-L70（节选） */
+/* kernel/thread.c （节选） */
 #ifdef CONFIG_OBJ_CORE_THREAD
 static struct k_obj_type  obj_type_thread;
 
@@ -260,10 +260,10 @@ SYS_INIT(init_thread_obj_core_list, PRE_KERNEL_1,
 #endif /* CONFIG_OBJ_CORE_THREAD */
 ```
 
-`z_obj_type_init` 的实现非常简单，[kernel/obj_core.c L14-L23](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/obj_core.c#L14)：
+`z_obj_type_init` 的实现非常简单，[kernel/obj_core.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/obj_core.c#L14-L23)：
 
 ```c
-/* kernel/obj_core.c L14-L23 */
+/* kernel/obj_core.c */
 struct k_obj_type *z_obj_type_init(struct k_obj_type *type,
 				   uint32_t id, size_t off)
 {
@@ -284,10 +284,10 @@ struct k_obj_type *z_obj_type_init(struct k_obj_type *type,
 
 ## 4. 对象链表：同类对象串联
 
-类型注册只是建立了"链表头"，真正让对象可被枚举的是把每个对象挂到所属类型的链表上。这通过三个 API 完成，[kernel/obj_core.c L25-L57](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/obj_core.c#L25)：
+类型注册只是建立了"链表头"，真正让对象可被枚举的是把每个对象挂到所属类型的链表上。这通过三个 API 完成，[kernel/obj_core.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/obj_core.c#L25-L57)：
 
 ```c
-/* kernel/obj_core.c L25-L57 */
+/* kernel/obj_core.c */
 void k_obj_core_init(struct k_obj_core *obj_core, struct k_obj_type *type)
 {
 	obj_core->node.next = NULL;
@@ -336,10 +336,10 @@ void k_obj_core_unlink(struct k_obj_core *obj_core)
 
 ### 4.2 全局自旋锁的代价
 
-`k_obj_core.c` 第 10 行定义了唯一的全局自旋锁：
+`k_obj_core.c` 定义了唯一的全局自旋锁：
 
 ```c
-/* kernel/obj_core.c L10 */
+/* kernel/obj_core.c */
 static struct k_spinlock  lock;
 ```
 
@@ -348,14 +348,14 @@ static struct k_spinlock  lock;
 - 多核同时创建/销毁同类型对象时，会串行化
 - 遍历某类型链表（`walk_locked`）时，所有 CPU 上该类型对象的 `link`/`unlink` 都被阻塞
 
-为了给"不需要强一致"的场景留出口，框架还提供了 `k_obj_type_walk_unlocked`（[kernel/obj_core.c L104-L122](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/obj_core.c#L104)），不加锁直接遍历——调用者必须自行保证遍历期间链表不被修改。
+为了给"不需要强一致"的场景留出口，框架还提供了 `k_obj_type_walk_unlocked`（[kernel/obj_core.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/obj_core.c#L104-L122)），不加锁直接遍历——调用者必须自行保证遍历期间链表不被修改。
 
 ### 4.3 在线程创建中的调用点
 
-线程是动态创建最频繁的对象类型。`z_setup_new_thread` 在 [kernel/thread.c L593-L600](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/thread.c#L593) 完成 obj_core 的注册：
+线程是动态创建最频繁的对象类型。`z_setup_new_thread` 在 [kernel/thread.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/thread.c#L593-L600) 完成 obj_core 的注册：
 
 ```c
-/* kernel/thread.c L593-L600 */
+/* kernel/thread.c */
 #ifdef CONFIG_OBJ_CORE_THREAD
 	k_obj_core_init_and_link(K_OBJ_CORE(new_thread), &obj_type_thread);
 #ifdef CONFIG_OBJ_CORE_STATS_THREAD
@@ -368,7 +368,7 @@ static struct k_spinlock  lock;
 
 注意三个细节：
 
-1. `K_OBJ_CORE(new_thread)` 宏（[include/zephyr/kernel/obj_core.h L21](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/kernel/obj_core.h#L21)）展开为 `&((new_thread)->obj_core)`，即取宿主结构里 `obj_core` 字段的地址。
+1. `K_OBJ_CORE(new_thread)` 宏（[include/zephyr/kernel/obj_core.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/kernel/obj_core.h#L21)）展开为 `&((new_thread)->obj_core)`，即取宿主结构里 `obj_core` 字段的地址。
 2. 紧接着调用 `k_obj_core_stats_register` 把线程的 `base.usage`（一个 `struct k_cycle_stats`）登记为该线程的 raw 统计缓冲区。
 3. 这段代码被 `CONFIG_OBJ_CORE_THREAD` 包裹——关闭配置时编译为空，零开销。
 
@@ -391,10 +391,10 @@ struct k_sem *sem = (struct k_sem *)ptr;
 
 ### 5.1 为什么需要 offset
 
-`k_obj_core` 不要求是宿主结构的第一个字段。事实上，所有内置类型都把它放在最后或靠后位置，且用 `CONFIG_OBJ_CORE_*` 包裹——这样关闭配置时字段不存在，结构更紧凑。以 `struct k_mem_slab` 为例（[include/zephyr/kernel.h L5804-L5815](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/kernel.h#L5804)）：
+`k_obj_core` 不要求是宿主结构的第一个字段。事实上，所有内置类型都把它放在最后或靠后位置，且用 `CONFIG_OBJ_CORE_*` 包裹——这样关闭配置时字段不存在，结构更紧凑。以 `struct k_mem_slab` 为例（[include/zephyr/kernel.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/kernel.h#L5804-L5815)）：
 
 ```c
-/* include/zephyr/kernel.h L5804-L5815（节选） */
+/* include/zephyr/kernel.h （节选） */
 struct k_mem_slab {
 	_wait_q_t wait_q;
 	struct k_spinlock lock;
@@ -413,7 +413,7 @@ struct k_mem_slab {
 `obj_core` 在末尾，且被 `CONFIG_OBJ_CORE_MEM_SLAB` 包裹。`mem_slab.c` 在注册类型时记下偏移：
 
 ```c
-/* kernel/mem_slab.c L153-L154 */
+/* kernel/mem_slab.c */
 z_obj_type_init(&obj_type_mem_slab, K_OBJ_TYPE_MEM_SLAB_ID,
 		offsetof(struct k_mem_slab, obj_core));
 ```
@@ -456,10 +456,10 @@ flowchart LR
 
 ### 6.1 统计描述符
 
-`struct k_obj_core_stats_desc` 定义在 [include/zephyr/kernel/obj_core.h L92-L106](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/kernel/obj_core.h#L92)：
+`struct k_obj_core_stats_desc` 定义在 [include/zephyr/kernel/obj_core.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/kernel/obj_core.h#L92-L106)：
 
 ```c
-/* include/zephyr/kernel/obj_core.h L92-L106 */
+/* include/zephyr/kernel/obj_core.h */
 struct k_obj_core_stats_desc {
 	size_t  raw_size;   /**< Internal representation stats buffer size */
 	size_t  query_size; /**< Stats buffer size used for reporting */
@@ -483,7 +483,7 @@ struct k_obj_core_stats_desc {
 
 ### 6.2 Kconfig 依赖
 
-`CONFIG_OBJ_CORE_STATS` 是统计框架的总开关，[kernel/Kconfig.obj_core L122-L153](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/Kconfig.obj_core#L122)：
+`CONFIG_OBJ_CORE_STATS` 是统计框架的总开关，[kernel/Kconfig.obj_core](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/Kconfig.obj_core#L122-L153)：
 
 ```
 menuconfig OBJ_CORE_STATS
@@ -511,10 +511,10 @@ endif  # OBJ_CORE_STATS
 
 ### 6.3 注册流程
 
-每个支持统计的对象在创建时调用 `k_obj_core_stats_register`，[kernel/obj_core.c L125-L145](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/obj_core.c#L125)：
+每个支持统计的对象在创建时调用 `k_obj_core_stats_register`，[kernel/obj_core.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/obj_core.c#L125-L145)：
 
 ```c
-/* kernel/obj_core.c L125-L145 */
+/* kernel/obj_core.c */
 int k_obj_core_stats_register(struct k_obj_core *obj_core, void *stats,
 			      size_t stats_len)
 {
@@ -544,7 +544,7 @@ int k_obj_core_stats_register(struct k_obj_core *obj_core, void *stats,
 2. **缓冲区大小校验**：调用方传入的 `stats_len` 必须等于 `stats_desc->raw_size`，防止类型误用——例如把 `struct k_cycle_stats` 的指针当作 `struct k_mem_slab_info` 传进来。
 3. **登记的是指针，不是拷贝**：`obj_core->stats = stats` 只存指针。统计缓冲区由对象自身拥有（如 `k_thread.base.usage`），生命周期与对象一致。
 
-以线程为例，[kernel/thread.c L596-L598](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/thread.c#L596)：
+以线程为例，[kernel/thread.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/thread.c#L596-L598)：
 
 ```c
 k_obj_core_stats_register(K_OBJ_CORE(new_thread),
@@ -552,7 +552,7 @@ k_obj_core_stats_register(K_OBJ_CORE(new_thread),
 			  sizeof(new_thread->base.usage));
 ```
 
-`new_thread->base.usage` 是 `struct k_cycle_stats` 类型（[include/zephyr/kernel/stats.h L18-L31](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/kernel/stats.h#L18)），由调度器在每个时钟 tick 累加。obj_core 框架只是"借指针"——查询时通过指针读取，无需拷贝。
+`new_thread->base.usage` 是 `struct k_cycle_stats` 类型（[include/zephyr/kernel/stats.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/kernel/stats.h#L18-L31)），由调度器在每个时钟 tick 累加。obj_core 框架只是"借指针"——查询时通过指针读取，无需拷贝。
 
 > **核心要点**：`CONFIG_OBJ_CORE_STATS` 给类型描述符加一个 `stats_desc` 指针，给对象 core 加一个 `stats` 指针。注册时只存指针、不拷贝数据——统计缓冲区由对象自身拥有，框架只是把它"暴露"给统一查询接口。`raw_size` 校验防止类型误用。
 
@@ -575,7 +575,7 @@ k_obj_core_stats_register(K_OBJ_CORE(new_thread),
 
 ### 7.2 mem_slab 的具体例子
 
-`struct k_mem_slab_info`（[include/zephyr/kernel.h L5795-L5802](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/kernel.h#L5795)）是 mem_slab 的 raw 统计：
+`struct k_mem_slab_info`（[include/zephyr/kernel.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/kernel.h#L5795-L5802)）是 mem_slab 的 raw 统计：
 
 ```c
 struct k_mem_slab_info {
@@ -588,7 +588,7 @@ struct k_mem_slab_info {
 };
 ```
 
-`struct sys_memory_stats`（[include/zephyr/sys/mem_stats.h L24-L28](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/sys/mem_stats.h#L24)）是 queried 输出：
+`struct sys_memory_stats`（[include/zephyr/sys/mem_stats.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/sys/mem_stats.h#L24-L28)）是 queried 输出：
 
 ```c
 struct sys_memory_stats {
@@ -598,10 +598,10 @@ struct sys_memory_stats {
 };
 ```
 
-转换函数 `k_mem_slab_stats_query`，[kernel/mem_slab.c L41-L62](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/mem_slab.c#L41)：
+转换函数 `k_mem_slab_stats_query`，[kernel/mem_slab.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/mem_slab.c#L41-L62)：
 
 ```c
-/* kernel/mem_slab.c L41-L62 */
+/* kernel/mem_slab.c */
 static int k_mem_slab_stats_query(struct k_obj_core *obj_core, void *stats)
 {
 	struct k_mem_slab *slab;
@@ -679,13 +679,13 @@ flowchart TD
 
 线程的统计也走 raw/queried 二分，但 raw 与 queried 字段名差异更大：
 
-- **raw**：`struct k_cycle_stats`（[include/zephyr/kernel/stats.h L18-L31](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/kernel/stats.h#L18)）——只有 `total`、`current`、`longest`、`num_windows`、`track_usage` 这几个字段，是调度器内部记账用的"原始数据"。
-- **queried**：`struct k_thread_runtime_stats`（[include/zephyr/kernel/thread.h L207-L248](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/kernel/thread.h#L207)）——含 `execution_cycles`、`total_cycles`、`current_cycles`、`peak_cycles`、`average_cycles`、`idle_cycles`，是 05 章 §6.4 已经讲过的对外接口。
+- **raw**：`struct k_cycle_stats`（[include/zephyr/kernel/stats.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/kernel/stats.h#L18-L31)）——只有 `total`、`current`、`longest`、`num_windows`、`track_usage` 这几个字段，是调度器内部记账用的"原始数据"。
+- **queried**：`struct k_thread_runtime_stats`（[include/zephyr/kernel/thread.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/kernel/thread.h#L207-L248)）——含 `execution_cycles`、`total_cycles`、`current_cycles`、`peak_cycles`、`average_cycles`、`idle_cycles`，是 05 章 §6.4 已经讲过的对外接口。
 
-转换函数 `z_thread_stats_query`，[kernel/usage.c L357-L366](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/usage.c#L357)：
+转换函数 `z_thread_stats_query`，[kernel/usage.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/usage.c#L357-L366)：
 
 ```c
-/* kernel/usage.c L357-L366 */
+/* kernel/usage.c */
 int z_thread_stats_query(struct k_obj_core *obj_core, void *stats)
 {
 	struct k_thread *thread;
@@ -741,10 +741,10 @@ Object Core 不是"全有或全无"——每个内核对象类型都有独立的
 
 ### 8.2 静态与动态对象的初始化差异
 
-每个内置类型的初始化代码都遵循同一模式：先在 `SYS_INIT` 里注册类型并遍历静态对象，再在该类型的 `*_init` API 里处理动态对象。以 semaphore 为例，[kernel/sem.c L218-L236](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/sem.c#L218)：
+每个内置类型的初始化代码都遵循同一模式：先在 `SYS_INIT` 里注册类型并遍历静态对象，再在该类型的 `*_init` API 里处理动态对象。以 semaphore 为例，[kernel/sem.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/sem.c#L218-L236)：
 
 ```c
-/* kernel/sem.c L218-L236 */
+/* kernel/sem.c */
 static int init_sem_obj_core_list(void)
 {
 	z_obj_type_init(&obj_type_sem, K_OBJ_TYPE_SEM_ID,
@@ -762,7 +762,7 @@ SYS_INIT(init_sem_obj_core_list, PRE_KERNEL_1,
 	 CONFIG_KERNEL_INIT_PRIORITY_OBJECTS);
 ```
 
-注意 `STRUCT_SECTION_FOREACH(k_sem, sem)`——这是 20 章 Iterable Sections 的应用：所有 `K_SEM_DEFINE` 静态定义的信号量被链接器分到同一 section，启动时一次性枚举并 link 到 obj_core 链表。**动态初始化的信号量**则通过 `k_sem_init` → `k_obj_core_init_and_link` 单独 link，[kernel/sem.c L69](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/sem.c#L69)。
+注意 `STRUCT_SECTION_FOREACH(k_sem, sem)`——这是 20 章 Iterable Sections 的应用：所有 `K_SEM_DEFINE` 静态定义的信号量被链接器分到同一 section，启动时一次性枚举并 link 到 obj_core 链表。**动态初始化的信号量**则通过 `k_sem_init` → `k_obj_core_init_and_link` 单独 link，[kernel/sem.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/sem.c#L69)。
 
 > **核心要点**：obj_core 框架与 Iterable Sections 协同工作——静态对象在 `SYS_INIT` 阶段通过 `STRUCT_SECTION_FOREACH` 批量 link，动态对象在各自的 `*_init` API 中单独 link。两者最终汇入同一类型链表，让通用遍历代码无需区分静态/动态来源。
 
@@ -917,17 +917,17 @@ Object Core 的设计灵感来自 Linux kobject，但二者在目标与实现上
 - 源码 [include/zephyr/kernel/obj_core.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/kernel/obj_core.h) — `struct k_obj_core`、`struct k_obj_type`、`struct k_obj_core_stats_desc` 定义，`K_OBJ_TYPE_ID_GEN` 宏，所有内置类型 ID 宏
 - 源码 [include/zephyr/kernel/stats.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/kernel/stats.h) — `struct k_cycle_stats`（线程/CPU 的 raw 统计类型）
 - 源码 [include/zephyr/sys/mem_stats.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/sys/mem_stats.h) — `struct sys_memory_stats`（mem_slab/sys_mem_blocks 的 queried 统计类型）
-- 源码 [include/zephyr/kernel.h L5795-L5815](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/kernel.h#L5795) — `struct k_mem_slab_info`（mem_slab 的 raw 统计类型）与 `struct k_mem_slab`（含 `obj_core` 字段位置示例）
-- 源码 [include/zephyr/kernel/thread.h L207-L248](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/kernel/thread.h#L207) — `struct k_thread_runtime_stats`（线程的 queried 统计类型）
-- 源码 [include/zephyr/kernel_structs.h L147-L240](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/kernel_structs.h#L147) — `struct _cpu` 与 `struct z_kernel` 中 `obj_core` 字段的位置
+- 源码 [include/zephyr/kernel.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/kernel.h#L5795-L5815) — `struct k_mem_slab_info`（mem_slab 的 raw 统计类型）与 `struct k_mem_slab`（含 `obj_core` 字段位置示例）
+- 源码 [include/zephyr/kernel/thread.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/kernel/thread.h#L207-L248) — `struct k_thread_runtime_stats`（线程的 queried 统计类型）
+- 源码 [include/zephyr/kernel_structs.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/kernel_structs.h#L147-L240) — `struct _cpu` 与 `struct z_kernel` 中 `obj_core` 字段的位置
 - 源码 [kernel/Kconfig.obj_core](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/Kconfig.obj_core) — `CONFIG_OBJ_CORE`、`CONFIG_OBJ_CORE_STATS` 及所有 per-object 开关
-- 源码 [kernel/thread.c L37-L70](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/thread.c#L37) — 线程类型注册与 `thread_stats_desc` 初始化
-- 源码 [kernel/thread.c L593-L600](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/thread.c#L593) — `z_setup_new_thread` 中 obj_core init_and_link 与 stats_register 调用点
-- 源码 [kernel/init.c L155-L180 L612-L651](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/init.c#L155) — CPU 与 Kernel 类型的注册、`cpu_stats_desc` 与 `kernel_stats_desc` 初始化
-- 源码 [kernel/mem_slab.c L21-L93 L146-L182](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/mem_slab.c#L21) — mem_slab 类型注册、`mem_slab_stats_desc`、raw/query/reset 实现
-- 源码 [kernel/sem.c L218-L236](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/sem.c#L218) — semaphore 类型注册与静态对象批量 link 示例
-- 源码 [lib/mem_blocks/mem_blocks.c L513-L558](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/lib/mem_blocks/mem_blocks.c#L513) — `sys_mem_blocks` 类型注册（含 `STRUCT_SECTION_FOREACH_ALTERNATE` 用法）
-- 源码 [kernel/usage.c L345-L484](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/usage.c#L345) — `z_thread_stats_raw/query/reset/disable/enable`、`z_cpu_stats_raw/query`、`z_kernel_stats_raw/query` 实现
+- 源码 [kernel/thread.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/thread.c#L37-L70) — 线程类型注册与 `thread_stats_desc` 初始化
+- 源码 [kernel/thread.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/thread.c#L593-L600) — `z_setup_new_thread` 中 obj_core init_and_link 与 stats_register 调用点
+- 源码 [kernel/init.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/init.c#L155-L180) — CPU 与 Kernel 类型的注册、`cpu_stats_desc` 与 `kernel_stats_desc` 初始化
+- 源码 [kernel/mem_slab.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/mem_slab.c#L21-L93) — mem_slab 类型注册、`mem_slab_stats_desc`、raw/query/reset 实现
+- 源码 [kernel/sem.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/sem.c#L218-L236) — semaphore 类型注册与静态对象批量 link 示例
+- 源码 [lib/mem_blocks/mem_blocks.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/lib/mem_blocks/mem_blocks.c#L513-L558) — `sys_mem_blocks` 类型注册（含 `STRUCT_SECTION_FOREACH_ALTERNATE` 用法）
+- 源码 [kernel/usage.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/usage.c#L345-L484) — `z_thread_stats_raw/query/reset/disable/enable`、`z_cpu_stats_raw/query`、`z_kernel_stats_raw/query` 实现
 - 源码 [tests/kernel/obj_core/obj_core/src/main.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/tests/kernel/obj_core/obj_core/src/main.c) — 官方测试，覆盖所有内置类型的 walk_locked/walk_unlocked 验证
 - [20-Iterable Sections链接器魔法](./20-Iterable%20Sections链接器魔法.md) — 静态对象通过 linker section 枚举的机制（与本文动态对象枚举互补）
 - [05-线程与状态迁移](./05-线程与状态迁移.md) §6.4 — 线程运行时统计的上层 API `k_thread_runtime_stats_get`，本文是其底层实现剖析

@@ -91,7 +91,7 @@ extern struct k_mem_page_frame k_mem_page_frames[K_MEM_NUM_PAGE_FRAMES];
 
 ### 2.2 六个标志位
 
-标志位定义见 [`kernel/include/mmu.h:135-159`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/include/mmu.h)：
+标志位定义见 [`kernel/include/mmu.h`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/include/mmu.h#L135-L159)：
 
 | 标志 | 值 | 含义 |
 |------|------|------|
@@ -104,7 +104,7 @@ extern struct k_mem_page_frame k_mem_page_frames[K_MEM_NUM_PAGE_FRAMES];
 
 ### 2.3 is_evictable() 的合取条件
 
-[`kernel/include/mmu.h:223`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/include/mmu.h) 给出"可淘汰"判定：
+[`kernel/include/mmu.h`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/include/mmu.h#L223) 给出"可淘汰"判定：
 
 ```c
 static inline bool k_mem_page_frame_is_evictable(struct k_mem_page_frame *pf)
@@ -144,7 +144,7 @@ stateDiagram-v2
 
 ### 3.1 入口：do_page_fault()
 
-当 CPU 访问一个被换出的页时，架构相关的异常处理最终调用 [`kernel/mmu.c:1802`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/mmu.c) 的 `k_mem_page_fault()`，它转发到 `do_page_fault(addr, false)`（pin=false 表示不钉住）。完整调用链见 [`kernel/mmu.c:1614-1766`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/mmu.c)。
+当 CPU 访问一个被换出的页时，架构相关的异常处理最终调用 [`kernel/mmu.c`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/mmu.c#L1802) 的 `k_mem_page_fault()`，它转发到 `do_page_fault(addr, false)`（pin=false 表示不钉住）。完整调用链见 [`kernel/mmu.c`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/mmu.c#L1614-L1766)。
 
 ### 3.2 编号步骤
 
@@ -238,7 +238,7 @@ NRU 算法见 [`subsys/demand_paging/eviction/nru.c`](file:///home/pbw/rtos/cs-l
 | 2 | 是 | 否 | 最近访问过且干净 |
 | 3 | 是 | 是 | 最差候选：刚访问且有修改 |
 
-`select()` 实现见 [`nru.c:46-104`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/demand_paging/eviction/nru.c)。它用 `static uint32_t last_pf_idx` 做轮转起点，避免每次都从 0 开始扫描；找到 `prec==0` 的页立即返回，否则记录最低 prec 的页。
+`select()` 实现见 [`nru.c`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/demand_paging/eviction/nru.c#L46-L104)。它用 `static uint32_t last_pf_idx` 做轮转起点，避免每次都从 0 开始扫描；找到 `prec==0` 的页立即返回，否则记录最低 prec 的页。
 
 NRU 的 `add`/`remove`/`accessed` 是空函数——它靠周期扫描页表获取 accessed 信息，不需要每次访问都更新队列。
 
@@ -262,7 +262,7 @@ static struct lru_pf_idx lru_pf_queue[K_MEM_NUM_PAGE_FRAMES + 1];
 
 槽位 0 存 head/tail 索引（实际索引偏移 1），其余槽位对应页帧。`PF_IDX_BITS` 按页帧数对数向上取整到字节边界，比如 1024 个页帧只需 11 bit 存一个索引。
 
-LRU 的工作流（[`lru.c:8-33`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/demand_paging/eviction/lru.c) 注释）：
+LRU 的工作流（[`lru.c`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/demand_paging/eviction/lru.c#L8-L33) 注释）：
 
 1. 页帧变可淘汰时，`add()` 把它追加到队尾
 2. 队首页被标记为不可访问（清 accessed 位）
@@ -330,7 +330,7 @@ flowchart TD
 
 ### 5.2 解法：专用中转页
 
-Zephyr 在虚拟地址空间末尾预留一页作为中转页，定义见 [`kernel/include/mmu.h:339`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/include/mmu.h)：
+Zephyr 在虚拟地址空间末尾预留一页作为中转页，定义见 [`kernel/include/mmu.h`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/include/mmu.h#L339)：
 
 ```c
 /* kernel/include/mmu.h:330-341 */
@@ -358,7 +358,7 @@ Zephyr 在虚拟地址空间末尾预留一页作为中转页，定义见 [`kern
 
 ### 5.3 架构实现：arm64 与 x86
 
-`arch_mem_scratch()` 是架构相关函数，接口见 [`kernel/include/kernel_arch_interface.h:452`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/include/kernel_arch_interface.h)。两个实现示例：
+`arch_mem_scratch()` 是架构相关函数，接口见 [`kernel/include/kernel_arch_interface.h`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/include/kernel_arch_interface.h#L452)。两个实现示例：
 
 ```c
 /* arch/arm64/core/mmu.c:1596 */
@@ -390,7 +390,7 @@ void arch_mem_scratch(uintptr_t phys)
 
 ### 5.4 backing store 的视角
 
-backing store 驱动看到的接口（[`include/zephyr/kernel/mm/demand_paging.h:389-413`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/kernel/mm/demand_paging.h)）：
+backing store 驱动看到的接口（[`include/zephyr/kernel/mm/demand_paging.h`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/kernel/mm/demand_paging.h#L389-L413)）：
 
 ```c
 /* 把 K_MEM_SCRATCH_PAGE 的内容拷到 location */
@@ -400,7 +400,7 @@ void k_mem_paging_backing_store_page_out(uintptr_t location);
 void k_mem_paging_backing_store_page_in(uintptr_t location);
 ```
 
-驱动只需与 `K_MEM_SCRATCH_PAGE` 交互，无需关心数据页的真实虚拟地址。RAM backing store 示例（[`subsys/demand_paging/backing_store/ram.c:115-125`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/demand_paging/backing_store/ram.c)）：
+驱动只需与 `K_MEM_SCRATCH_PAGE` 交互，无需关心数据页的真实虚拟地址。RAM backing store 示例（[`subsys/demand_paging/backing_store/ram.c`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/demand_paging/backing_store/ram.c#L115-L125)）：
 
 ```c
 void k_mem_paging_backing_store_page_out(uintptr_t location)
@@ -424,7 +424,7 @@ void k_mem_paging_backing_store_page_in(uintptr_t location)
 
 ### 6.1 三个 API
 
-[`include/zephyr/kernel/mm/demand_paging.h:84-149`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/kernel/mm/demand_paging.h) 提供四个面向应用的换页 API：
+[`include/zephyr/kernel/mm/demand_paging.h`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/kernel/mm/demand_paging.h#L84-L149) 提供四个面向应用的换页 API：
 
 | 函数 | 作用 | 实现位置 |
 |------|------|----------|
@@ -435,7 +435,7 @@ void k_mem_paging_backing_store_page_in(uintptr_t location)
 
 ### 6.2 k_mem_page_in：触发缺页换入
 
-`k_mem_page_in` 的实现很简单（[`mmu.c:1777-1783`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/mmu.c)）：
+`k_mem_page_in` 的实现很简单（[`mmu.c`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/mmu.c#L1777-L1783)）：
 
 ```c
 void k_mem_page_in(void *addr, size_t size)
@@ -451,7 +451,7 @@ void k_mem_page_in(void *addr, size_t size)
 
 ### 6.3 k_mem_page_out：写回 backing 腾出页帧
 
-`k_mem_page_out` 调用 `do_mem_evict(addr)`（[`mmu.c:1378`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/mmu.c)），它的逻辑与 `do_page_fault` 的驱逐分支类似，但**不读入新页**——只是把指定页换出到 backing store，然后把页帧放回空闲链表。
+`k_mem_page_out` 调用 `do_mem_evict(addr)`（[`mmu.c`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/mmu.c#L1378)），它的逻辑与 `do_page_fault` 的驱逐分支类似，但**不读入新页**——只是把指定页换出到 backing store，然后把页帧放回空闲链表。
 
 典型用法：知道某区域长时间不用（如图形缓冲区在屏幕关闭后），主动 `k_mem_page_out` 腾出页帧，避免下次缺页时还要先驱逐别人。
 
@@ -485,7 +485,7 @@ backing store 负责实际的页换入/换出 I/O，平台代码必须实现以�
 
 ### 7.2 两类 backing store
 
-[`subsys/demand_paging/backing_store/ram.c:13-53`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/demand_paging/backing_store/ram.c) 注释把 backing store 分为两类：
+[`subsys/demand_paging/backing_store/ram.c`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/demand_paging/backing_store/ram.c#L13-L53) 注释把 backing store 分为两类：
 
 | 类型 | 特点 | location token 设计 |
 |------|------|---------------------|
@@ -511,7 +511,7 @@ static struct k_mem_slab backing_slabs;
 
 ### 7.4 BACKED 位的优化逻辑
 
-[`mmu.c:1340-1342`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/mmu.c) 体现了 BACKED 优化：
+[`mmu.c`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/mmu.c#L1340-L1342) 体现了 BACKED 优化：
 
 ```c
 if (k_mem_page_frame_is_mapped(pf)) {
@@ -527,7 +527,7 @@ if (k_mem_page_frame_is_mapped(pf)) {
 
 ### 8.1 三类直方图
 
-按需分页的延迟高度依赖架构、SoC、板级——同样的代码在 qemu_x86 与真实 arm64 SoC 上延迟差几个数量级。Zephyr 提供三个直方图量化延迟，定义见 [`kernel/paging/statistics.c:15-18`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/paging/statistics.c)：
+按需分页的延迟高度依赖架构、SoC、板级——同样的代码在 qemu_x86 与真实 arm64 SoC 上延迟差几个数量级。Zephyr 提供三个直方图量化延迟，定义见 [`kernel/paging/statistics.c`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/paging/statistics.c#L15-L18)：
 
 | 直方图 | 测量对象 | 获取 API |
 |--------|----------|----------|
@@ -539,7 +539,7 @@ if (k_mem_page_frame_is_mapped(pf)) {
 
 ### 8.2 桶边界：weak 默认值
 
-[`statistics.c:44-75`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/paging/statistics.c) 提供两套 `__weak` 默认桶边界（按 ns 转换为 cycle）：
+[`statistics.c`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/paging/statistics.c#L44-L75) 提供两套 `__weak` 默认桶边界（按 ns 转换为 cycle）：
 
 | 桶编号 | eviction 上界 | backing store 上界 |
 |--------|---------------|---------------------|
@@ -558,7 +558,7 @@ if (k_mem_page_frame_is_mapped(pf)) {
 
 ### 8.3 直方图更新逻辑
 
-`z_paging_histogram_inc()` 实现（[`statistics.c:171-184`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/paging/statistics.c)）：
+`z_paging_histogram_inc()` 实现（[`statistics.c`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/paging/statistics.c#L171-L184)）：
 
 ```c
 void z_paging_histogram_inc(struct k_mem_paging_histogram_t *hist,
@@ -581,12 +581,12 @@ void z_paging_histogram_inc(struct k_mem_paging_histogram_t *hist,
 
 ### 8.4 计时方式
 
-计时源有两种（[`mmu.c:1587-1606`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/mmu.c)）：
+计时源有两种（[`mmu.c`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/mmu.c#L1587-L1606)）：
 
 - `CONFIG_DEMAND_PAGING_STATS_USING_TIMING_FUNCTIONS`：用 `timing_counter_get()` + `timing_cycles_get()`，精度高但需 `select TIMING_FUNCTIONS_NEED_AT_BOOT`
 - 否则：用 `k_cycle_get_32()`，依赖 `CONFIG_SYS_CLOCK_HW_CYCLES_PER_SEC`
 
-直方图结构在初始化时被 pin 在内存中（[`statistics.c:138-163`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/paging/statistics.c) 注释明确），保证统计代码本身不会被换出导致死锁。
+直方图结构在初始化时被 pin 在内存中（[`statistics.c`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/paging/statistics.c#L138-L163) 注释明确），保证统计代码本身不会被换出导致死锁。
 
 > **核心要点**：直方图是 demand paging 调优的核心工具——通过它能看到驱逐算法耗时分布与 backing store I/O 分布，判断瓶颈在算法（优化 `select`）还是在存储（换更快的 backing store）。但默认桶边界对真实硬件可能不合适，必须自定义。
 
@@ -596,7 +596,7 @@ void z_paging_histogram_inc(struct k_mem_paging_histogram_t *hist,
 
 ### 9.1 关键 Kconfig
 
-按需分页相关 Kconfig 集中在 [`kernel/Kconfig.vm:119-209`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/Kconfig.vm) 与 [`subsys/demand_paging/`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/demand_paging/)：
+按需分页相关 Kconfig 集中在 [`kernel/Kconfig.vm`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/Kconfig.vm#L119-L209) 与 [`subsys/demand_paging/`](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/demand_paging/)：
 
 | Kconfig | 含义 | 默认 |
 |---------|------|------|

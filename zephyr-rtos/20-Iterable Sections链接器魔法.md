@@ -106,20 +106,20 @@ STRUCT_SECTION_FOREACH(sensor_meta, meta) {
 链接器侧的宏定义在 [include/zephyr/linker/iterable_sections.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/linker/iterable_sections.h)：
 
 ```ld
-/* 第 16-19 行：核心原语，所有 ITERABLE_SECTION_* 都基于它 */
+/* 核心原语，所有 ITERABLE_SECTION_* 都基于它 */
 #define Z_LINK_ITERABLE(struct_type) \
 	PLACE_SYMBOL_HERE(_CONCAT(_##struct_type, _list_start)); \
 	KEEP(*(SORT_BY_NAME(._##struct_type.static.*))); \
 	PLACE_SYMBOL_HERE(_CONCAT(_##struct_type, _list_end));
 
-/* 第 57-61 行：只读段版本 */
+/* 只读段版本 */
 #define ITERABLE_SECTION_ROM(struct_type, subalign) \
 	SECTION_PROLOGUE(struct_type##_area, ,) \
 	{ \
 		Z_LINK_ITERABLE(struct_type); \
 	} GROUP_ROM_LINK_IN(RAMABLE_REGION, ROMABLE_REGION)
 
-/* 第 110-114 行：可读写段版本 */
+/* 可读写段版本 */
 #define ITERABLE_SECTION_RAM(struct_type, subalign) \
 	SECTION_DATA_PROLOGUE(struct_type##_area, ,) \
 	{ \
@@ -129,11 +129,11 @@ STRUCT_SECTION_FOREACH(sensor_meta, meta) {
 
 逐行解析 `Z_LINK_ITERABLE(sensor_meta)` 展开后的内容：
 
-1. **`PLACE_SYMBOL_HERE(_sensor_meta_list_start)`** — 在当前位置定义符号 `_sensor_meta_list_start = .`。这是数组起点，C 代码用 `extern const struct sensor_meta _sensor_meta_list_start[];` 引用它。`PLACE_SYMBOL_HERE` 在 [include/zephyr/linker/linker-defs.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/linker/linker-defs.h) 第 58 行定义，对 RX 架构额外提供带前导下划线的别名。
+1. **`PLACE_SYMBOL_HERE(_sensor_meta_list_start)`** — 在当前位置定义符号 `_sensor_meta_list_start = .`。这是数组起点，C 代码用 `extern const struct sensor_meta _sensor_meta_list_start[];` 引用它。`PLACE_SYMBOL_HERE` 在 [include/zephyr/linker/linker-defs.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/linker/linker-defs.h#L58)定义，对 RX 架构额外提供带前导下划线的别名。
 2. **`KEEP(*(SORT_BY_NAME(._sensor_meta.static.*)))`** — 这是核心。`SORT_BY_NAME` 让 ld 按输入段名字典序收集，`.*` 通配符匹配所有 `._sensor_meta.static.<postfix>` 输入段；`KEEP` 防止 `--gc-sections` 因为"无直接引用"而丢弃这些段。
 3. **`PLACE_SYMBOL_HERE(_sensor_meta_list_end)`** — 在收集完所有段后定义终点符号。
 
-`SECTION_PROLOGUE(name, options, align)` 在 [include/zephyr/linker/linker-tool-gcc.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/linker/linker-tool-gcc.h) 第 182 行定义为 `name options : align`，所以 `ITERABLE_SECTION_ROM(sensor_meta, 4)` 展开成：
+`SECTION_PROLOGUE(name, options, align)` 在 [include/zephyr/linker/linker-tool-gcc.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/linker/linker-tool-gcc.h#L182)定义为 `name options : align`，所以 `ITERABLE_SECTION_ROM(sensor_meta, 4)` 展开成：
 
 ```ld
 sensor_meta_area :
@@ -164,7 +164,7 @@ sensor_meta_area :
 [iterable_sections.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/linker/iterable_sections.h) 还提供两种变体：
 
 ```ld
-/* 第 22-29 行：数值排序版本，按段名末尾的数字大小排序 */
+/* 数值排序版本，按段名末尾的数字大小排序 */
 #define Z_LINK_ITERABLE_NUMERIC(struct_type) \
 	PLACE_SYMBOL_HERE(_CONCAT(_##struct_type, _list_start)); \
 	KEEP(*(SORT(._##struct_type.static.*_?_*)));   /* 1 位 */ \
@@ -174,7 +174,7 @@ sensor_meta_area :
 	KEEP(*(SORT(._##struct_type.static.*_?????_*))); \
 	PLACE_SYMBOL_HERE(_CONCAT(_##struct_type, _list_end));
 
-/* 第 35-38 行：允许 GC 版本，去掉 KEEP，未引用的段可被 gc 删除 */
+/* 允许 GC 版本，去掉 KEEP，未引用的段可被 gc 删除 */
 #define Z_LINK_ITERABLE_GC_ALLOWED(struct_type) \
 	PLACE_SYMBOL_HERE(_CONCAT(_##struct_type, _list_start)); \
 	*(SORT_BY_NAME(._##struct_type.static.*)); \
@@ -253,15 +253,15 @@ flowchart TD
 C 侧的宏定义在 [include/zephyr/sys/iterable_sections.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/sys/iterable_sections.h)。从外到内的展开链：
 
 ```c
-/* 第 216-217 行：用户常用入口 */
+/* 用户常用入口 */
 #define STRUCT_SECTION_ITERABLE(struct_type, varname) \
 	STRUCT_SECTION_ITERABLE_ALTERNATE(struct_type, struct_type, varname)
 
-/* 第 188-189 行：允许段名与类型名不同（shell 用这个） */
+/* 允许段名与类型名不同（shell 用这个） */
 #define STRUCT_SECTION_ITERABLE_ALTERNATE(secname, struct_type, varname) \
 	TYPE_SECTION_ITERABLE(struct struct_type, varname, secname, varname)
 
-/* 第 42-44 行：底层实现 */
+/* 底层实现 */
 #define TYPE_SECTION_ITERABLE(type, varname, secname, section_postfix) \
 	Z_DECL_ALIGN(type) varname \
 	__in_section(_##secname, static, _CONCAT(section_postfix, _)) __used __noasan
@@ -275,8 +275,8 @@ C 侧的宏定义在 [include/zephyr/sys/iterable_sections.h](file:///home/pbw/r
 
 四个属性各自的来源与作用：
 
-- **`Z_DECL_ALIGN(type)`**：在 [include/zephyr/toolchain/common.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/toolchain/common.h) 第 227 行定义为 `__aligned(__alignof(type)) type`。强制按类型的自然对齐填充。注释（第 210-226 行）解释了原因——汇编器和链接器可能在收集段时插入大于自然对齐的填充，破坏"连续数组"语义；显式对齐让每个元素边界确定。
-- **`__in_section(_sensor_meta, static, temp_sensor_)`**：在 [include/zephyr/toolchain/gcc.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/toolchain/gcc.h) 第 197-201 行展开为 `__attribute__((section("._sensor_meta.static.temp_sensor_")))`。注意三段式段名 `.<secname>.static.<postfix>_`——前缀 `.<secname>.static.` 与链接脚本 `SORT_BY_NAME(._<secname>.static.*)` 的通配符匹配；后缀 `<postfix>_` 是变量名加一个下划线，正是 §8 字典序排序的依据。
+- **`Z_DECL_ALIGN(type)`**：在 [include/zephyr/toolchain/common.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/toolchain/common.h#L227)定义为 `__aligned(__alignof(type)) type`。强制按类型的自然对齐填充。注释解释了原因——汇编器和链接器可能在收集段时插入大于自然对齐的填充，破坏"连续数组"语义；显式对齐让每个元素边界确定。
+- **`__in_section(_sensor_meta, static, temp_sensor_)`**：在 [include/zephyr/toolchain/gcc.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/toolchain/gcc.h#L197-L201)展开为 `__attribute__((section("._sensor_meta.static.temp_sensor_")))`。注意三段式段名 `.<secname>.static.<postfix>_`——前缀 `.<secname>.static.` 与链接脚本 `SORT_BY_NAME(._<secname>.static.*)` 的通配符匹配；后缀 `<postfix>_` 是变量名加一个下划线，正是 §8 字典序排序的依据。
 - **`__used`**：GCC 属性，告诉编译器"这个变量看起来没被引用也不要删除"。这是给编译器的指令，与链接器的 `KEEP` 双保险。
 - **`__noasan`**：见 §6，防 ASan 在变量周围加 guard padding 破坏段对齐。
 
@@ -303,7 +303,7 @@ const __attribute__((aligned(4))) struct sensor_meta temp_sensor
 `STRUCT_SECTION_ITERABLE_ALTERNATE` 是最灵活的——它解耦了"段名"与"类型名"。shell 子系统就用它把 `union shell_cmd_entry` 放到 `shell_root_cmds` 段：
 
 ```c
-/* include/zephyr/shell/shell.h 第 394-396 行 */
+/* include/zephyr/shell/shell.h */
 static const TYPE_SECTION_ITERABLE(union shell_cmd_entry,
     UTIL_CAT(shell_cmd_, syntax), shell_root_cmds,
     UTIL_CAT(shell_cmd_, syntax)) = { ... };
@@ -391,7 +391,7 @@ foo = 1
 
 ### 4.1 宏展开
 
-[include/zephyr/sys/iterable_sections.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/sys/iterable_sections.h) 第 105-113 行：
+[include/zephyr/sys/iterable_sections.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/sys/iterable_sections.h#L105-L113)：
 
 ```c
 #define TYPE_SECTION_FOREACH(type, secname, iterator)		\
@@ -405,7 +405,7 @@ foo = 1
 	     iterator++)
 ```
 
-第 270-271 行的 `STRUCT_SECTION_FOREACH` 是它的特化（`secname = struct_type`）。展开 `STRUCT_SECTION_FOREACH(my_meta, m)` 后等价于：
+`STRUCT_SECTION_FOREACH` 是它的特化（`secname = struct_type`）。展开 `STRUCT_SECTION_FOREACH(my_meta, m)` 后等价于：
 
 ```c
 extern struct my_meta _my_meta_list_start[];
@@ -431,13 +431,13 @@ for (struct my_meta *m = _my_meta_list_start;
 除了 `FOREACH`，还有两个常用宏：
 
 ```c
-/* 第 125-128 行：按下标取元素 */
+/* 按下标取元素 */
 #define TYPE_SECTION_GET(type, secname, i, dst) do { \
     TYPE_SECTION_START_EXTERN(type, secname); \
     *(dst) = &TYPE_SECTION_START(secname)[i]; \
 } while (0)
 
-/* 第 137-142 行：统计元素个数 */
+/* 统计元素个数 */
 #define TYPE_SECTION_COUNT(type, secname, dst) do { \
     TYPE_SECTION_START_EXTERN(type, secname); \
     TYPE_SECTION_END_EXTERN(type, secname); \
@@ -446,7 +446,7 @@ for (struct my_meta *m = _my_meta_list_start;
 } while (0)
 ```
 
-实战案例：[include/zephyr/logging/log_backend.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/logging/log_backend.h) 第 250-269 行用这两个宏实现"按下标取后端"和"统计后端数量"：
+实战案例：[include/zephyr/logging/log_backend.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/logging/log_backend.h#L250-L269)用这两个宏实现"按下标取后端"和"统计后端数量"：
 
 ```c
 static inline const struct log_backend *log_backend_get(uint32_t idx)
@@ -468,7 +468,7 @@ static inline int log_backend_count_get(void)
 
 ### 4.3 ALTERNATE 版本
 
-[iterable_sections.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/sys/iterable_sections.h) 第 257-258 行：
+[iterable_sections.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/sys/iterable_sections.h#L257-L258)：
 
 ```c
 #define STRUCT_SECTION_FOREACH_ALTERNATE(secname, struct_type, iterator) \
@@ -523,13 +523,13 @@ flowchart TD
 
 ### 5.1 函数签名与位置参数
 
-`zephyr_linker_sources` 在 [cmake/modules/extensions.cmake](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/cmake/modules/extensions.cmake) 第 1315 行定义。签名：
+`zephyr_linker_sources` 在 [cmake/modules/extensions.cmake](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/cmake/modules/extensions.cmake#L1315)定义。签名：
 
 ```cmake
 zephyr_linker_sources(<location> [SORT_KEY <sort_key>] <files>)
 ```
 
-`<location>` 决定 .ld 片段插入到 `linker.ld` 的哪个位置，可选值在第 1263-1283 行列出。与 iterable sections 相关的是：
+`<location>` 决定 .ld 片段插入到 `linker.ld` 的哪个位置，可选值列出。与 iterable sections 相关的是：
 
 | location | 含义 | iterable section 典型用法 |
 |----------|------|--------------------------|
@@ -540,9 +540,9 @@ zephyr_linker_sources(<location> [SORT_KEY <sort_key>] <files>)
 | `RODATA` | rodata output section 内 | 不需要 `SECTION_PROLOGUE`，只放几个符号 |
 | `NOINIT` | noinit output section 内 | RAM 但不初始化 |
 
-注释（第 1299-1307 行）说明：用 `SECTIONS` / `ROM_SECTIONS` / `RAM_SECTIONS` / `DATA_SECTIONS` 时，.ld 片段必须**自己定义 output section**（用 `SECTION_PROLOGUE`）；用 `NOINIT` / `RWDATA` / `RODATA` 时则不能定义 output section，只能放内容。
+注释说明：用 `SECTIONS` / `ROM_SECTIONS` / `RAM_SECTIONS` / `DATA_SECTIONS` 时，.ld 片段必须**自己定义 output section**（用 `SECTION_PROLOGUE`）；用 `NOINIT` / `RWDATA` / `RODATA` 时则不能定义 output section，只能放内容。
 
-由于 `ITERABLE_SECTION_ROM` 内部已经包含了 `SECTION_PROLOGUE(...)`，所以用 `SECTIONS` 或 `ROM_SECTIONS` 都可以。官方文档 [doc/kernel/iterable_sections/index.rst](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/doc/kernel/iterable_sections/index.rst) 第 42-46 行的示例用 `DATA_SECTIONS`（针对 `ITERABLE_SECTION_RAM`）：
+由于 `ITERABLE_SECTION_ROM` 内部已经包含了 `SECTION_PROLOGUE(...)`，所以用 `SECTIONS` 或 `ROM_SECTIONS` 都可以。官方文档 [doc/kernel/iterable_sections/index.rst](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/doc/kernel/iterable_sections/index.rst#L42-L46)的示例用 `DATA_SECTIONS`（针对 `ITERABLE_SECTION_RAM`）：
 
 ```cmake
 # CMakeLists.txt
@@ -557,7 +557,7 @@ ITERABLE_SECTION_RAM(my_data, 4)
 
 ### 5.2 SORT_KEY 排序
 
-`SORT_KEY` 是可选的，用于控制同一 `location` 内多个 .ld 片段的插入顺序。所有片段按 `SORT_KEY` 字典序写入 `snippets-<location>.ld` 文件。第 1408-1412 行：
+`SORT_KEY` 是可选的，用于控制同一 `location` 内多个 .ld 片段的插入顺序。所有片段按 `SORT_KEY` 字典序写入 `snippets-<location>.ld` 文件。：
 
 ```cmake
 cmake_parse_arguments(L "" "SORT_KEY" "" ${ARGN})
@@ -567,19 +567,19 @@ if(DEFINED L_SORT_KEY)
 endif()
 ```
 
-未指定时默认 `default`。第 1430 行生成的 include 字符串是 `/* Sort key: "<key>" */#include "<relpath>"`，然后第 1445 行 `list(SORT lines)` 按整行字典序排序。这意味着 `SORT_KEY` 必须是字母数字（注释里要求 alphanumeric），且大小写敏感。
+未指定时默认 `default`。生成的 include 字符串是 `/* Sort key: "<key>" */#include "<relpath>"`，然后 `list(SORT lines)` 按整行字典序排序。这意味着 `SORT_KEY` 必须是字母数字（注释里要求 alphanumeric），且大小写敏感。
 
 `SORT_KEY` 影响 .ld 片段在 `linker.ld` 里的物理顺序——这会影响段的内存地址，但**不影响** `SORT_BY_NAME` 对 iterable 段内部元素的排序（那个排序由 ld 自己做）。所以对 iterable sections 来说，`SORT_KEY` 主要影响多个 `ITERABLE_SECTION_*` 之间的相对位置，通常不重要。
 
 ### 5.3 内部实现：snippets 文件
 
-`zephyr_linker_sources` 的实现思路（第 1316-1449 行）：
+`zephyr_linker_sources` 的实现思路：
 
-1. 第一次调用时清空 14 个 `snippets-*.ld` 文件（第 1340-1356 行）
-2. 根据 `location` 选择目标 snippets 文件（第 1360-1406 行）
-3. 解析 `SORT_KEY`，拼接 `/* Sort key: "..." */#include "<relpath>"` 字符串（第 1430 行）
-4. 如果该 .ld 文件之前在别的 location 用过，先从旧位置移除（第 1433-1439 行，支持"重新挂载"）
-5. 把新行追加到 snippets 文件，按整行字典序排序后写回（第 1443-1447 行）
+1. 第一次调用时清空 14 个 `snippets-*.ld` 文件
+2. 根据 `location` 选择目标 snippets 文件
+3. 解析 `SORT_KEY`，拼接 `/* Sort key: "..." */#include "<relpath>"` 字符串
+4. 如果该 .ld 文件之前在别的 location 用过，先从旧位置移除（支持"重新挂载"）
+5. 把新行追加到 snippets 文件，按整行字典序排序后写回
 
 最终 `linker.ld` 通过 `#include "snippets-sections.ld"` 把这些片段嵌入。生成的 snippets 文件位于 `build/zephyr/include/generated/snippets-*.ld`，调试链接脚本时可以直接查看。
 
@@ -594,7 +594,7 @@ Zephyr 内核自己用 `zephyr_linker_sources` 注册了大量 .ld 片段，下�
 | [common-rom/common-rom-misc.ld](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/linker/common-rom/common-rom-misc.ld) | SECTIONS | `shell`、`shell_root_cmds`、`settings_handler_static`、`zbus_*` 等 |
 | [common-rom/common-rom-debug.ld](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/linker/common-rom/common-rom-debug.ld) | SECTIONS | 调试相关 iterable 段 |
 
-`zephyr_linker_sources` 的注册分散在各子系统的 CMakeLists 里。例如 [kernel.cmake](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/cmake/modules/kernel.cmake) 第 119 行注册了内核主 .ld 片段。
+`zephyr_linker_sources` 的注册分散在各子系统的 CMakeLists 里。例如 [kernel.cmake](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/cmake/modules/kernel.cmake#L119)注册了内核主 .ld 片段。
 
 ---
 
@@ -617,7 +617,7 @@ ASan (AddressSanitizer) 是 GCC/Clang 的内存错误检测工具。开启 `-fsa
 
 ### 6.2 `__noasan` 的定义
 
-`__noasan` 在 [include/zephyr/toolchain/gcc.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/toolchain/gcc.h) 第 640-644 行定义：
+`__noasan` 在 [include/zephyr/toolchain/gcc.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/toolchain/gcc.h#L640-L644)定义：
 
 ```c
 #if defined(CONFIG_ASAN) && defined(__clang__)
@@ -633,7 +633,7 @@ ASan (AddressSanitizer) 是 GCC/Clang 的内存错误检测工具。开启 `-fsa
 - **`no_sanitize("address")` 属性**——告诉 Clang "不要对这个变量做 ASan 插桩，也不要加红区"。
 - **`__used` 配合**——`__noasan` 与 `__used` 一起用，确保即使关闭 ASan 插桩，变量也不会被优化掉。
 
-[include/zephyr/toolchain.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/toolchain.h) 第 57-70 行的注释解释了为什么需要这个属性：
+[include/zephyr/toolchain.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/toolchain.h#L57-L70)的注释解释了为什么需要这个属性：
 
 > When used in the definition of a symbol, prevents that symbol (be it a function or data) from being instrumented by the address sanitizer feature of the compiler. Most commonly, this is used to prevent padding around data that will be treated specially by the Zephyr link (c.f. SYS_INIT records, STRUCT_SECTION_ITERABLE definitions) in ways that don't understand the guard padding.
 
@@ -642,7 +642,7 @@ ASan (AddressSanitizer) 是 GCC/Clang 的内存错误检测工具。开启 `-fsa
 | 场景 | 是否需要 `__noasan` |
 |------|-------------------|
 | 用 `STRUCT_SECTION_ITERABLE` 声明的变量 | **必须**（宏已内置） |
-| 用 `Z_INIT_ENTRY_SECTION` 声明的 `init_entry` | **必须**（[init.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/init.h) 第 168 行已内置） |
+| 用 `Z_INIT_ENTRY_SECTION` 声明的 `init_entry` | **必须**（[init.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/init.h#L168)已内置） |
 | 用 `__in_section` 直接放进段的变量 | **必须**（需手写） |
 | 普通全局变量 | 否（红区是预期的） |
 | 普通函数 | 否 |
@@ -659,7 +659,7 @@ ASan (AddressSanitizer) 是 GCC/Clang 的内存错误检测工具。开启 `-fsa
 
 [04 章](./04-内核启动与初始化.md) §5 已详细剖析过 `SYS_INIT`，这里只从 iterable sections 角度总结。
 
-[include/zephyr/init.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/init.h) 第 166-169 行：
+[include/zephyr/init.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/init.h#L166-L169)：
 
 ```c
 #define SYS_INIT_NAMED(name, init_fn_, level, prio)                                       \
@@ -668,7 +668,7 @@ ASan (AddressSanitizer) 是 GCC/Clang 的内存错误检测工具。开启 `-fsa
 		Z_INIT_ENTRY_NAME(name) = {.init_fn = (init_fn_), .dev = NULL}            \
 ```
 
-`Z_INIT_ENTRY_SECTION` 第 111-113 行：
+`Z_INIT_ENTRY_SECTION` ：
 
 ```c
 #define Z_INIT_ENTRY_SECTION(level, prio, sub_prio) \
@@ -676,13 +676,13 @@ ASan (AddressSanitizer) 是 GCC/Clang 的内存错误检测工具。开启 `-fsa
 		".z_init_" #level "_P_" STRINGIFY(prio) "_SUB_" STRINGIFY(sub_prio)"_")))
 ```
 
-注意 `SYS_INIT` **没有用 `STRUCT_SECTION_ITERABLE`**——它直接用 `__attribute__((section(...)))` 自己拼段名，因为段名里要编码 `<level>` 与 `<prio>`。链接脚本侧也不用 `ITERABLE_SECTION_ROM`，而是用定制化的 `CREATE_OBJ_LEVEL`（[linker-defs.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/linker/linker-defs.h) 第 70-75 行）按级别分段收集。
+注意 `SYS_INIT` **没有用 `STRUCT_SECTION_ITERABLE`**——它直接用 `__attribute__((section(...)))` 自己拼段名，因为段名里要编码 `<level>` 与 `<prio>`。链接脚本侧也不用 `ITERABLE_SECTION_ROM`，而是用定制化的 `CREATE_OBJ_LEVEL`（[linker-defs.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/linker/linker-defs.h#L70-L75)）按级别分段收集。
 
 所以 `SYS_INIT` 是 iterable sections 的"定制变体"——保留了"链接器段 + 起止符号 + 数组遍历"的三段式骨架，但段名编码了排序信息，链接器 `SORT` 替代了运行时排序。这套变体的细节已在 [04 章 §5.2-5.4](./04-内核启动与初始化.md) 讲透，本节不再重复。
 
 ### 7.2 SHELL_CMD_REGISTER：命令注册
 
-[include/zephyr/shell/shell.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/shell/shell.h) 第 390-399 行：
+[include/zephyr/shell/shell.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/shell/shell.h#L390-L399)：
 
 ```c
 #define SHELL_CMD_ARG_REGISTER(syntax, subcmd, help, handler, mandatory, optional) \
@@ -702,7 +702,7 @@ ASan (AddressSanitizer) 是 GCC/Clang 的内存错误检测工具。开启 `-fsa
 2. **`type = union shell_cmd_entry`**——段里每个元素是 `union shell_cmd_entry`，不是 `struct shell_static_entry`。这个 union 可以容纳"静态条目"或"动态条目"，是 shell 子系统的设计选择。
 3. **`section_postfix = shell_cmd_<syntax>`**——排序键是命令名加 `shell_cmd_` 前缀。两条命令 `history` 与 `help` 会展开为 `shell_cmd_history` 与 `shell_cmd_help`，字典序里 `help` 排在前——shell 命令在 `help` 输出里的顺序就是这样来的。
 
-链接脚本侧 [common-rom-misc.ld](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/linker/common-rom/common-rom-misc.ld) 第 60 行：
+链接脚本侧 [common-rom-misc.ld](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/linker/common-rom/common-rom-misc.ld#L60)：
 
 ```ld
 ITERABLE_SECTION_ROM(shell_root_cmds, Z_LINK_ITERABLE_SUBALIGN)
@@ -720,7 +720,7 @@ shell 还有两个相关段：`shell_subcmds`（子命令）与 `shell_dynamic_s
 
 ### 7.3 LOG_BACKEND_DEFINE：日志后端
 
-[include/zephyr/logging/log_backend.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/logging/log_backend.h) 第 111-122 行：
+[include/zephyr/logging/log_backend.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/logging/log_backend.h#L111-L122)：
 
 ```c
 #define LOG_BACKEND_DEFINE(_name, _api, _autostart, ...)                \
@@ -736,19 +736,19 @@ shell 还有两个相关段：`shell_subcmds`（子命令）与 `shell_dynamic_s
 	}
 ```
 
-这是"标准 iterable section"最干净的案例：段名 = 类型名 = `log_backend`，没有 ALTERNATE 的复杂性。链接脚本 [common-rom-logging.ld](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/linker/common-rom/common-rom-logging.ld) 第 30 行：
+这是"标准 iterable section"最干净的案例：段名 = 类型名 = `log_backend`，没有 ALTERNATE 的复杂性。链接脚本 [common-rom-logging.ld](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/linker/common-rom/common-rom-logging.ld#L30)：
 
 ```ld
 ITERABLE_SECTION_ROM(log_backend, Z_LINK_ITERABLE_SUBALIGN)
 ```
 
-log 子系统遍历后端用 `STRUCT_SECTION_GET` 按下标取（[log_backend.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/logging/log_backend.h) 第 250-256 行），因为日志后端需要稳定的 ID（0, 1, 2, ...）做引用计数。`log_backend_count_get` 用 `STRUCT_SECTION_COUNT` 返回总数。
+log 子系统遍历后端用 `STRUCT_SECTION_GET` 按下标取（[log_backend.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/logging/log_backend.h#L250-L256)），因为日志后端需要稳定的 ID（0, 1, 2, ...）做引用计数。`log_backend_count_get` 用 `STRUCT_SECTION_COUNT` 返回总数。
 
 `LOG_BACKEND_DEFINE` 是阅读源码时最值得对照的案例——它展示了 iterable sections 最简单的用法，没有 ALTERNATE、没有 NUMERIC、没有定制段名。
 
 ### 7.4 SETTINGS_STATIC_HANDLER_DEFINE：配置处理器
 
-[include/zephyr/settings/settings.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/settings/settings.h) 第 222-227 行：
+[include/zephyr/settings/settings.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/settings/settings.h#L222-L227)：
 
 ```c
 #define SETTINGS_STATIC_HANDLER_DEFINE_WITH_CPRIO(_hname, _tree, _get, _set, _commit, _export, _cprio) \
@@ -764,7 +764,7 @@ log 子系统遍历后端用 `STRUCT_SECTION_GET` 按下标取（[log_backend.h]
 
 注意变量名是 `settings_handler_##_hname`——加了 `settings_handler_` 前缀。这意味着排序键是 `settings_handler_<hname>`，所有 handler 都以同样的前缀开头，等价于按 `_hname` 字典序排列。
 
-链接脚本 [common-rom-misc.ld](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/linker/common-rom/common-rom-misc.ld) 第 10 行：
+链接脚本 [common-rom-misc.ld](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/linker/common-rom/common-rom-misc.ld#L10)：
 
 ```ld
 ITERABLE_SECTION_ROM(settings_handler_static, Z_LINK_ITERABLE_SUBALIGN)
@@ -896,7 +896,7 @@ MY_CMD_DEFINE(reboot, reboot_handler);
 ITERABLE_SECTION_ROM(my_cmd, 4)
 ```
 
-第二个参数 `4` 是 subalign，但当前宏实现里这个参数实际未使用（[iterable_sections.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/linker/iterable_sections.h) 第 57-61 行的 `subalign` 形参没有出现在展开体里）。Zephyr 内核代码统一传 `Z_LINK_ITERABLE_SUBALIGN`（即 `CONFIG_LINKER_ITERABLE_SUBALIGN`）保持一致性，本例直接传字面量 4 也可以。
+第二个参数 `4` 是 subalign，但当前宏实现里这个参数实际未使用（[iterable_sections.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/linker/iterable_sections.h#L57-L61)的 `subalign` 形参没有出现在展开体里）。Zephyr 内核代码统一传 `Z_LINK_ITERABLE_SUBALIGN`（即 `CONFIG_LINKER_ITERABLE_SUBALIGN`）保持一致性，本例直接传字面量 4 也可以。
 
 **步骤 4：CMake 注册**
 
@@ -1079,23 +1079,23 @@ Zephyr 在 Linux initcall 模式上做了三个关键扩展：
 - [Iterable Sections 官方文档](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/doc/kernel/iterable_sections/index.rst) — Zephyr 官方对 iterable sections 的简短说明，含完整示例
 - 源码 [include/zephyr/sys/iterable_sections.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/sys/iterable_sections.h) — C 侧宏：`STRUCT_SECTION_ITERABLE` / `STRUCT_SECTION_FOREACH` / `STRUCT_SECTION_GET` / `STRUCT_SECTION_COUNT`
 - 源码 [include/zephyr/linker/iterable_sections.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/linker/iterable_sections.h) — 链接器侧宏：`ITERABLE_SECTION_ROM` / `ITERABLE_SECTION_RAM` / `Z_LINK_ITERABLE` / `Z_LINK_ITERABLE_NUMERIC`
-- 源码 [include/zephyr/toolchain/common.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/toolchain/common.h) 第 227 行 — `Z_DECL_ALIGN` 宏，强制类型对齐
-- 源码 [include/zephyr/toolchain/gcc.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/toolchain/gcc.h) 第 197-201 行 — `__in_section` 宏；第 640-644 行 — `__noasan` 宏
-- 源码 [include/zephyr/toolchain.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/toolchain.h) 第 57-70 行 — `__noasan` 的文档注释
-- 源码 [include/zephyr/linker/linker-defs.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/linker/linker-defs.h) 第 54-75 行 — `PLACE_SYMBOL_HERE` 与 `CREATE_OBJ_LEVEL` 宏
-- 源码 [include/zephyr/linker/linker-tool-gcc.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/linker/linker-tool-gcc.h) 第 179-209 行 — `SECTION_PROLOGUE` / `SECTION_DATA_PROLOGUE` 宏
+- 源码 [include/zephyr/toolchain/common.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/toolchain/common.h#L227) — `Z_DECL_ALIGN` 宏，强制类型对齐
+- 源码 [include/zephyr/toolchain/gcc.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/toolchain/gcc.h#L197-L201) — `__in_section` 宏；`__noasan` 宏
+- 源码 [include/zephyr/toolchain.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/toolchain.h#L57-L70) — `__noasan` 的文档注释
+- 源码 [include/zephyr/linker/linker-defs.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/linker/linker-defs.h#L54-L75) — `PLACE_SYMBOL_HERE` 与 `CREATE_OBJ_LEVEL` 宏
+- 源码 [include/zephyr/linker/linker-tool-gcc.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/linker/linker-tool-gcc.h#L179-L209) — `SECTION_PROLOGUE` / `SECTION_DATA_PROLOGUE` 宏
 - 源码 [include/zephyr/linker/common-rom/common-rom-kernel-devices.ld](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/linker/common-rom/common-rom-kernel-devices.ld) — `initlevel` 段、`device` 段、`_static_thread_data` 段等
 - 源码 [include/zephyr/linker/common-rom/common-rom-misc.ld](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/linker/common-rom/common-rom-misc.ld) — `shell_root_cmds` 段、`settings_handler_static` 段、`zbus_*` 段等
 - 源码 [include/zephyr/linker/common-rom/common-rom-logging.ld](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/linker/common-rom/common-rom-logging.ld) — `log_backend` 段、`log_const` 段、`log_strings` 段等
-- 源码 [include/zephyr/init.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/init.h) 第 111-169 行 — `Z_INIT_ENTRY_SECTION` 与 `SYS_INIT_NAMED` 宏
-- 源码 [include/zephyr/device.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/device.h) 第 1285-1293 行 — `Z_DEVICE_INIT_ENTRY_DEFINE` 宏；第 1365 行 — `DEVICE_API` 宏；第 1387-1393 行 — `DEVICE_API_IS` 宏用 `STRUCT_SECTION_START`/`END` 判断设备 API 类型
-- 源码 [include/zephyr/shell/shell.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/shell/shell.h) 第 390-399 行 — `SHELL_CMD_ARG_REGISTER` 宏
-- 源码 [include/zephyr/logging/log_backend.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/logging/log_backend.h) 第 111-122 行 — `LOG_BACKEND_DEFINE` 宏；第 250-268 行 — `log_backend_get` / `log_backend_count_get` 用 `STRUCT_SECTION_GET` / `STRUCT_SECTION_COUNT`
-- 源码 [include/zephyr/settings/settings.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/settings/settings.h) 第 222-249 行 — `SETTINGS_STATIC_HANDLER_DEFINE_WITH_CPRIO` 宏
-- 源码 [include/zephyr/kernel.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/kernel.h) 第 960-966 行 — `K_THREAD_DEFINE` 用 `STRUCT_SECTION_ITERABLE(_static_thread_data, ...)`；第 1933-1935 行 — `K_TIMER_OBSERVER_DEFINE`
-- 源码 [include/zephyr/sys/kobject.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/sys/kobject.h) 第 65-71 行 — `K_THREAD_ACCESS_GRANT` 用 `STRUCT_SECTION_ITERABLE(k_object_assignment, ...)`
-- 源码 [kernel/init.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/init.c) 第 66-90 行 — `STRUCT_SECTION_FOREACH(_static_thread_data, ...)` 与 `STRUCT_SECTION_FOREACH(k_object_assignment, ...)`；第 202-206 行 — `z_device_state_init` 用 `STRUCT_SECTION_FOREACH(device, dev)`
-- 源码 [cmake/modules/extensions.cmake](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/cmake/modules/extensions.cmake) 第 1255-1449 行 — `zephyr_linker_sources` 函数定义
+- 源码 [include/zephyr/init.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/init.h#L111-L169) — `Z_INIT_ENTRY_SECTION` 与 `SYS_INIT_NAMED` 宏
+- 源码 [include/zephyr/device.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/device.h#L1285-L1293) — `Z_DEVICE_INIT_ENTRY_DEFINE` 宏；`DEVICE_API` 宏；`DEVICE_API_IS` 宏用 `STRUCT_SECTION_START`/`END` 判断设备 API 类型
+- 源码 [include/zephyr/shell/shell.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/shell/shell.h#L390-L399) — `SHELL_CMD_ARG_REGISTER` 宏
+- 源码 [include/zephyr/logging/log_backend.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/logging/log_backend.h#L111-L122) — `LOG_BACKEND_DEFINE` 宏；`log_backend_get` / `log_backend_count_get` 用 `STRUCT_SECTION_GET` / `STRUCT_SECTION_COUNT`
+- 源码 [include/zephyr/settings/settings.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/settings/settings.h#L222-L249) — `SETTINGS_STATIC_HANDLER_DEFINE_WITH_CPRIO` 宏
+- 源码 [include/zephyr/kernel.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/kernel.h#L960-L966) — `K_THREAD_DEFINE` 用 `STRUCT_SECTION_ITERABLE(_static_thread_data, ...)`；`K_TIMER_OBSERVER_DEFINE`
+- 源码 [include/zephyr/sys/kobject.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/sys/kobject.h#L65-L71) — `K_THREAD_ACCESS_GRANT` 用 `STRUCT_SECTION_ITERABLE(k_object_assignment, ...)`
+- 源码 [kernel/init.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/init.c#L66-L90) — `STRUCT_SECTION_FOREACH(_static_thread_data, ...)` 与 `STRUCT_SECTION_FOREACH(k_object_assignment, ...)`；`z_device_state_init` 用 `STRUCT_SECTION_FOREACH(device, dev)`
+- 源码 [cmake/modules/extensions.cmake](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/cmake/modules/extensions.cmake#L1255-L1449) — `zephyr_linker_sources` 函数定义
 - [04-内核启动与初始化](./04-内核启动与初始化.md) §5 — `SYS_INIT` 与 `CREATE_OBJ_LEVEL` 的详细剖析，本篇 §7.1 与 §9.3 与之呼应
 - [Linux 内核 init.h](https://elixir.bootlin.com/linux/latest/source/include/linux/init.h) — Linux initcall 机制原始定义，本篇 §10 对比参考
 

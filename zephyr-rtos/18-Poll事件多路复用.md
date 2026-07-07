@@ -63,7 +63,7 @@ Zephyr 的同步对象（`k_sem`、`k_fifo`、`k_msgq`、`k_pipe`、`k_poll_sign
 
 ### 2.1 字段布局
 
-`k_poll_event` 定义在 [include/zephyr/kernel.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/kernel.h#L6596-L6637) 第 6596-6637 行：
+`k_poll_event` 定义在 [include/zephyr/kernel.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/kernel.h#L6596-L6637)：
 
 ```c
 struct k_poll_event {
@@ -92,7 +92,7 @@ struct k_poll_event {
 - **公共字段**：`tag`、`type`、`state`、`mode`、`obj`——用户代码读写
 - **私有字段**：`_node`、`poller`——内核使用，用户不得触碰
 
-`poller` 指向 [struct z_poller](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/kernel/thread.h#L250-L253)（第 250-253 行）：
+`poller` 指向 [struct z_poller](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/kernel/thread.h#L250-L253)：
 
 ```c
 struct z_poller {
@@ -142,7 +142,7 @@ events[0].tag = 1;
 
 ### 3.1 五种事件类型
 
-[poll.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/poll.c#L63-L104) 第 63-104 行的 `is_condition_met()` 列出了所有可 poll 的对象类型：
+[poll.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/poll.c#L63-L104)的 `is_condition_met()` 列出了所有可 poll 的对象类型：
 
 | 类型宏 | 等待的对象 | 就绪条件 | state 标志 |
 |--------|------------|----------|------------|
@@ -157,7 +157,7 @@ events[0].tag = 1;
 
 ### 3.2 统一的注册接口：register_event()
 
-每种可 poll 对象内部都嵌入了 `poll_events` 字段（`sys_dlist_t`）。[register_event](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/poll.c#L136-L169)（第 136-169 行）按 type 分发，把 `k_poll_event` 链入对应对象的 `poll_events` 链表：
+每种可 poll 对象内部都嵌入了 `poll_events` 字段（`sys_dlist_t`）。[register_event](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/poll.c#L136-L169)按 type 分发，把 `k_poll_event` 链入对应对象的 `poll_events` 链表：
 
 ```c
 switch (event->type) {
@@ -174,7 +174,7 @@ event->poller = poller;
 
 ### 3.3 反向通知：z_handle_obj_poll_events()
 
-当 `k_sem_give`、`k_fifo_put`、`k_msgq_put`、`k_pipe_write` 等修改对象状态时，它们会调用 [z_handle_obj_poll_events](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/poll.c#L460-L473)（第 460-473 行）：
+当 `k_sem_give`、`k_fifo_put`、`k_msgq_put`、`k_pipe_write` 等修改对象状态时，它们会调用 [z_handle_obj_poll_events](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/poll.c#L460-L473)：
 
 ```c
 bool z_handle_obj_poll_events(sys_dlist_t *events, uint32_t state)
@@ -202,7 +202,7 @@ bool z_handle_obj_poll_events(sys_dlist_t *events, uint32_t state)
 ### 4.1 调用流程的编号步骤
 
 1. 应用初始化事件数组（静态或运行期）
-2. 调用 `k_poll(events, n, timeout)` 进入 [z_impl_k_poll](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/poll.c#L283-L348)（第 283-348 行）
+2. 调用 `k_poll(events, n, timeout)` 进入 [z_impl_k_poll](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/poll.c#L283-L348)
 3. 内核设置 `poller->is_polling = true`、`poller->mode = MODE_POLL`
 4. 调用 `register_events()`：对每个事件先 `is_condition_met()` 检查当前是否已就绪
    - 已就绪：`set_event_ready()` 标记 state，并 `poller->is_polling = false`
@@ -272,7 +272,7 @@ void event_loop(void)
 
 ### 5.1 NOTIFY_ONLY 的语义
 
-[include/zephyr/kernel.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/kernel.h#L6547-L6553) 第 6547-6553 行 `enum k_poll_modes` 定义：
+[include/zephyr/kernel.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/kernel.h#L6547-L6553) `enum k_poll_modes` 定义：
 
 ```c
 enum k_poll_modes {
@@ -281,7 +281,7 @@ enum k_poll_modes {
 };
 ```
 
-[k_poll_event_init](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/poll.c#L43-L60)（第 43-60 行）用断言强制只接受这个模式：
+[k_poll_event_init](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/poll.c#L43-L60)用断言强制只接受这个模式：
 
 ```c
 __ASSERT(mode == K_POLL_MODE_NOTIFY_ONLY,
@@ -326,7 +326,7 @@ k_sem_take(&sem, K_NO_WAIT);   /* T3: 返回 -EBUSY！*/
 
 ### 6.1 signal 的本质：轻量二元信号量
 
-`k_poll_signal` 定义在 [include/zephyr/kernel.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/kernel.h#L6566-L6584) 第 6566-6584 行：
+`k_poll_signal` 定义在 [include/zephyr/kernel.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/kernel.h#L6566-L6584)：
 
 ```c
 struct k_poll_signal {
@@ -348,7 +348,7 @@ struct k_poll_signal {
 
 ### 6.2 raise 与 reset 的非对称性
 
-[k_poll_signal_raise](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/poll.c#L522-L545)（第 522-545 行）的实现：
+[k_poll_signal_raise](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/poll.c#L522-L545)的实现：
 
 ```c
 int z_impl_k_poll_signal_raise(struct k_poll_signal *sig, int result)
@@ -374,7 +374,7 @@ int z_impl_k_poll_signal_raise(struct k_poll_signal *sig, int result)
 1. `sig->signaled = 1U` 是覆盖式：连续 raise 五次，`signaled` 仍是 1。
 2. 只取**一个** poll_event 通知——单消费模式。
 
-[k_poll_signal_reset](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/poll.c#L494-L499)（第 494-499 行）仅把 `signaled` 清零：
+[k_poll_signal_reset](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/poll.c#L494-L499)仅把 `signaled` 清零：
 
 ```c
 void z_impl_k_poll_signal_reset(struct k_poll_signal *sig)
@@ -385,7 +385,7 @@ void z_impl_k_poll_signal_reset(struct k_poll_signal *sig)
 
 ### 6.3 miss event 的产生场景
 
-[官方文档 polling.rst](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/doc/kernel/services/polling.rst#L304-L314) 第 304-314 行明确警告：signal 不是内部同步的，外部 reset 会丢事件。下面的时序图展示了一个典型的 miss event 场景：
+[官方文档 polling.rst](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/doc/kernel/services/polling.rst#L304-L314)明确警告：signal 不是内部同步的，外部 reset 会丢事件。下面的时序图展示了一个典型的 miss event 场景：
 
 ```mermaid
 %%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
@@ -441,7 +441,7 @@ for (;;) {
 
 ### 7.1 三态机的来源
 
-[poll.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/poll.c#L38) 第 38 行定义了一个**内部**枚举（不在公共 API 中）：
+[poll.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/poll.c#L38)定义了一个**内部**枚举（不在公共 API 中）：
 
 ```c
 enum POLL_MODE { MODE_NONE, MODE_POLL, MODE_TRIGGERED };
@@ -470,7 +470,7 @@ stateDiagram-v2
 | `MODE_POLL` | `z_impl_k_poll` | 同步 poll 中 | `signal_poller()`：`z_unpend_thread` + `z_ready_thread` |
 | `MODE_TRIGGERED` | `k_work_poll_submit_to_queue` | 异步触发式工作项 | `signal_triggered_work()`：提交 `k_work_poll` 到工作队列 |
 
-[signal_poll_event](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/poll.c#L433-L458)（第 433-458 行）根据 mode 分发：
+[signal_poll_event](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/poll.c#L433-L458)根据 mode 分发：
 
 ```c
 if (poller->mode == MODE_POLL) {
@@ -487,7 +487,7 @@ if (poller->mode == MODE_POLL) {
 - **方案 A**：ISR 触发线程，线程 `k_poll` 后 `k_work_submit`——两跳，延迟高
 - **方案 B**：直接让 `k_work_poll` 在事件就绪时被自动提交——一跳，延迟低
 
-`MODE_TRIGGERED` 实现了方案 B。[k_work_poll_submit_to_queue](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/poll.c#L661-L772)（第 661-772 行）注册事件后，把 mode 设为 `MODE_TRIGGERED`；事件就绪时，[signal_triggered_work](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/poll.c#L601-L616)（第 601-616 行）直接 `z_work_submit_to_queue(work_q, &twork->work)`，跳过"先唤醒线程再提交"的中间步骤。
+`MODE_TRIGGERED` 实现了方案 B。[k_work_poll_submit_to_queue](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/poll.c#L661-L772)注册事件后，把 mode 设为 `MODE_TRIGGERED`；事件就绪时，[signal_triggered_work](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/poll.c#L601-L616)直接 `z_work_submit_to_queue(work_q, &twork->work)`，跳过"先唤醒线程再提交"的中间步骤。
 
 > **核心要点**：`MODE_POLL` 与 `MODE_TRIGGERED` 共用事件注册/通知基础设施，区别仅在"就绪时如何唤醒"。前者同步唤醒线程，后者异步提交工作项——这是 Zephyr 把 poll 机制从"线程模型"扩展到"工作队列模型"的关键设计。
 
@@ -499,7 +499,7 @@ if (poller->mode == MODE_POLL) {
 
 ### 8.1 单锁的事实
 
-[poll.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/poll.c#L29-L36) 第 29-36 行的开篇注释：
+[poll.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/poll.c#L29-L36)的开篇注释：
 
 ```c
 /* Single subsystem lock.  Locking per-event would be better on highly
@@ -538,7 +538,7 @@ per-event 锁的好处是每个对象用自己的 spinlock，不同对象的 pol
 注释中的"the original locking scheme here is subtle"道出了核心困难：`k_poll` 的临界区不是连续的——它会在循环里**释放再重新获取**锁：
 
 ```c
-/* register_events 里的释放/重获模式（poll.c 第 236-255 行） */
+/* register_events 里的释放/重获模式（poll.c） */
 for (int ii = 0; ii < num_events; ii++) {
     key = k_spin_lock(&lock);
     /* 注册或检查 events[ii] */
@@ -546,7 +546,7 @@ for (int ii = 0; ii < num_events; ii++) {
 }
 ```
 
-[clear_event_registrations](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/poll.c#L211-L221)（第 211-221 行）也有类似模式：
+[clear_event_registrations](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/poll.c#L211-L221)也有类似模式：
 
 ```c
 while (num_events--) {
@@ -574,9 +574,9 @@ while (num_events--) {
 
 ### 8.5 顺带修正：poll 等待队列是优先级排序，不是 FIFO
 
-[08-中断与时序](./08-中断与时序.md) §5.2 末尾称"poll 的等待队列是 FIFO（先来先服务），不是按线程优先级"——这其实是个流传的误解。[polling.rst](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/doc/kernel/services/polling.rst#L145-L148) 第 145-148 行也这样说，但源码不是这样。
+[08-中断与时序](./08-中断与时序.md) §5.2 末尾称"poll 的等待队列是 FIFO（先来先服务），不是按线程优先级"——这其实是个流传的误解。[polling.rst](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/doc/kernel/services/polling.rst#L145-L148)也这样说，但源码不是这样。
 
-[add_event](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/poll.c#L111-L133)（第 111-133 行）明确按优先级插入：
+[add_event](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/poll.c#L111-L133)明确按优先级插入：
 
 ```c
 static inline void add_event(sys_dlist_t *events, struct k_poll_event *event,
@@ -606,7 +606,7 @@ static inline void add_event(sys_dlist_t *events, struct k_poll_event *event,
 }
 ```
 
-[z_sched_prio_cmp](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/include/priority_q.h#L68-L107)（第 68-107 行）的语义在注释中明确：
+[z_sched_prio_cmp](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/include/priority_q.h#L68-L107)的语义在注释中明确：
 
 ```c
 /*
@@ -635,7 +635,7 @@ static ALWAYS_INLINE int32_t z_sched_prio_cmp(struct k_thread *thread_1,
 
 链表始终按**线程优先级降序**排列，head 是最高优先级 poller。
 
-[z_handle_obj_poll_events](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/poll.c#L460-L473)（第 460-473 行）取链表头：
+[z_handle_obj_poll_events](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/poll.c#L460-L473)取链表头：
 
 ```c
 poll_event = (struct k_poll_event *)sys_dlist_get(events);  /* 取 head = 最高优先级 */
@@ -643,7 +643,7 @@ poll_event = (struct k_poll_event *)sys_dlist_get(events);  /* 取 head = 最高
 
 因此 poller 的唤醒顺序是**优先级排序**，不是 FIFO。这与 `k_sem`/`k_fifo` 等待队列的优先级排序行为一致——poll 没有特殊化。
 
-> **待确认**：官方文档 [polling.rst](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/doc/kernel/services/polling.rst#L145-L148) 第 145-148 行称"waiters will be served in first-come-first-serve order, not in priority order"，但源码 `add_event` 明确按优先级插入。08 章 §5 沿用了文档说法。本文以源码为准——这是深入源码而非仅读文档的价值所在。
+> **待确认**：官方文档 [polling.rst](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/doc/kernel/services/polling.rst#L145-L148)称"waiters will be served in first-come-first-serve order, not in priority order"，但源码 `add_event` 明确按优先级插入。08 章 §5 沿用了文档说法。本文以源码为准——这是深入源码而非仅读文档的价值所在。
 
 > **核心要点**：`k_poll` 的等待队列按线程优先级排序（与 `k_sem`/`k_fifo` 的等待队列一致），不是 FIFO。polling.rst 与 08 章的 FIFO 说法是文档与代码不同步的产物。
 
@@ -830,7 +830,7 @@ flowchart TD
 
 2. **触发模型**：`k_poll` 是边沿触发——state 必须手动重置，否则下一次 poll 仍会报告就绪。POSIX `poll()` 是水平触发——只要 FD 仍有数据可读，每次调用都返回就绪。`epoll` 两种都支持。
 
-3. **单消费限制**：[polling.rst](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/doc/kernel/services/polling.rst#L325-L331) 第 325-331 行明确：`k_poll` 设计假设"单线程作为多个对象的服务器/调度器"。如果一个对象被多个线程 poll，`z_handle_obj_poll_events` 只唤醒一个 poller（按优先级），其他 poller 不会被通知。POSIX `poll()` 没这个限制。
+3. **单消费限制**：[polling.rst](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/doc/kernel/services/polling.rst#L325-L331)明确：`k_poll` 设计假设"单线程作为多个对象的服务器/调度器"。如果一个对象被多个线程 poll，`z_handle_obj_poll_events` 只唤醒一个 poller（按优先级），其他 poller 不会被通知。POSIX `poll()` 没这个限制。
 
 4. **返回值含义**：
    - `k_poll` 返回 0：至少一个事件就绪（哪些需遍历数组检查 state）
@@ -858,9 +858,9 @@ flowchart TD
 
 - [Polling API 官方文档](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/doc/kernel/services/polling.rst) — Concepts / Implementation / Suggested Uses
 - [kernel/poll.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/poll.c) — poll 核心实现（810 行）
-- [include/zephyr/kernel.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/kernel.h) — `k_poll_event`/`k_poll_signal` 结构体与 API 声明（第 6464-6800 行）
-- [include/zephyr/kernel/thread.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/kernel/thread.h) — `struct z_poller` 定义（第 250-253 行）
-- [kernel/include/priority_q.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/include/priority_q.h) — `z_sched_prio_cmp` 优先级比较函数（第 68-107 行）
+- [include/zephyr/kernel.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/kernel.h) — `k_poll_event`/`k_poll_signal` 结构体与 API 声明
+- [include/zephyr/kernel/thread.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/kernel/thread.h) — `struct z_poller` 定义
+- [kernel/include/priority_q.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/include/priority_q.h) — `z_sched_prio_cmp` 优先级比较函数
 - [08-中断与时序 §5](./08-中断与时序.md) — poll 机制概述（本文是其源码深入版）
 - [07-同步机制详解](./07-同步机制详解.md) — `k_sem`/`k_mutex` 等同步原语，poll 与之的对比基础
 - [09-工作队列与延迟处理](./09-工作队列与延迟处理.md) — `k_work_poll` 触发式工作项基于本文的 `MODE_TRIGGERED`
