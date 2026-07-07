@@ -1,0 +1,22 @@
+{
+  "_meta": {
+    "说明": "手工补充/修正调用关系。构建时会自动合并到 auto-extract 的数据中。",
+    "格式": {
+      "函数名": {
+        "calls": ["子函数1", "子函数2"],
+        "called_by": ["父函数1"],
+        "defined_in": ["文档名(不含.md)"],
+        "referenced_in": ["文档名(不含.md)"],
+        "signature": "可选，函数签名",
+        "code": "可选，函数源码",
+        "source": {"path": "file:///可选/源码路径", "line_start": 1, "line_end": 10}
+      }
+    },
+    "合并规则": [
+      "calls / called_by：追加到自动提取的列表（去重）",
+      "defined_in / referenced_in：追加（去重）",
+      "signature / code / source：仅在自动提取为空时填充"
+    ],
+    "使用方式": "在此 JSON 中添加函数条目，键为函数名。_meta 仅供文档说明，构建时会自动跳过。"
+  }
+}
