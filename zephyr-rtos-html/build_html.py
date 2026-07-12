@@ -372,7 +372,7 @@ def _is_arm_source(source):
     if not source or not source.get("path"):
         return False
     p = source["path"].lower()
-    return "arch/arm" in p or "cortex_m" in p or "cortex-m" in p
+    return "arch/arm/" in p or "cortex_m" in p or "cortex-m" in p
 
 
 def extract_call_graph(docs):
@@ -524,17 +524,20 @@ def _fill_from_zephyr_source(graph):
     if not missing:
         return 0
 
-    # 构建文件索引：先 ARM 架构文件，再其他
-    arm_files = []
-    other_files = []
-    for c_file in ZEPHYR_SRC_DIR.rglob("*.c"):
-        rel = c_file.relative_to(ZEPHYR_SRC_DIR).as_posix()
-        if "arch/arm" in rel or "cortex_m" in rel:
-            arm_files.append(c_file)
+    # 构建文件索引：ARM .c > ARM .h > 其他 .c > 其他 .h
+    # （.c 优先：完整函数定义；.h 补全：inline 函数定义，如 arch_curr_cpu）
+    arm_c, arm_h, other_c, other_h = [], [], [], []
+    for src_file in ZEPHYR_SRC_DIR.rglob("*"):
+        if src_file.suffix not in (".c", ".h"):
+            continue
+        rel = src_file.relative_to(ZEPHYR_SRC_DIR).as_posix()
+        is_arm = "arch/arm/" in rel or "cortex_m" in rel
+        if src_file.suffix == ".c":
+            (arm_c if is_arm else other_c).append(src_file)
         else:
-            other_files.append(c_file)
-    # ARM 文件优先，这样多架构函数能选到 ARM 版本
-    ordered_files = arm_files + other_files
+            (arm_h if is_arm else other_h).append(src_file)
+    # ARM .c 优先（完整定义），然后 ARM .h（inline 定义），然后其他
+    ordered_files = arm_c + arm_h + other_c + other_h
 
     # 为每个缺失函数构建搜索正则
     # 匹配函数定义：行首 + 类型前缀 + 函数名 + (
@@ -549,11 +552,11 @@ def _fill_from_zephyr_source(graph):
     filled_count = 0
     remaining = set(missing)
 
-    for c_file in ordered_files:
+    for src_file in ordered_files:
         if not remaining:
             break
         try:
-            code = c_file.read_text(encoding="utf-8", errors="replace")
+            code = src_file.read_text(encoding="utf-8", errors="replace")
         except Exception:
             continue
 
@@ -574,8 +577,8 @@ def _fill_from_zephyr_source(graph):
                 continue
 
             node = graph[name]
-            rel_path = c_file.relative_to(ZEPHYR_SRC_DIR).as_posix()
-            file_uri = f"file://{c_file.resolve()}"
+            rel_path = src_file.relative_to(ZEPHYR_SRC_DIR).as_posix()
+            file_uri = f"file://{src_file.resolve()}"
 
             # 计算行号
             line_start = code[:matched_def["start"]].count("\n") + 1
@@ -610,6 +613,84 @@ def _fill_from_zephyr_source(graph):
             filled_count += 1
 
     return filled_count
+
+
+def collect_source_snippets(docs):
+    """收集文档中所有 file:/// 链接对应的源码片段。
+
+    用于实现"点击源码链接在侧边栏展开源码"功能。
+    只处理 .c 和 .h 文件链接。
+
+    返回 {url_key: {content, line_start, line_end, short_path}}
+    url_key 是链接的完整 href（file:///path#Lxx-Lyy 或 file:///path）
+    """
+    snippets = {}
+    link_re = re.compile(r"\[[^\]]+\]\((file:///[^)]+)\)")
+
+    for doc_name, _title, content, _toc in docs:
+        for m in link_re.finditer(content):
+            url = m.group(1)
+            if url in snippets:
+                continue
+
+            # 解析路径和行号
+            parts = url.split("#", 1)
+            file_path = parts[0].replace("file://", "")
+
+            # 只处理 .c 和 .h 文件
+            if not file_path.endswith((".c", ".h")):
+                continue
+
+            if not os.path.exists(file_path):
+                continue
+
+            line_start = None
+            line_end = None
+            if len(parts) > 1:
+                line_m = re.match(r"L(\d+)(?:-L?(\d+))?", parts[1])
+                if line_m:
+                    line_start = int(line_m.group(1))
+                    line_end = int(line_m.group(2)) if line_m.group(2) else line_start
+
+            try:
+                with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+                    lines = f.readlines()
+            except Exception:
+                continue
+
+            if line_start and line_end:
+                # 截取行范围（带上下文）
+                ctx = 5
+                start = max(1, line_start - ctx)
+                end = min(len(lines), line_end + ctx)
+                content_str = "".join(lines[start - 1:end])
+                display_start = start
+                display_end = end
+            else:
+                # 整个文件（太大则截断）
+                if len(lines) > 300:
+                    content_str = "".join(lines[:300])
+                    content_str += "\n... (文件过长，仅显示前 300 行) ...\n"
+                    display_start = 1
+                    display_end = 300
+                else:
+                    content_str = "".join(lines)
+                    display_start = 1
+                    display_end = len(lines)
+
+            # 短路径（相对于 zephyr-project/zephyr/）
+            short_path = file_path
+            if "/zephyr-project/zephyr/" in short_path:
+                short_path = "zephyr/" + short_path.split("/zephyr-project/zephyr/", 1)[1]
+
+            snippets[url] = {
+                "content": content_str,
+                "line_start": display_start,
+                "line_end": display_end,
+                "short_path": short_path,
+            }
+
+    return snippets
 
 
 def build_sidebar(docs):
@@ -664,10 +745,15 @@ def build_html(docs):
     callgraph = extract_call_graph(docs)
     callgraph_json = json.dumps(callgraph, ensure_ascii=False, indent=2)
 
+    # 收集源码片段（用于点击 file:/// 链接在侧边栏展开）
+    source_snippets = collect_source_snippets(docs)
+    source_snippets_json = json.dumps(source_snippets, ensure_ascii=False)
+
     return HTML_TEMPLATE.format(
         scripts=scripts_html,
         sidebar=sidebar_html,
         callgraph_json=callgraph_json,
+        source_snippets_json=source_snippets_json,
         callgraph_js=CALLLGRAPH_JS,
         build_time=__import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M"),
         doc_count=len(docs),
@@ -683,6 +769,7 @@ CALLLGRAPH_JS = r"""
 var CG = (function () {
   // ---- 状态 ----
   var callgraph = {};
+  var sourceSnippets = {};   // file:/// 链接对应的源码片段
   var drawer = null;
   var history = [];          // 导航历史：[{func, tab}, ...]
   var historyIdx = -1;       // 当前历史位置
@@ -713,9 +800,14 @@ var CG = (function () {
       var el = document.getElementById('cg-data');
       if (el) callgraph = JSON.parse(el.textContent);
     } catch (e) { console.warn('callgraph data load failed:', e); }
+    try {
+      var srcEl = document.getElementById('cg-source-data');
+      if (srcEl) sourceSnippets = JSON.parse(srcEl.textContent);
+    } catch (e) { console.warn('source snippets data load failed:', e); }
     buildDrawer();
     attachToCodeBlocks();
     attachToInlineRefs();
+    attachToSourceLinks();
     document.addEventListener('keydown', function (e) {
       if (e.key === 'Escape' && isOpen()) close();
       if (isOpen() && (e.altKey || e.metaKey)) {
@@ -1414,6 +1506,85 @@ var CG = (function () {
     });
   }
 
+  // ---- 源码文件链接：点击在侧边栏展开 ----
+  function navigateToSource(urlKey) {
+    var snippet = sourceSnippets[urlKey];
+    if (!snippet) return false;
+
+    openDrawer();
+
+    // 更新标题
+    var titleEl = document.getElementById('cg-title');
+    if (titleEl) titleEl.textContent = snippet.short_path;
+
+    // 左栏显示文件信息
+    var paneLeft = document.getElementById('cg-pane-left');
+    if (paneLeft) {
+      paneLeft.innerHTML =
+        '<div class="cg-file-info">' +
+          '<div class="cg-file-info-icon">\uD83D\uDCC4</div>' +
+          '<div class="cg-file-info-path">' + escapeHtml(snippet.short_path) + '</div>' +
+          '<div class="cg-file-info-lines">\u884c ' + snippet.line_start + '-' + snippet.line_end + '</div>' +
+          '<div class="cg-file-info-hint">\u6E90\u7801\u6587\u4EF6\u89C6\u56FE</div>' +
+        '</div>';
+    }
+
+    // 右栏渲染源码
+    renderFileView(snippet);
+
+    // 清空导航历史
+    history = [];
+    historyIdx = -1;
+    currentFn = null;
+    updateNavButtons();
+
+    return true;
+  }
+
+  function renderFileView(snippet) {
+    var paneRight = document.getElementById('cg-pane-right');
+    if (!paneRight) return;
+
+    var html = '<div class="cg-detail cg-file-view">';
+    html += '<div class="cg-detail-header">';
+    html += '<h3>' + escapeHtml(snippet.short_path) + '</h3>';
+    html += '<div class="cg-detail-docs">';
+    html += '<span class="cg-meta-label">\u884c ' + snippet.line_start + '-' + snippet.line_end + '</span>';
+    html += '</div>';
+    html += '</div>';
+    html += '<div class="cg-detail-code-section">';
+    html += '<div class="cg-detail-section-title">\u6E90\u7801</div>';
+    html += '<pre class="cg-detail-pre cg-file-pre"><code class="language-c">' + escapeHtml(snippet.content) + '</code></pre>';
+    html += '</div>';
+    html += '</div>';
+    paneRight.innerHTML = html;
+
+    // 高亮代码
+    var codeEl = paneRight.querySelector('.cg-detail-pre code');
+    if (codeEl && window.hljs) {
+      try {
+        var result = hljs.highlight(codeEl.textContent, { language: 'c' });
+        codeEl.innerHTML = result.value;
+      } catch (e) {}
+    }
+  }
+
+  function attachToSourceLinks() {
+    document.querySelectorAll('.content a[href^="file://"]').forEach(function (a) {
+      if (a.dataset.cgSrcLinked) return;
+      var href = a.getAttribute('href');
+      if (!sourceSnippets[href]) return;
+      a.dataset.cgSrcLinked = '1';
+      a.classList.add('cg-src-link-inline');
+      a.removeAttribute('target');
+      a.title = '\u70B9\u51FB\u5728\u4FA7\u8FB9\u680F\u67E5\u770B\u6E90\u7801';
+      a.addEventListener('click', function (e) {
+        e.preventDefault();
+        navigateToSource(href);
+      });
+    });
+  }
+
   // ---- C 代码块函数定义检测（与 Python 端逻辑对齐） ----
   function stripCComments(code) {
     var out = [];
@@ -1510,6 +1681,7 @@ var CG = (function () {
     refresh: function () {
       attachToCodeBlocks();
       attachToInlineRefs();
+      attachToSourceLinks();
     }
   };
 })();
@@ -2166,6 +2338,44 @@ html, body {{
   color: var(--accent) !important;
 }}
 
+/* 正文中的源码文件链接 */
+.cg-src-link-inline {{
+  cursor: pointer !important;
+  border-bottom: 1px dashed var(--accent) !important;
+}}
+.cg-src-link-inline:hover {{
+  background: var(--howto-bg) !important;
+  color: var(--accent) !important;
+}}
+
+/* 文件视图：左栏信息卡片 */
+.cg-file-info {{
+  padding: 24px 16px;
+  text-align: center;
+}}
+.cg-file-info-icon {{
+  font-size: 32px;
+  margin-bottom: 8px;
+}}
+.cg-file-info-path {{
+  font-family: "JetBrains Mono", "Fira Code", Consolas, Monaco, monospace;
+  font-size: 13px;
+  color: var(--fg);
+  word-break: break-all;
+  margin-bottom: 4px;
+}}
+.cg-file-info-lines {{
+  font-size: 12px;
+  color: var(--fg-muted);
+  margin-bottom: 12px;
+}}
+.cg-file-info-hint {{
+  font-size: 11px;
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}}
+
 /* ---- 遮罩层 ---- */
 .cg-backdrop {{
   position: fixed;
@@ -2190,8 +2400,8 @@ body.cg-drawer-open .cg-backdrop {{
   top: 48px;
   right: 0;
   bottom: 0;
-  width: 960px;
-  max-width: 70vw;
+  width: 1280px;
+  max-width: 85vw;
   background: var(--sidebar-bg);
   border-left: 1px solid var(--border);
   box-shadow: -4px 0 32px rgba(0,0,0,0.12);
@@ -2808,6 +3018,10 @@ body.cg-drawer-open .cg-backdrop {{
   background: none;
   white-space: pre;
 }}
+/* 文件视图代码块：允许更高 */
+.cg-file-pre {{
+  max-height: 70vh;
+}}
 .cg-detail-relations {{
   margin-top: 16px;
 }}
@@ -2956,6 +3170,11 @@ body.cg-drawer-open .cg-backdrop {{
 <!-- 调用关系图数据 -->
 <script id="cg-data" type="application/json">
 {callgraph_json}
+</script>
+
+<!-- 源码片段数据（用于点击 file:/// 链接在侧边栏展开） -->
+<script id="cg-source-data" type="application/json">
+{source_snippets_json}
 </script>
 
 <!-- marked.js -->
