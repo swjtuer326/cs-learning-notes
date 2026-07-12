@@ -66,6 +66,10 @@ OTA 把"固件"从一次性产物变成"可演进的资产"，但它在 MCU 上�
 3. **失败怎么办？**——新镜像起不来怎么回滚？断电在中间怎么不砖？
 4. **RAM 装不下整片镜像怎么办？**——MCU 的 RAM 通常只有几十到几百 KB，而固件动辄几百 KB 到几 MB。
 
+这四个问题背后有一个贯穿一切的硬件约束——**XIP（eXecute In Place，片上执行）**。MCU 通常没有 DRAM 也没有 MMU，代码直接在 flash 地址空间执行：CPU 的取指总线直连 flash 控制器，复位后从 flash 起始地址取第一条指令。这意味着**运行中的镜像不能被原地擦写**——CPU 正从那些地址取指令，擦写会导致取指总线返回垃圾数据，瞬间崩溃。这就是"新镜像放哪"问题的根本原因：必须有独立的 slot1 存放新镜像，再通过 swap 或 overwrite 搬到 slot0 执行。Linux 的块设备（eMMC/UFS）没有这个限制——内核先把 rootfs 拷到 RAM 再执行，所以可以直接覆盖旧分区。
+
+> **核心要点**：XIP 是 MCU OTA 一切设计的起点。因为 XIP，运行镜像不可原地覆盖 → 需要双 slot；因为 flash 擦除粒度大（几 KB）→ trailer 放末尾与头分离；因为 RAM 小 → 必须 stream_flash 流式写入。理解 XIP，后续五件套的设计动机就自然浮现。
+
 Zephyr 的回答是五件套：
 
 | 组件 | 职责 | 源码位置 |
@@ -77,6 +81,51 @@ Zephyr 的回答是五件套：
 | **hawkbit** | 云端 OTA 集成（可选） | [subsys/mgmt/hawkbit/](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/mgmt/hawkbit/) |
 
 > **核心要点**：MCU OTA 的本质是"用 flash 多槽 + 引导加载器"换取"断电安全 + 可回滚"，再用"流式写入 + 远程协议"解决"RAM 受限 + 无人值守"。本章顺着这五件套展开。
+
+五件套如何串成一条完整链路？下图从左到右展示一次 OTA 升级的数据流——镜像从外部进入设备，经过传输、写入、切换、确认四个阶段，每个阶段对应一个组件：
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
+flowchart LR
+    subgraph "① 传输"
+        SRC[云服务器 / PC 工具]
+        TR[SMP / HTTP 传输]
+    end
+    subgraph "② 写入"
+        IMG[img_mgmt 分块接收]
+        SF[stream_flash 流式写入]
+        S1[("slot1 新镜像")]
+    end
+    subgraph "③ 切换"
+        TL[trailer 标记 TEST]
+        BT[MCUboot 验签 + swap]
+        S0[("slot0 新镜像运行")]
+    end
+    subgraph "④ 确认"
+        APP[应用自检]
+        OK[写 image_ok 确认]
+    end
+
+    SRC --> TR --> IMG --> SF --> S1
+    S1 --> TL --> BT --> S0 --> APP
+    APP -->|通过| OK
+    APP -->|失败| REV[不确认 → 下次重启回滚]
+    OK --> DONE[升级完成]
+
+    classDef trans fill:#cffafe, stroke:#0891b2, color:#155e75, stroke-width:2px
+    classDef write fill:#dbeafe, stroke:#2563eb, color:#1e40af, stroke-width:2px
+    classDef boot fill:#d1fae5, stroke:#059669, color:#065f46, stroke-width:2px
+    classDef confirm fill:#fef3c7, stroke:#d97706, color:#92400e, stroke-width:2px
+    classDef fail fill:#fee2e2, stroke:#dc2626, color:#991b1b, stroke-width:2px
+
+    class SRC,TR trans
+    class IMG,SF,S1 write
+    class TL,BT,S0 boot
+    class APP,OK,DONE confirm
+    class REV fail
+```
+
+> **如何读这张图**：从左到右是数据流方向，四个阶段对应四件套（传输层 → 写入层 → 切换层 → 确认层），第五件套 Flash Map 横向贯穿所有阶段（每个 flash 操作都经过它）。注意"确认"阶段是唯一的"人工介入"点——应用必须主动调 `boot_write_img_confirmed()`，否则下次重启自动回滚。这个设计把"安全"从"默认信任"翻转为"默认怀疑"。
 
 ---
 
@@ -138,7 +187,13 @@ Zephyr 应用本身不实现 boot 逻辑，只通过 [include/zephyr/dfu/mcuboot
 | `boot_write_img_confirmed()` | 应用启动后自我确认（防止回滚） |
 | `boot_erase_img_bank(area_id)` | 擦除某个 slot |
 
-为什么需要 `boot_write_img_confirmed()`？因为 MCUboot 默认采用"试运行"策略：新镜像只在下一次启动试跑，如果应用不主动写 `image_ok` 标志，再下次重启就回滚到旧版本。这是断电安全的回滚机制——新镜像起不来（根本没机会写确认）就自动回滚。
+为什么需要 `boot_write_img_confirmed()`？因为 MCUboot 默认采用"试运行"策略：新镜像只在下一次启动试跑，如果应用不主动写 `image_ok` 标志（trailer 中的一个字段，详见 [§3.1](#31-trailer-的位置与内容)），再下次重启就回滚到旧版本。`boot_request_upgrade(permanent)` 中的 `permanent` 参数控制升级是"试运行"还是"永久切换"——两种模式的差异在 [§3.3](#33-五种-swap_type-状态) 的 swap_type 状态机中详细展开。这是断电安全的回滚机制——新镜像起不来（根本没机会写确认）就自动回滚。
+
+> **设计洞察**：MCUboot 的"试运行 + 不确认就回滚"是 fail-safe 设计的范本——默认拒绝（revert），需要应用主动确认才留下。这与数据库两阶段提交（2PC）中"协调者超时则 abort"、Kubernetes 的 rollback-on-health-failure、Linux 内核"新模块加载失败则卸载"是同构的设计：把"信任"从"默认给予"改成"默认拒绝，需主动获取"。
+>
+> 对比 Android A/B 的 `successful` flag——它在 boot 成功后由系统标记，未标记则回滚到 A 槽，思想完全一致。这种"乐观升级 + 悲观回滚"策略在无人值守设备上几乎是必须的：设备升级后可能因任何原因（硬件兼容、外设初始化失败、看门狗超时）起不来，自动回滚是唯一的"安全网"。
+>
+> 工程上的代价是每次启动都要验签 + 检查 trailer，增加几十到几百毫秒启动延迟。MCUboot 把这个代价集中在 boot loader 阶段，主应用启动后无感知——这是"把安全性集中在启动期"的典型权衡，与 TPM 测量启动（measured boot）、ChromeOS 的 verified boot 走的是同一条路。
 
 ### 2.3 镜像头格式
 
@@ -152,7 +207,7 @@ MCUboot 镜像在 slot 开头有固定头，[mcuboot.c](file:///home/pbw/rtos/cs
 /* mcuboot.c:89-103 — slot 开头的原始头布局（紧凑打包） */
 struct mcuboot_v1_raw_header {
     uint32_t header_magic;        /* 必须为 0x96f3b83d */
-    uint32_t image_load_address;  /* PIC 代码加载地址，否则忽略 */
+    uint32_t image_load_address;  /* PIC (Position Independent Code) 加载地址，否则忽略 */
     uint16_t header_size;         /* ≥ 32，可被 ROM_START_OFFSET 撑大 */
     uint16_t pad;
     uint32_t image_size;          /* 镜像净大小（不含头与 trailer） */
@@ -168,6 +223,8 @@ struct mcuboot_v1_raw_header {
 ```
 
 `boot_read_v1_header()`（[mcuboot.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/dfu/boot/mcuboot.c#L300-L347)）做两件事：读出头、校验魔数与 `header_size ≥ 32`。校验失败返回 `-EIO`，调用者据此判断该 slot 是否有有效镜像。
+
+这里多次提到的 **imgtool** 是 MCUboot 项目提供的 Python 镜像签名工具——编译链路最后一环用它把裸 binary 加上镜像头并追加密码学签名，生成最终烧录用的 `signed.bin`。imgtool 用私钥签名，MCUboot 编译时内置对应公钥，启动时验签确保镜像未被篡改。签名流程的完整使用见 [§9.2](#92-编号步骤完整-ota-时序) 的 `west sign` 命令，密钥不匹配的陷阱见 [§11.3](#113-常见陷阱) 陷阱 2。
 
 > **核心要点**：镜像头放版本与大小，trailer 放切换状态——头是"静态描述"，trailer 是"动态状态"。两者分离是因为头由 imgtool 签名时写死，trailer 由 boot loader / 应用在运行期反复改写。flash 只能从 1 写到 0（除非先擦除），把频繁改写的 trailer 与签名固定的头分开，避免改 trailer 触发头的重签。
 
@@ -245,6 +302,12 @@ stateDiagram-v2
 
 > **核心要点**：断电安全靠"两阶段写 + trailer 状态机"实现。每个 trailer 字段的写入都标志一个不可逆的进度节点——重启后 MCUboot 读 trailer 就知道"上次做到哪一步"，从中断点续做或回滚。这是嵌入式 boot loader 的通用设计模式。
 
+> **设计洞察**：trailer 状态机的本质是 write-ahead logging（WAL）——每个 trailer 字段的写入是一条"日志记录"，记录"我做到了哪一步"。重启后 MCUboot 回放这条"日志"确定断点。这与 ext4 的 journal、数据库的 ARIES 协议、Redis 的 AOF（Append-Only File）是同一种思想：用顺序追加的不可变记录模拟原子操作。
+>
+> MCUboot 没有文件系统，无法用 ext4 那样的 journal block 设备，只能把"日志"写在 flash 末尾固定位置。这里有个微妙的硬件特性利用：NOR flash 只能从 1 写到 0（除非先擦除），所以 trailer 字段从 erased 态（0xFF）渐进地写 0 位表示状态推进——状态编码天然单调，不需要擦除就能"累加进度"。这是 flash 物理特性倒逼出的状态编码智慧，与 SSD FTL 的日志结构、NAND 的 out-of-band 区域用法异曲同工。
+>
+> 对比 Linux 的 boot flag——它依赖文件系统的原子 rename（同一 inode 的目录项替换在 ext4 上是原子的），而 MCUboot 没有文件系统，只能用"flash 末尾固定偏移 + 两阶段写"模拟原子性。这是"硬件不支持原子操作时，用状态机 + 单调编码合成原子性"的通用模式，也是 SQLite 在 WAL 模式下用 fsync + checkpoint 实现原子提交的同一思路。
+
 ---
 
 ## 4. 三种升级策略：swap/overwrite/RAM-load
@@ -284,6 +347,18 @@ flowchart LR
 ```
 
 ### 4.2 三种策略详细对比
+
+[§1.2](#12-ota-的四个本质问题) 已解释过 XIP 约束——运行镜像不可原地覆盖，这是 MCU OTA 必须有独立 slot1 的根本原因。若 flash 不支持 XIP（如外挂 QSPI 未映射到地址空间），只能走 RAM-Load——先把镜像拷到 RAM 再执行。这也解释了 §4.4 决策树为什么把"flash 是否支持 XIP"作为第一个分叉。
+
+Swap 模式本身有三种实现子模式，在比较表中以"move/offset/scratch"标注，这里简要说明：
+
+| 子模式 | 机制 | 需要 scratch 分区 | 对应 Kconfig |
+|--------|------|:-:|------|
+| **swap-using-scratch** | 用 scratch 分区做中转：slot0 → scratch、slot1 → slot0、scratch → slot1 | 是 | `MCUBOOT_BOOTLOADER_MODE_SWAP_USING_SCRATCH` |
+| **swap-using-move** | 不用 scratch，用 flash 原地移动：先把 slot0 尾部搬到 slot1 尾部，再逐块交换 | 否 | `MCUBOOT_BOOTLOADER_MODE_SWAP_USING_MOVE` |
+| **swap-using-offset** | 不用 scratch，利用 flash offset 差异直接交叉拷贝，省去中转 | 否 | `MCUBOOT_BOOTLOADER_MODE_SWAP_USING_OFFSET`（Zephyr 默认） |
+
+此外还有一种 **DIRECT-XIP** 模式（不在上图中）：slot0/slot1 镜像编译到不同地址，MCUboot 直接跳转到 slot1 执行，不做任何数据搬移。代价是两个 slot 的镜像必须编译到各自的目标地址（不可互换），且回滚需要特殊处理。§8.2 中 hawkBit 的 Kconfig 依赖 `!MCUBOOT_BOOTLOADER_MODE_DIRECT_XIP` 正是因为 DIRECT-XIP 不需要写 slot1 也能切换，与 hawkBit 的"下载到 slot1 再切换"流程不兼容。
 
 | 维度 | Swap (move/offset/scratch) | Overwrite | RAM-Load |
 |------|---------------------------|-----------|----------|
@@ -456,6 +531,12 @@ const struct flash_area *flash_map = default_flash_map;
 
 > **核心要点**：Flash Map 是设备树哲学在存储层的延伸——代码用 `flash_area_open(ID_SLOT1, &fa)` 这种符号化 ID 访问分区，物理偏移完全由设备树决定。换板子只改 DTS，代码不动。这与 [13 章设备驱动模型](./13-设备驱动模型.md) 的 `DEVICE_DT_DEFINE` 是同一套思路。
 
+> **设计洞察**：`DT_FOREACH_STATUS_OKAY` 是编译期元编程在嵌入式 C 里的实践——把设备树这种声明式数据在编译期展开成 C 数组初始化器，运行时零开销。这与 C++ 模板元编程、Rust 的 const generics、Linux 内核的 `Kconfig` + 宏展开是同一思路：把"能在编译期决定的事"尽量推到编译期，运行时只剩静态查表。
+>
+> 对比 U-Boot 的运行时设备树解析——它要带一份 fdt（flattened device tree）解析器、占用几 KB RAM、启动时递归遍历 dtb。在 RAM 充足的 Linux 启动器上这无所谓，但在 RAM 只有几十 KB 的 MCU 上，"编译期展开 + 运行时只读数组"是唯一可行解。代价是改设备树要重新编译，但嵌入式开发本就要求"板子改 → 全量重编"，这个代价可接受。
+>
+> 这是"用编译时间换运行时零开销"的典型权衡，也是 Zephyr 设备树哲学能贯穿整个系统的技术基础——没有编译期展开的零开销，声明式硬件描述在 MCU 上就不可行。Linux 之所以用运行时解析，是因为它要在同一镜像上跑多种硬件（发行版内核），而 MCU 固件是"一板一镜像"，编译期固化没有损失。
+
 ### 5.4 完整性校验
 
 [flash_map_integrity.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/storage/flash_map/flash_map_integrity.c) 提供 SHA-256 校验，用于"镜像写入后是否完整"：
@@ -587,6 +668,12 @@ static int stream_flash_erase_to_append(struct stream_flash_ctx *ctx, size_t siz
 `scramble_mcuboot_trailer()`（[flash_img.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/dfu/img_util/flash_img.c#L71-L119)）是个微妙细节——在 `CONFIG_IMG_ERASE_PROGRESSIVELY` 启用时，它先把 slot 末尾的 trailer 区域提前擦除，避免新镜像写入后 trailer 还残留旧值导致 MCUboot 误判。
 
 > **核心要点**：stream_flash 用"小缓冲 + 流式擦除 + 进度保存"三件套，把"写 N MB 镜像"的 RAM 占用从 O(N) 降到 O(buf_len)（默认 512 字节）。这是 MCU 能做 OTA 而不爆 RAM 的根本原因。`CONFIG_IMG_ERASE_PROGRESSIVELY` 进一步把"擦整个 slot"摊薄到写入过程中，避免 OTA 开始时几秒的 flash 擦除阻塞。
+
+> **设计洞察**：stream_flash 是 streaming processing 在嵌入式存储上的体现——用 O(1) 的固定缓冲处理 O(N) 的输入，把"装不下"转化为"慢一点"。这与 Unix 管道（`cat | grep | wc`，每段只占小缓冲）、Kafka 的流式消费、Linux 内核的 splice/sendfile（零拷贝流式管道）是同一种思想：拒绝把整个数据集载入内存，让数据像水流过管道一样逐段处理。
+>
+> stream_flash 的"边收边写边擦"还体现了流水线并行——接收（SMP）、擦除（flash erase）、写入（flash program）三个阶段重叠执行，而不是"擦完整个 slot → 写完整包 → 收完整包"的串行批处理。`CONFIG_IMG_ERASE_PROGRESSIVELY` 把擦除摊薄到写入过程中，本质是把"擦除"这个阻塞阶段拆细，让它与"接收"重叠。这与 CPU 流水线、指令级并行（ILP）的思想一致：把大任务切成小段，让各段重叠，提升吞吐率。
+>
+> 对比"全收到 RAM 再写"的 batch 模型——它在 RAM 充足时更简单（一次 erase + 一次 program），但 MCU 的 RAM 限制让 streaming 成为唯一可行解。stream_flash 的进度保存（依赖 Settings）则把"中断恢复"也纳入流式模型——断点续传是流式处理的自然延伸，batch 模型要做断点续传反而更难，因为它要持久化"已收到的部分数据"。
 
 ---
 
@@ -954,16 +1041,16 @@ int main(void)
 
 | 维度 | Linux A/B 更新 | Zephyr/MCUboot OTA |
 |------|---------------|-------------------|
-| **存储介质** | eMMC/UFS（块设备） | NOR/NAND flash（原始 flash） |
+| **存储介质** | eMMC/UFS（块设备，可随机读写任意扇区） | NOR/NAND flash（原始 flash，写前必须擦除） |
 | **文件系统** | ext4/squashfs 等成熟 FS | 通常无 FS，或 LittleFS |
-| **分区抽象** | GPT/MBR + /dev/by-name/ | 设备树 fixed-partition |
+| **分区抽象** | GPT/MBR（分区表）+ `/dev/by-name/`（符号链接） | 设备树 fixed-partition（编译期生成表） |
 | **引导加载器** | U-Boot/GRUB + bootloader 模块 | MCUboot（独立项目） |
-| **A/B 切换** | 改 boot flag，不动数据 | swap 或 direct-xip |
+| **A/B 切换** | 改 boot flag（ Misc 分区中的标志位），不动数据 | swap 或 direct-xip |
 | **回滚** | 改回 boot flag | swap 回去（test 模式） |
 | **传输协议** | HTTP/HTTPS 整包下载 | SMP 分块 + CBOR |
 | **RAM 占用** | 几百 MB，可整包缓存 | 几 KB，必须流式 |
-| **签名验证** | dm-verity / AVB | imgtool 签名 + MCUboot 验签 |
-| **断电安全** | journaling FS + atomic flag | trailer 状态机 + 两阶段写 |
+| **签名验证** | dm-verity（块级哈希树校验 rootfs）/ AVB（Android Verified Boot，启动链验签） | imgtool 签名 + MCUboot 验签 |
+| **断电安全** | journaling FS（日志型文件系统，如 ext4 的 journal）+ atomic flag | trailer 状态机 + 两阶段写 |
 
 ### 10.2 本质差异：为什么 MCU 不用 Linux 那套
 

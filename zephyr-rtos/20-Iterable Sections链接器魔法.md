@@ -77,6 +77,10 @@ STRUCT_SECTION_FOREACH(sensor_meta, meta) {
 
 > **核心要点**：iterable sections 的本质是"用链接器段替代中心化注册表"。注册侧（`STRUCT_SECTION_ITERABLE`）和遍历侧（`STRUCT_SECTION_FOREACH`）通过链接脚本约定的段名耦合，二者不需要在源码层相互可见。
 
+> **设计洞察**：这套机制是"开闭原则"在系统软件里的纯粹实践——对扩展开放（新增一个 .c 文件即可注册新条目），对修改关闭（无需碰任何中心化列表）。它把"机制"（链接器收集段、运行时按起止符号遍历）与"策略"（每个模块声明什么、按什么顺序）彻底解耦，让两个编译单元互不感知却能在最终镜像里协作。这种设计模式在系统软件里反复出现：Linux 内核的 `module_init`、FreeBSD 的 `SYSINIT` 与 `linker set`、旧 Unix 的 `setproctext` 列表，都是同一思想的变体。Zephyr 的特别之处在于把它**通用化**——不再局限于 init 函数，而是任何同型结构体都能复用这套"链接时汇聚 + 运行时数组遍历"的骨架。
+>
+> 从工程实践智慧看，"零运行时注册"还有一个常被忽略的好处：**故障模式简单**。运行时注册函数可能失败（内存不足、锁死锁、顺序错），而链接器段收集要么成功要么链接报错——失败发生在构建期，不在现场运行期。对部署后难以打补丁的嵌入式设备，把"注册"从运行时移到链接时等于把一整类运行时故障消灭在工厂里。这是"fail-fast"原则的极致体现。
+
 ### 1.2 设计目标与代价
 
 | 维度 | iterable sections 方案 | 运行时注册函数方案 | GCC `__attribute__((constructor))` |
@@ -127,6 +131,8 @@ STRUCT_SECTION_FOREACH(sensor_meta, meta) {
 	} GROUP_DATA_LINK_IN(RAMABLE_REGION, ROMABLE_REGION)
 ```
 
+理解这套宏需要先区分链接器工作的两个层次。编译器为每个变量生成的段叫**输入段**（input section），存在于 `.o` 目标文件里，名字如 `._sensor_meta.static.temp_`；链接器把多个 `.o` 的输入段合并到最终镜像里的**输出段**（output section），名字如 `sensor_meta_area`。链接脚本的核心职责就是声明输出段、并用通配符把输入段"收集"进去——下面 `KEEP(*(SORT_BY_NAME(._sensor_meta.static.*)))` 的含义正是"把所有匹配 `._sensor_meta.static.*` 的输入段按段名字典序合并进当前输出段"。iterable sections 所谓"收拢成连续内存"正是这次收集的产物：分散在各 `.o` 里的同类输入段，被链接器拼接到输出段的 `_list_start` 与 `_list_end` 符号之间，形成可遍历的数组。
+
 逐行解析 `Z_LINK_ITERABLE(sensor_meta)` 展开后的内容：
 
 1. **`PLACE_SYMBOL_HERE(_sensor_meta_list_start)`** — 在当前位置定义符号 `_sensor_meta_list_start = .`。这是数组起点，C 代码用 `extern const struct sensor_meta _sensor_meta_list_start[];` 引用它。`PLACE_SYMBOL_HERE` 在 [include/zephyr/linker/linker-defs.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/linker/linker-defs.h#L58)定义，对 RX 架构额外提供带前导下划线的别名。
@@ -158,6 +164,10 @@ sensor_meta_area :
 | **典型用法** | 命令表、init_entry、log_backend | 含运行时状态的对象（如 `device_state`） |
 
 > **核心要点**：选 ROM 还是 RAM 取决于"运行时是否要修改"。如果结构体只是元数据（函数指针、字符串、常量），用 ROM；如果结构体含运行时状态（计数器、忙位、缓存），用 RAM。错用 ROM 会导致 XIP 系统上写 Flash 触发硬错。
+
+> **设计洞察**：ROM/RAM 二分的底层物理基础是 MCU 的存储层次——Flash 与 SRAM 是两种物理介质，访问特性差异巨大。Flash 读取是 CPU 直接寻址（经 cache 透明加速），但写入必须按页擦除（典型 2KB 页）再编程，单次写延迟达几十毫秒且会阻塞同一 bank 的读；SRAM 则是真正的随机读写，延迟个位数纳秒。XIP (eXecute In Place) 的硬件前提正是 Flash 挂在 CPU 的同一总线上（或经四线 QSPI/Octal-SPI），CPU 取指/取数据无需先拷贝到 SRAM。这与桌面/服务器系统的"统一 RAM + 页表映射"模型截然不同——后者把"代码段只读"作为**策略**选择，而 MCU 上"ROM 段只读"是**物理**约束。
+>
+> 这就解释了为什么 Zephyr 在 `K_THREAD_DEFINE` 里把静态线程结构放 ROM 段（`_static_thread_data`）而把运行时 TCB 放 RAM——前者是初始化时的"模板"，后者才是被调度器改写的"活对象"。把这种"只读模板 + 可写状态"的分离前置到链接脚本，比运行时从 ROM 拷贝到 RAM 的方案更省启动时间与 SRAM 占用，是 Harvard 架构下"数据局部性"原则的具体应用。
 
 ### 2.3 三种变体
 
@@ -279,6 +289,10 @@ C 侧的宏定义在 [include/zephyr/sys/iterable_sections.h](file:///home/pbw/r
 - **`__in_section(_sensor_meta, static, temp_sensor_)`**：在 [include/zephyr/toolchain/gcc.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/toolchain/gcc.h#L197-L201)展开为 `__attribute__((section("._sensor_meta.static.temp_sensor_")))`。注意三段式段名 `.<secname>.static.<postfix>_`——前缀 `.<secname>.static.` 与链接脚本 `SORT_BY_NAME(._<secname>.static.*)` 的通配符匹配；后缀 `<postfix>_` 是变量名加一个下划线，正是 §8 字典序排序的依据。
 - **`__used`**：GCC 属性，告诉编译器"这个变量看起来没被引用也不要删除"。这是给编译器的指令，与链接器的 `KEEP` 双保险。
 - **`__noasan`**：见 §6，防 ASan 在变量周围加 guard padding 破坏段对齐。
+
+> **设计洞察**：`Z_DECL_ALIGN` 强制按类型自然对齐看似细节，实则是"等大数组遍历"成立的物理基础。指针 `m++` 每次前进 `sizeof(type)` 字节，依赖每个元素起始于"自身大小的整数倍"地址——否则在严格对齐的 ISA 上访问未对齐字段会触发对齐异常。ARMv5 之前的 ARM、SPARC、MIPS（未开 `unaligned-access`）都属于这类"硬对齐"架构；即使在不要求对齐的 x86 与 ARMv7+ 上，跨越 cache 行（典型 32/64 字节）的访问也会触发"读两行、合并一字段"的双内存事务，性能损失一倍以上。链接器在收集段时可能因前一段的尾填充而引入"看不见的间隙"，显式 `__aligned(__alignof(type))` 把每个元素边界钉死，消除了这种不确定性。
+>
+> 更深层的工程教训是：**"对齐"是 ABI 的一部分**。同一份 `struct sensor_meta` 在不同编译选项下 `__alignof` 可能不同（例如 `-mstructure-size-boundary` 影响 ARM 的结构体对齐），但只要所有元素都用 `Z_DECL_ALIGN` 统一到类型自身的 `__alignof`，链接器收集出的段就保证 ABI 一致。这与 Linux 内核对 `____cacheline_aligned` / `____cacheline_aligned_in_smp` 的使用是同源思想——把"硬件友好的对齐"从隐式约定提升为显式属性，让数据布局对编译器优化鲁棒。
 
 最终的展开结果是：
 
@@ -827,6 +841,10 @@ iterable sections 的字典序契约是**软契约**——没有任何编译时�
 
 > **核心要点**：iterable sections 的字典序契约适合"顺序不重要或只需稳定即可"的场景（命令表、后端表、元数据表）。一旦顺序承载了功能含义（初始化依赖、调度优先级），就必须改用 NUMERIC 变体或 `SYS_INIT` 的 level/prio 机制——这两者把顺序信息编码到段名里，让链接器 `SORT` 直接产出正确顺序。
 
+> **设计洞察**：字典序契约的"软"性质反映了 C 语言类型系统与链接器能力的根本边界。链接器只能按字节比较段名，无法理解"语义顺序"——它不知道 `temp_sensor` 应该在 `humidity_sensor` 之前还是之后。对比 FreeRTOS：任务优先级是 API 参数 `xTaskCreate(..., uxPriority, ...)`，是数值，编译器能在类型层面校验；而 Zephyr 把"顺序"编码到符号名字面量里，编译器只看到一串字符，无法校验"是否符合开发者意图"。
+>
+> 这是"约定优于配置"（convention over configuration）与"显式优于隐式"（explicit over implicit）两种工程哲学的张力。Zephyr 在大多数 iterable section 上选了前者——付出"顺序隐式"的代价，换得"零运行时开销 + 零额外字段"的收益；但在顺序承载功能依赖的 `SYS_INIT` 上果断切到后者——用 `level` + `prio` 数值参数显式编码，并通过 `Z_LINK_ITERABLE_NUMERIC` 的分位匹配让链接器产出数值序。这种"按场景在两极之间切换"的取舍，比一刀切更接近工程现实——**没有一种排序策略能同时满足"零开销"与"硬约束"**，关键是让边界清晰可见。
+
 ### 8.4 跨构建单元的顺序不确定性
 
 `SORT_BY_NAME` 保证的是"链接后段内顺序确定"。但跨 .o 文件的"未排序段"是不确定的——如果用 `*(.my_section.*)` 而不是 `SORT_BY_NAME(.my_section.*)`，链接器收集顺序取决于 .o 文件在命令行上的顺序，而后者由构建系统决定，不可预测。
@@ -956,7 +974,7 @@ flowchart TD
     A1(["foo.c: SYS_INIT(foo_init, POST_KERNEL, 50)"])
     A2["展开为 __init_foo<br/>section .z_init_POST_KERNEL_P_50_SUB_0_"]
     A3(["bar.c: SYS_INIT(bar_init, POST_KERNEL, 100)"])
-    A4["展开为 __init_bar<br/>section .z_init_POST_KERNEL_P_100_SUB_0_"])
+    A4["展开为 __init_bar<br/>section .z_init_POST_KERNEL_P_100_SUB_0_"]
 
     B1(["链接脚本 common-rom-kernel-devices.ld"])
     B2["CREATE_OBJ_LEVEL(init, POST_KERNEL) 展开：<br/>KEEP(SORT(.z_init_POST_KERNEL_P_?_*))<br/>KEEP(SORT(.z_init_POST_KERNEL_P_??_*))<br/>KEEP(SORT(.z_init_POST_KERNEL_P_???_*))"]
@@ -965,8 +983,8 @@ flowchart TD
 
     C1(["z_sys_init_run_level(POST_KERNEL)"])
     C2["entry 从 __init_POST_KERNEL_start 到 __init_end"]
-    C3["第 1 步：调用 foo_init()"])
-    C4["第 2 步：调用 bar_init()"])
+    C3["第 1 步：调用 foo_init()"]
+    C4["第 2 步：调用 bar_init()"]
 
     A1 --> A2
     A3 --> A4

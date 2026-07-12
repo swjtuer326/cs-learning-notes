@@ -183,6 +183,12 @@ flowchart LR
 
 > **如何读这张图**：蓝色是生产者，青色是队列（无锁 MPSC 环），绿色是消费者。注意 SQ 与 CQ 的生产者/消费者角色恰好对调——SQ 由应用生产、执行器消费；CQ 由 IODEV 生产、应用消费。两个 IODEV 可能并发完成，因此 CQ 必须支持多生产者。
 
+> **设计洞察**：SQ/CQ 分离的本质是"提交速率与完成速率解耦"——这是异步系统的核心 invariant。同步 I/O 里"调用"与"完成"绑定在一次函数调用上，速率必须相等；异步 I/O 把它们拆成两条流，允许"突发提交 10 个，1 秒后批量收割"。这与 Linux epoll（事件就绪队列与发起 read 解耦）、Node.js event loop（callback 队列与调用栈解耦）、SATA NCQ（Native Command Queuing，把"提交"与"完成"分离以允许磁盘重排命令优化寻道）是同一种设计哲学。
+>
+> 对比"单队列"方案——它会强制"提交一个就检查一个完成"，把异步退化成同步的轮询。io_uring 的 SQ/CQ 分离之所以成为范本，正是因为它把这个解耦做成了"零系统调用"的共享内存环。RTIO 把这个模型搬到进程内，去掉了 syscall 开销，但保留了"提交与完成解耦"的核心收益。
+>
+> 这也是"机制与策略分离"的体现：SQ/CQ 是机制（如何提交、如何通知完成），而"何时提交、提交后做什么"是策略（由应用决定）。同一个机制可以支撑"批量提交批量收割"（传感器采样）、"提交一个等一个"（命令-响应）、"持续提交流式收割"（IMU 流式）等多种策略，无需改 RTIO 内核——这是数据驱动设计相对控制流驱动的结构性优势。
+
 ---
 
 ## 3. rtio_iodev_sqe：I/O 请求描述
@@ -212,6 +218,12 @@ struct rtio_iodev_sqe {
 `q` 字段是 `mpsc_node`，复用为前两者的链表节点；`next` 是独立指针，专门做第三件事。`r` 反向指针让执行器在任何上下文都能找到回 `rtio` 上下文（比如多 IODEV 并发完成时，IODEV 回调里需要 `r` 来 push CQE）。
 
 > **核心要点**：`rtio_iodev_sqe` 必须塞进一个 cache line（64 字节）。`CONFIG_RTIO_SQE_CACHELINE_CHECK` 在编译期 `BUILD_ASSERT` 这一点——因为执行器会频繁遍历 chain 链，跨 cache line 的 `next` 解引用会让每次跳转多吃一次内存访问。这就是为什么 `rtio_sqe` 的 union 要精心控制大小。
+
+> **设计洞察**：cache line 对齐是软硬件协同优化的典型——CPU 以 64 字节 cache line 为单位加载内存，跨 line 的结构体字段访问会触发两次 load。RTIO 执行器沿 `next` 链遍历，每次解引用若跨 line 就多一次内存访问；在 MHz 级 MCU 上，一次额外 load 可能是 4-10 个 cycle，乘以高频采样的遍历次数，累积开销可观。这是"数据局部性"（data locality）原则在数据结构布局上的直接体现。
+>
+> 这与 Linux 内核的 `____cacheline_aligned`、`____cacheline_in_smp`（SMP 下避免 false sharing）、`__read_mostly`（把只读数据集中到同一 cache 区域，减少 cache 污染）是同一套优化思路。Linux 还会在热点结构体里把"读多写少"字段与"频繁写入"字段分到不同 cache line，避免写一个字段让另一个字段的 cache line 失效——RTIO 把 SQE 控制在一个 cache line 内是这种优化的极端形式。
+>
+> 对比 FreeRTOS 的 TCB（Task Control Block）——它没有 cache line 对齐，因为 FreeRTOS 的目标多是 Cortex-M0/M3/M4 等无 D-cache 的 MCU，cache line 是不存在的概念。Zephyr 要跑在 Cortex-A、x86_64、RISC-V 等带 cache 的 SoC 上，必须考虑 cache 友好性。这是"同一份代码跨硬件平台"带来的工程要求——抽象层要在"有 cache"和"无 cache"的硬件上都高效，而 BUILD_ASSERT 在编译期保证这一点，无需运行时检查。
 
 ### 3.2 rtio_sqe 的 union：一份内存，多种操作
 
@@ -374,6 +386,12 @@ flowchart TD
 
 > **核心要点**：`AWAIT` 让 RTIO 能表达依赖图而不仅是链。多个 SQE 链可以汇聚到一个 AWAIT（"A 和 B 都完成后才做 C"），也可以从一个 AWAIT 分叉（"等信号后并发 C 和 D"）。这是 RTIO 相对 io_uring 原生 SQE 链的扩展——io_uring 的链是纯线性的。
 
+> **设计洞察**：AWAIT 把"等待"从控制流（线程阻塞在信号量上）变成数据流（SQE 链上的一个节点）。这是计算机科学的核心抽象——"过程作为数据"（SICP 第一章的核心思想）：把控制流编码为数据结构，让调度器而非线程切换来推进。这与 JavaScript 的 Promise.then() 链、Rust 的 async/await、Python 的 asyncio.Future、C++20 的 coroutine 是同一种思想：把"等待"从"占用一个执行线程"变成"在某个调度器里挂一个回调"。
+>
+> 对比"每个依赖起一个线程"——后者把"等"绑死在线程上下文上，每个等待消耗 1-4 KB 栈；AWAIT 把"等"编码进 SQE（几十字节），由执行器统一调度。这正是 io_uring、Seastar、Go runtime 等"用户态调度器"的共同思路：用数据结构描述依赖，让调度器而非 OS 线程切换来推进。代价是"调试更难"——异步栈不像同步栈那样线性可读，这是 async/await 普遍带来的工程代价。
+>
+> RTIO 相对 io_uring 的扩展是把它从纯线性链（`IOSQE_IO_LINK`）扩展到 DAG（依赖图）——多个 SQE 链可汇聚到一个 AWAIT，也可从一个 AWAIT 分叉。这让 RTIO 能表达"A 和 B 都完成后才做 C"这类汇聚依赖，而 io_uring 要表达同样的语义得绕路（用多个链 + 用户态协调）。这是 RTOS 语境的特殊需求：嵌入式系统的 I/O 依赖比文件 I/O 更复杂，外部事件（DMA 完成、GPIO 中断、传感器 DRDY）常常是依赖的前驱。
+
 ---
 
 ## 5. 执行器与 IODEV
@@ -529,6 +547,12 @@ void rtio_sched_alarm(struct rtio_iodev_sqe *iodev_sqe, k_timeout_t timeout)
 | SQE 体积影响 | 需额外字段 | 复用已有的 `delay.to` |
 
 > **核心要点**：RTIO 选择 $O(n)$ 插入的 dlist 而非 $O(\log n)$ 的红黑树，是因为 RTIO 的 DELAY 数量典型值是个位数（每条链至多几个 DELAY），$O(n)$ 在小 n 下常数更小、代码更简、内存更省。这是嵌入式 RTOS"小 n 用线性结构"的典型权衡——和 [11 章核心数据结构](./11-核心数据结构.md) 里 `dlist` 代替平衡树的逻辑一致。
+
+> **设计洞察**：复用 `z_add_timeout` 而非自建红黑树，体现了三条工程智慧：(1) KISS——能用现成基础设施就不自己造；(2) 算法复杂度的"常数项"在小 n 下比 big-O 更重要——$O(\log n)$ 的红黑树每次插入要旋转 + 染色，常数远大于 dlist 的线性扫描，当 $n < 10$ 时红黑树反而更慢；(3) 代码复用降低 bug 面积——内核 timeout_q 经过 [08 章中断与时序](./08-中断与时序.md) 讲的多年验证，自建数据结构要重新踩坑。
+>
+> 这与 Linux 内核的"用好现有原语"传统一致：`timer_list` 复用 `hlist`、`workqueue` 复用 `list_head`、`wait_queue` 复用 `dlist`，从不为每个子系统自造轮子。Linux 内核甚至有一条不成文规则——"除非有性能分析证明现有数据结构不够用，否则不准引入新的"。Linus Torvalds 多次在邮件列表里拒绝"为了优雅而引入新数据结构"的补丁，理由就是"现有代码已经够好，新代码是新 bug 的来源"。
+>
+> 对比 FreeRTOS 的 `xTimerCreate`——它自带一个独立的定时器任务与命令队列，每个软件定时器独立，简单但内存开销大（每个 timer 一个 `Timer_t` 结构 + 命令入队）。RTIO 的选择是"嵌入式小 n 场景下，线性结构 + 复用内核设施"的典型权衡，也是 DRY（Don't Repeat Yourself）原则在系统软件里的体现。
 
 ### 6.3 数值演算：DELAY 的时序代价
 

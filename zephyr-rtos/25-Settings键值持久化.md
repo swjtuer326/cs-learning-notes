@@ -48,7 +48,9 @@
 2. **更新不频繁但读取代价敏感**——启动时一次性加载
 3. **写入要掉电安全**——写到一半断电不能损坏旧数据
 
-直接用 `flash_area_write` 写裸 flash 不行：flash 只能按页擦除、按块对齐写，且每个擦除块寿命有限（典型 10 万次）。Settings 子系统就是把这些底层约束封装成统一的键值接口，让上层模块只关心"name-value"，不用关心扇区轮转和磨损均衡。
+直接用 `flash_area_write` 写裸 flash 不行：flash 只能按页擦除、按块对齐写，且每个擦除块寿命有限（典型 10 万次）。反复擦写同一扇区会让它先于其他扇区达到寿命上限而出现坏块——**磨损均衡（wear leveling）**就是把擦写次数均匀分摊到所有扇区，避免局部过早失效。Settings 的各后端（FCB/NVS/ZMS）都用"追加写 + 擦旧扇区"的方式实现：写入总是追加到当前活跃扇区，满了就擦最老的扇区循环使用，让每个扇区被均匀地擦写。Settings 子系统把这些底层约束封装成统一的键值接口，让上层模块只关心"name-value"，不用关心扇区轮转和磨损均衡。
+
+> **设计洞察**："追加写 + 擦旧扇区"的磨损均衡范式根植于 flash 的物理特性。NOR flash 的擦除粒度是扇区（4 KiB 起步），擦除会把整扇区所有 bit 置 1，而写入只能把 1 改成 0——这意味着"改一个值"在物理上要先擦后写，代价巨大。日志结构文件系统（LFS, Log-structured File System）的思想正是为此而生：写入永远追加到日志末尾，旧版本成为"垃圾"，后台 GC 回收。Linux 的 JFFS2、UBIFS、F2FS 都属此派；Zephyr 的 FCB/NVS/ZMS 是这一思想在 RTOS 上的简化实现。这种范式还带来一个副产品——**掉电安全**：因为从不原地覆盖，断电时旧数据完整无损，新数据要么完整要么不存在，没有"半写"状态。代价是 **写放大**（write amplification）：改一个 4 字节配置可能要擦 4 KiB 扇区，放大 1000 倍。NVS/ZMS 用"ATE 元数据 + 数据分离"减少放大，但无法消除——这是 flash 存储的内在约束。SSD 主控的 FTL (Flash Translation Layer, 闪存转换层) 也是同一套思路，只是把磨损均衡做在了硬件里，对 OS 透明。
 
 ### 1.2 本质：可换后端的键值仓库
 
@@ -199,6 +201,8 @@ int settings_load_subtree(const char *subtree)
 ```
 
 整个加载过程是两阶段的：先 `csi_load` 把 flash 里的每条记录回调给 `settings_call_set_handler`，后者找到匹配 handler 调 `h_set` 写进 RAM；全部读完后再 `settings_commit_subtree` 统一调 `h_commit`。**为什么分两阶段？** 因为有些配置项相互依赖（比如波特率要先于校验位生效），`h_commit` 给模块一个"所有值都就位了，现在可以应用"的信号点，且按 `cprio` 排序保证依赖顺序。
+
+> **设计洞察**：两阶段加载（load → commit）是系统软件处理"依赖关系"的经典手法，与 Linux 内核的 initcall level、Systemd 的 `After=` 依赖排序同源。问题本质是：多个配置项之间可能有依赖——波特率必须先于校验位、BT 必须先于 BT Mesh——但加载顺序由后端遍历顺序决定（FCB 按扇区追加顺序、NVS 按 ID 倒序、ZMS 沿链表），无法保证业务依赖。两阶段提交把"加载"与"应用"分开：第一阶段只把值灌进 RAM（不触发副作用），第二阶段按 `cprio` 排序统一应用。这与数据库的 two-phase commit（2PC, 两阶段提交）思路类似——prepare 阶段准备数据、commit 阶段原子生效。区别在于 Settings 的 commit 不是原子的（每个 handler 独立 commit），但"按 cprio 排序"已经保证了关键依赖。`cprio` 用 $O(n^2)$ 而非排序算法，体现了 **KISS 原则**——handler 数量通常 < 20，$O(n^2) = 400$ 次比较远低于一次 flash 读的代价，复杂算法反而引入 bug。Linux `do_initcalls` 也是同样的多趟扫描按 level 调用，而非排序——工程上"够用即正确"。
 
 ## 3. Handler 注册：静态与动态
 
@@ -502,6 +506,8 @@ NVS 自己处理磨损均衡和 GC，Settings 只是在它之上把 name 和 val
 
 **为什么先写 value 后写 name？** 掉电安全考虑：如果先写 name 后写 value，断电在中间会出现"有 name 无 value"的脏记录，加载时无法区分"已删除"和"写了一半"。先 value 后 name，则 name 写成功才算完整记录；name 没写完时，value 那条没人引用，加载时自然忽略。
 
+> **设计洞察**：先 value 后 name 的写入顺序是 **write-ahead logging**（WAL, 预写日志）思想在 KV 存储中的体现。WAL 的核心原则是"先写数据再写指针"——只要指针没更新，数据就算"未提交"，断电后自然被忽略。PostgreSQL 的 WAL、SQLite 的 journal、ext4 的 journal 都是这一原则。NVS 把"name"当成"指针"——name 写成功才算记录完整。FCB 的"追加写不覆盖"、retention 后端的"先写数据后写 length 头"、文件后端的"写到临时文件再 `fs_rename`"都是同一思路的不同实现。这种"用写入顺序保证原子性"的智慧可以追溯到数据库的 ACID 特性（Atomicity, Consistency, Isolation, Durability）——在没有事务机制的 flash 上，写入顺序是唯一可用的原子性手段。对比"先 name 后 value"的错误顺序：断电在中间会出现"有 name 无 value"的脏记录，加载时无法区分"已删除"和"写了一半"——这就是为什么 NVS 的设计者选择了看似反直觉的"value 在前"顺序。硬件层面，NOR flash 的"写 0 容易、写 1 要擦"特性也强化了这一选择：一条未完成的记录可以通过"擦除整扇区"轻松清理，而"原地修复半写记录"在 flash 上几乎不可能。
+
 ### 6.3 加载：倒序扫描
 
 `settings_nvs_load`（`settings_nvs.c:123-213`）从 `last_name_id` 倒序向 `NVS_NAMECNT_ID` 扫描：
@@ -722,6 +728,8 @@ static int entries_count;
 ```
 
 `settings_psa_save`（`settings_tfm_psa.c:189-261`）只更新 RAM 数组，然后用 `k_work_schedule` 延迟 500ms（`CONFIG_SETTINGS_TFM_PSA_LAZY_PERSIST_DELAY_MS`）异步写回 PSA 存储。**为什么要延迟？** 因为 PSA ITS/PS 的写操作可能阻塞几百毫秒（加密 + flash），在蓝牙配对这种"连续写多条"的场景下，延迟合并可以把多次写聚成一次。
+
+> **设计洞察**：TF-M PSA 后端的"RAM 摊放 + 延迟批量持久化"是 **lazy write-back**（延迟写回）模式的典型应用，与 Linux 内核的 pdflush/flush 线程、数据库的 group commit 同源。问题在于：PSA ITS/PS 的写操作涉及加密 + flash，延迟在百毫秒级；而蓝牙配对场景下多条 settings 接连写入，如果每条都同步触发 PSA 写，会把 CPU 时间浪费在重复加密上。延迟 500ms 把多条写聚成一次，类似 CPU cache 的 write combining（写合并）——把多次小写合并成一次大写，摊薄固定开销。这种"用 RAM 换吞吐"的权衡在嵌入式系统里需要谨慎：entries 数组占 `NUM_ENTRIES × (64+256)` 字节 RAM，在 8 KiB RAM 的 Cortex-M0 上不可接受；但在 TF-M 这种"安全世界有专属 SRAM"的场景下，RAM 换吞吐是合理的。代价是 **数据一致性窗口**：500ms 内断电会丢失最近写入——但安全世界的设计前提是"PSA 写本身已经原子"，应用层接受这个窗口。这与 Linux 的 `dirty_writeback_centisecs`（默认 5 秒）是同一种 trade-off：窗口越长，合并越高效，但断电丢失风险越大。
 
 持久化时 `store_entries`（`settings_tfm_psa.c:67-102`）把整个 `entries` 数组按 `ITS_MAX_ASSET_SIZE` 切片，存到连续的多个 UID：
 

@@ -84,6 +84,12 @@ typedef int (*cbprintf_cb)(/* int c, void *ctx */);
 
 **为什么是一个字符一次而不是批量？** 因为 cbprintf 的设计目标是"无界长度输出"。如果用批量接口，调用者必须提供一个临时缓冲——但缓冲多大才够？`printf("%*d", 1000000, x)` 可以生成上百万字符的输出，固定缓冲必然溢出或浪费。一个字符一次让输出端可以自由选择"直接送 UART"还是"凑一批再 flush"，cbprintf 自身不需要任何中间缓冲。
 
+> **设计洞察**：cbprintf 的"一个字符一次"回调看似低效——为什么不批量？这其实是对**依赖倒置原则**（Dependency Inversion Principle）的极致应用。`printf` 把"格式化"和"输出到 stdout"硬绑在一起，导致输出端不可替换；cbprintf 反转依赖——核心引擎只依赖一个 `cbprintf_cb` 抽象接口，具体输出由调用者注入。这与 Linux VFS 的 `file_operations.write` 异曲同工，但更彻底：VFS 仍是批量字节接口（隐含"调用者有缓冲"假设），cbprintf 连这层假设都去掉了。
+>
+> 这种设计的代价是函数调用开销——每个字符一次间接调用。在 Cortex-M4 @ 64 MHz 上，一次间接调用约 5-10 周期，输出 100 字节日志意味着 500-1000 周期的回调开销。但 cbprintf 的目标场景是"日志与诊断"而非"高速数据流"——这个开销相对于 UART 的毫秒级传输延迟可以忽略。真正的吞吐瓶颈永远在 I/O 端，不在格式化端。这也是为什么 §9.2 的 RTT 例子要在回调里缓冲凑批——把回调开销摊薄到批量 I/O 上。
+>
+> 工程上这叫**策略与机制分离**：cbprintf 是机制（怎么格式化），回调是策略（往哪里写）。同一份机制可以接任意策略，这让"日志同时送 UART + RTT + 网络"这种多端输出几乎零成本实现（§9.3 的回调链）。
+
 ### 2.2 调用链：cbprintf → cbvprintf → z_cbvprintf_impl
 
 源码 [lib/os/cbprintf.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/lib/os/cbprintf.c#L11-L21)：
@@ -170,6 +176,12 @@ int vfprintfcb(FILE *stream, const char *format, va_list ap)
 `va_list` 是个**栈上临时对象**——它的有效性只延续到当前函数返回。一旦函数返回，栈帧被回收，`va_list` 指向的参数内存就成了脏数据。所以不能直接把 `va_list` 存下来延迟使用。
 
 `cbvprintf_package` 的本质就是**把 `va_list` 指向的栈上参数拷贝到一块独立缓冲区**，让参数脱离栈帧生命周期。这块缓冲区叫"包"（package），它是可搬运的（relocatable）——可以 `memcpy` 到另一块内存、可以塞进 [19 章](./19-无锁数据结构深入.md) 的 `mpsc_pbuf` 队列、可以跨核 IPC 传递。
+
+> **设计洞察**：cbprintf 打包机制本质是**延迟计算**（Deferred Computation）模式——把"抓数据"和"处理数据"解耦到不同时间点。这与 Linux 内核的延迟工作队列、Java 的 Future/Promise、数据库的 WAL（Write-Ahead Log, 预写日志）是同一类思想：在快路径上只做最小捕获，把重活儿推到慢路径。
+>
+> 这里的关键洞察是**上下文决定可行性**。`%f` 在 ISR 中非法不是因为浮点运算本身有错，而是因为 ISR 的上下文约束（不保存 FPU 寄存器、不能阻塞）让浮点运算变得不安全。打包机制把"做什么运算"从"何时运算"中解放出来——同一份参数包可以在 ISR 中抓取（纳秒级），在线程中格式化（微秒级），在另一台机器上解码（毫秒级）。上下文变了，能做的事就变了。
+>
+> 这也解释了为什么包必须是**可搬运的**（relocatable）。如果包里嵌了绝对地址，搬运到另一块内存或另一台机器就失效。cbprintf 用"位置前缀 + rodata 指针"的混合策略（§7）让包既能在 `mpsc_pbuf` 队列里 `memcpy`，又能跨核 IPC 传递——这是分布式系统里"序列化"（serialization）的微型实例。Linux 不需要这套机制，因为它的日志调用点都在进程上下文，可以直接格式化入队，不需要搬运。
 
 ### 3.2 包格式：header + 参数区 + 字符串区
 
@@ -303,6 +315,10 @@ int cbpprintf_external(cbprintf_cb out,
 
 - `CONFIG_CBPRINTF_NANO`——选择 [lib/os/cbprintf_nano.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/lib/os/cbprintf_nano.c)
 - `CONFIG_CBPRINTF_COMPLETE`（默认）——选择 [lib/os/cbprintf_complete.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/lib/os/cbprintf_complete.c)
+
+**什么是弱符号（weak symbol）？** 弱符号是链接器层面的一种约定：声明为 `weak` 的符号允许被另一个同名的"强"定义覆盖；若没有任何强定义，就用弱定义本身。它解决的问题是"核心代码需要引用一个符号，但不关心由谁来实现"——让核心与实现解耦，避免核心代码里写死某一份实现。
+
+Zephyr 在 `z_cbvprintf_impl` 上用的是"核心引用、实现外置"模式：cbprintf 核心代码只声明并调用 `z_cbvprintf_impl`，不在核心里给实现；NANO 与 COMPLETE 各提供一个**强定义**，由 Kconfig 在编译期决定链入哪一份。切换实现只改 Kconfig 选项，不必动核心代码。`arch_printk_char_out`（§5.1）则是另一种用法——核心提供一个**默认空实现**的弱定义，平台/board 用强定义"安装"真实的 UART/RTT 输出；即便强定义不存在，链接也落到空函数成功，这是 printk 在初始化未完成时仍可安全调用的根基。
 
 源码 [lib/os/Kconfig.cbprintf](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/lib/os/Kconfig.cbprintf#L4-L25) 注释甚至给出了 NANO 的代码尺寸节省："80: -53% / 982 B"——在某些基准配置下 NANO 比 COMPLETE 小 982 字节，相对减少 53%。
 
@@ -460,6 +476,8 @@ void vprintk(const char *fmt, va_list ap)
 
 ### 5.2 故障安全的三个保证
 
+**什么是 fault handler？** MCU 遇到硬件级异常时（ARM Cortex-M 上的 HardFault、MemManage、BusFault 等），CPU 自动跳转到对应的异常处理函数——这就是 fault handler。它与普通 ISR 的关键区别在于触发前提：进入 fault handler 意味着"系统已经出了严重问题"，可能是非法内存访问、未对齐访问，也可能是更上游的 bug 已经破坏了堆或全局状态。因此 fault handler 面对的约束比普通 ISR 更严——不仅不能阻塞、不能 `malloc`，连"运行时全局状态是否还可信"都不能假设。下面三个"绝对不"正是为了满足这种最严苛的约束。
+
 `printk` 能在 fault handler 中调用的根基是三个"绝对不"：
 
 1. **绝对不 `malloc`**——`vprintk` 全程在栈上工作，无任何动态分配
@@ -467,6 +485,12 @@ void vprintk(const char *fmt, va_list ap)
 3. **绝对不依赖运行时状态**——`arch_printk_char_out` 是 weak 符号，即便全局初始化没跑也能调用（默认空函数）
 
 **为什么 `printf` 做不到这三点？** 因为 `printf` 内部依赖 `stdout` 流对象、流缓冲、`stdio` 互斥锁——这些都是运行时初始化的全局状态。fault 发生时这些状态可能已损坏，再调 `printf` 就可能二次 fault。`printk` 直接走 `arch_printk_char_out`，绕开所有运行时状态。
+
+> **设计洞察**：printk 的三个"绝对不"是**故障安全设计**（Fail-Safe Design）的教科书案例。系统设计有个反直觉的原则：越是危急时刻，越要假设最少。fault handler 触发时，系统状态已不可信——堆可能损坏、锁可能死锁、全局变量可能被覆盖。此时唯一安全的选择是"不依赖任何运行时状态"。
+>
+> weak 符号在这里扮演了**编译期依赖注入**的角色。`arch_printk_char_out` 默认是空函数，平台初始化时用强定义覆盖。这意味着即便板级初始化代码没跑（上电早期、fault 在初始化前发生），`printk` 也能安全调用——它只是把字符送到一个空函数，不会崩。这与 Linux 的 `bust_spinlocks`（panic 时强制释放所有锁）思路相反但目标一致：Linux 假设状态可控、强行解锁；Zephyr 假设状态不可控、绕开所有状态。两种哲学反映了资源假设差异——Linux 有余力做清理，MCU 没有。
+>
+> 这也是为什么 `printk` 复用 cbprintf 引擎但选 `char_out` 直送回调——它需要 cbprintf 的格式化能力，但不需要 cbprintf 的任何"高级特性"（缓冲、错误传播、浮点）。**机制复用、策略隔离**——同一份引擎，不同的策略组合，产出从"故障安全 printk"到"全功能日志"的全谱系输出。
 
 ### 5.3 三种输出路径
 
@@ -562,6 +586,12 @@ void z_log_msg_runtime_vcreate(uint8_t domain_id, const void *source,
 ```
 
 **为什么调两次 `cbvprintf_package`？** 第一次 `packaged=NULL` 只算包大小不写数据——返回所需字节数。日志系统据此分配 `log_msg`。第二次 `packaged=pkg` 才真正写入参数。这个"先量后写"模式避免了"包太大装不下要回滚"的复杂处理。
+
+> **设计洞察**："先量后写"两次调用 `cbvprintf_package` 是**两遍扫描算法**（Two-Pass Algorithm）的经典应用。第一遍扫描 fmt 算出包大小，第二遍才真正写入。看似多了一次扫描的开销，换来的是**避免了回滚的复杂性**。
+>
+> 工程上有个普遍教训：回滚逻辑是 bug 的温床。如果用"分配固定大小缓冲，写不下就回滚"，需要处理"半写入的包要不要清理"、"已消费的 `va_list` 怎么恢复"、"分配的内存怎么释放"等一系列状态恢复问题。两遍扫描把"写不下"的可能性在第一遍就消除——第二遍写的时候，缓冲一定够。这是 KISS 原则（Keep It Simple, Stupid）的体现：用一次额外的扫描换取状态机的简化。
+>
+> 这个模式在系统软件里随处可见。Linux 的 `vsnprintf(NULL, 0, fmt, args)` 就是同样的"先量后写"——返回所需长度，让调用者分配后再次调用。C 标准库的 `snprintf` 也遵循这个语义。Zephyr 把它用在了日志系统的快路径上，因为日志系统的快路径**不能失败**——失败意味着丢日志，丢日志意味着调试时丢失关键信息。两遍扫描的代价（多一次 fmt 扫描，约 100 纳秒）远小于回滚的代价。
 
 ### 6.3 时序对比
 

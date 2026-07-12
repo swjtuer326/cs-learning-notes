@@ -82,6 +82,10 @@ Object Core 的设计灵感来自 Linux kobject——把"对象有名字、有�
 
 > **核心要点**：Object Core 是 Zephyr 给 RTOS 内核装上"可观测性"的元数据框架——每个内核对象内嵌一个 `k_obj_core`，同类对象串成链表，所有类型再串成全局链表。它解决两个问题：动态对象如何被枚举、统计信息如何按统一接口查询。整套机制由 `CONFIG_OBJ_CORE` 开关，关闭时零开销。
 
+> **设计洞察**：Object Core 的设计反映了 RTOS 借鉴桌面/服务器内核时的典型取舍——"取思想、舍实现"。Linux kobject 在桌面 Linux 上每个对象几十字节不算什么，但在 SRAM 只有 64 KB 的 Cortex-M0 上，每个信号量多 16 字节就是 0.025% 的 RAM 预算。KISS 原则在这里不是美学选择，而是物理约束。把"统计"做成可选的二级扩展（`CONFIG_OBJ_CORE_STATS`），把"名称"留给宿主对象自己管理（`k_thread_name_get`），把"层次分组"砍掉只留单一 `z_obj_type_list`——每一处"砍掉"都对应着具体的资源账单。
+>
+> 更值得品味的是"可裁剪"的设计纪律：整套机制由 `CONFIG_OBJ_CORE` 一个开关控制，per-object 类型再各自有 `CONFIG_OBJ_CORE_*` 子开关，统计又有 `CONFIG_OBJ_CORE_STATS_*` 子开关。三层 Kconfig 嵌套让生产镜像可以精确到"只给线程开统计、其他对象关闭"——这种"按需付费"的资源模型是 RTOS 区别于通用 OS 的核心特征。Linux 内核也有 `CONFIG_PRINTK`、`CONFIG_FTRACE` 等开关，但其默认假设是"通常开着"；Zephyr 的默认假设是"通常关着，调试镜像才开"——这种心智模型的差异，决定了整套元数据框架的每一个尺寸选择。
+
 ---
 
 ## 2. k_obj_core 结构体
@@ -147,13 +151,13 @@ flowchart LR
     subgraph "SEM4 类型对象链表"
         Sem1["k_sem sem1<br/>count=1"]
         Sem2["k_sem sem2<br/>count=0"]
-        Sem1 -.obj_core.node.next.-> Sem2
+        Sem1 -. "obj_core.node.next" .-> Sem2
     end
 
     subgraph "THRD 类型对象链表"
         Thr1["k_thread main<br/>prio=0"]
         Thr2["k_thread idle<br/>prio=15"]
-        Thr1 -.obj_core.node.next.-> Thr2
+        Thr1 -. "obj_core.node.next" .-> Thr2
     end
 
     TypeSem == "list head" ==> Sem1
@@ -171,6 +175,10 @@ flowchart LR
 > **如何读这张图**：上层是全局类型链表 `z_obj_type_list`，每个节点是一个 `k_obj_type`（用 `node` 字段串起来）。每个类型有一条独立的对象链表（用 `list` 字段做 head）。每个对象内嵌的 `k_obj_core` 用 `node` 挂到所属类型的对象链表，用 `type` 反向指回所属类型。两层链表 + 反向指针 = 完整的对象图谱。
 
 > **核心要点**：`k_obj_core` 只有 3 个字段——`node`（挂到对象链表）、`type`（反向指针）、`stats`（可选统计）。`k_obj_type` 也只有 5 个字段——`node`（挂到全局类型链表）、`list`（对象链表头）、`id`、`obj_core_offset`、`stats_desc`。整个框架的内存开销是"每对象多 16 字节 + 每类型 ~48 字节"。
+
+> **设计洞察**：选择 `sys_slist`（单向链表）而非 `sys_dlist`（双向链表）是省内存的明确选择——每个节点少一个 `prev` 指针，64 位系统上每对象省 8 字节。代价是 `unlink` 需要 O(n) 查找前驱节点（`sys_slist_find_and_remove` 内部遍历）。但 obj_core 的操作分布极不均衡：`link`（对象创建时 append 到末尾，O(1)）和 `walk`（遍历，O(n)）是高频操作，`unlink`（对象销毁）是低频操作。用 O(n) unlink 换 O(1) 内存，是教科书级的"按操作频率分配复杂度"权衡。
+>
+> 这与 Linux 内核 `struct hlist_node`（哈希桶用单向链表节点，只有一个 `next` 指针）的设计思路同源——在"内存稀缺"与"低频操作"两个条件下，单向链表是正确选择。对比之下，Linux 调度器的运行队列用双向链表（`struct list_head`），因为任务切换时既要前插也要后插、既要删头也要删尾，O(1) 双向操作是必需的。**数据结构的选择没有银弹，只有与操作分布匹配的取舍**。从空间局部性看，单向链表还有一个隐含优势：节点更小，相同数量的对象占用的 cache 行更少，遍历时 cache miss 率更低——在 MCU 没有数据 cache 的场景这不重要，但在带 L1 cache 的 Cortex-R/A 上会成为可测量的性能差异。
 
 ---
 
@@ -349,6 +357,10 @@ static struct k_spinlock  lock;
 - 遍历某类型链表（`walk_locked`）时，所有 CPU 上该类型对象的 `link`/`unlink` 都被阻塞
 
 为了给"不需要强一致"的场景留出口，框架还提供了 `k_obj_type_walk_unlocked`（[kernel/obj_core.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/obj_core.c#L104-L122)），不加锁直接遍历——调用者必须自行保证遍历期间链表不被修改。
+
+> **设计洞察**：单一全局自旋锁是最简单的实现，但在 SMP 上会成为争用热点——所有 CPU 的 obj_core 操作都串行化，且锁变量所在的 cacheline 会在核间反复迁移（cacheline ping-pong）。每核 L1 cache 命中是几个周期，跨核 cacheline 迁移是几十到上百周期——在高频创建/销毁对象的场景下，这把锁可能成为吞吐瓶颈。Linux 内核在类似场景下会按对象类型分锁、用 RCU（Read-Copy-Update）让读者完全无锁、或用 per-cpu 计数器让写者局部化。Zephyr 的取舍是：obj_core 操作低频（对象创建/销毁非热路径，统计查询是调试行为），用一把锁换实现简单 + 内存零额外开销是可接受的；如果未来 obj_core 被用于热路径（例如运行时性能监控），应该按 `type->lock` 分锁，让不同类型的操作互不干扰。
+>
+> 更值得关注的是 `walk_unlocked` 的存在——它是对"强弱一致性分层"的工程化体现。`walk_locked` 保证遍历期间链表不变，适合精确统计；`walk_unlocked` 接受"可能看到脏数据"，适合调试快照、best-effort 打印。这种"提供两套接口让调用方按场景选择"的模式，与 Linux 内核 `rcu_read_lock` vs `spin_lock` 的分层是同源思想：**不是所有读操作都需要强一致，把"弱一致"作为一等公民提供出来，能让大量低风险场景避免锁开销**。Zephyr 没有照搬 RCU（其实现复杂、要求优雅期机制），但用 `walk_unlocked` + 调用方契约（"保证遍历期间不修改"）达到了 80% 的效果——这是 RTOS 资源约束下的务实选择。
 
 ### 4.3 在线程创建中的调用点
 
@@ -707,6 +719,10 @@ int z_thread_stats_query(struct k_obj_core *obj_core, void *stats)
 > 如果只有 raw，调试工具要自己写"如何把 cycle 计数转成 average_cycles"——重复造轮子。如果只有 queried，调度器每次 tick 都要做"求平均"——浪费 CPU。二分让内核只维护最便宜的 raw，把"如何对外呈现"交给 query 函数，**让"低成本常采、按需聚合"成为可能**。
 
 > **核心要点**：raw 是对象内部维护的"原始计数"（如 `num_used`、`total cycles`），queried 是在 raw 基础上"计算"出的对外指标（如 `allocated_bytes`、`average_cycles`）。两者通过 `k_obj_core_stats_raw` / `k_obj_core_stats_query` 暴露，走相同的"三道校验 + 函数指针分发"骨架。这种二分让内核只维护最便宜的 raw 计数，把派生计算推迟到查询时——降低常采开销。
+
+> **设计洞察**：raw/queried 二分是 CQRS（Command Query Responsibility Segregation）在内核统计上的应用——"写侧"（raw 累加）只做最便宜的计数增量，"读侧"（query 转换）按需做派生计算与单位换算。这与数据库的"物化视图"思路同源：常采的数据是"原始事实"（fact table），查询时才计算"派生指标"（aggregated view）。延迟计算让"求平均"这种 O(n) 操作只发生在查询时，而不是每个 tick 都做——对 RTOS 而言，这意味着调度器的 tick 中断处理时间不依赖"用户是否关心 average_cycles"。
+>
+> 从系统软件设计原理看，这是"关注点分离"的纯粹实践。raw 关心"如何低成本地记录事实"——调度器在 tick 中断里只做 `total += delta` 一次加法，不分配、不计算、不格式化；query 关心"如何把事实呈现给人"——按字节算、按周期算、按百分比算，都是查询时的事。两层各自演化：raw 可以加新字段（如 `num_windows`）而不影响旧查询代码；query 可以加新派生量（如 `p99_cycles`）而不动调度器热路径。Linux 内核的 schedstats、/proc/stat、vmstat 都是同一模式的体现——内核只记原始事件计数，用户态读取时才做聚合与格式化。Zephyr 把这个模式标准化到 `k_obj_core_stats_desc` 函数指针表里，让任意对象类型都能复用同一套"常采 + 按需聚合"骨架，这是设计上的高明之处。
 
 ---
 
