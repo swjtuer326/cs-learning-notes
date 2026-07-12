@@ -129,18 +129,171 @@ flowchart LR
 
 ---
 
-## 2. MCUboot 引导加载器
+## 2. 升级策略：新镜像如何变成可执行代码
 
-> 第一章列出了 OTA 的五件套，本节先看核心组件——MCUboot。它是独立于 Zephyr 的项目，但 Zephyr 通过 `CONFIG_BOOTLOADER_MCUBOOT` 与之深度集成。理解 MCUboot 的启动流程，是理解后续 trailer/swap/确认机制的基础。
+> 上一章讲到 OTA 需要 slot1 存放新镜像。但"存放"只是第一步——写入完成后，新镜像物理上在 slot1，CPU 却跳到 slot0 执行旧版本。为什么不能直接跑 slot1？本章先纠正一个常见误解——XIP 的CPU 能从任何 flash 地址取指，真正的约束在编译时。然后讲三种策略各自怎么做、为什么选这个不选那个。
 
-### 2.1 MCUboot 是什么
+### 2.1 真正约束：链接地址，而非 XIP
 
-MCUboot 是一个开源的、跨 RTOS 的安全引导加载器，目标是 32 位 MCU。它解决两个问题：
+一个常见误解："XIP 意味着 CPU 只能从 slot0 的地址取指"。不准确。
 
-- **镜像完整性/真实性验证**——每次启动都校验镜像签名与哈希，防止刷入被篡改的固件。
-- **升级切换**——决定本次启动运行 slot0 还是 slot1，支持断电安全的切换与回滚。
+NOR flash 整体映射到 CPU 地址空间（如 `0x0800_0000–0x0810_0000`），CPU 可以从映射范围内**任意地址**取指。如果字节流在 slot1 地址上，CPU 理论上可以直接跳过去执行——**MCUboot 的 Direct-XIP 模式正是这么做的**，它直接从 slot0 或 slot1 原地执行，不做任何数据搬移。
 
-MCUboot 本身是一个独立的 Zephyr 应用（也可以跑在 Mynewt/FreeRTOS 上），编译后烧录到 flash 最前端，复位后最先执行。它与主应用的关系：
+那为什么 swap/overwrite 要把代码搬到 slot0？因为**编译时链接地址**：
+
+固件编译时，链接器（linker script）把 `.text` 段固定在 slot0 的基址上。所有符号地址——函数指针、全局变量、VTOR（Vector Table Offset Register，向量表偏移寄存器）值——都被解析为"slot0 + 偏移"。如果把这份 2 进制原封不动放到 slot1，指令中的绝对寻址仍然指向 slot0 地址，取数据会取到 slot0 的旧内容，执行立即崩溃。
+
+所以选择权在**构建时**：
+
+| 方式 | 做法 | 代价 |
+|------|------|------|
+| **Swap** | 编译到 slot0 → 运行时物理搬回 slot0 | 写两次 flash，磨损高 |
+| **Direct-XIP** | 编译到 slot1 地址（或 PIC），从 slot1 直接执行 | 需两套构建产物，或 PIC 运行时开销 |
+| **Overwrite** | 编译到 slot0 → 覆盖 slot0 | 快但不可回滚 |
+| **RAM-Load** | 编译到 RAM 地址 → 拷到 RAM 执行 | RAM 必须够大，flash 不需 XIP |
+
+Zephyr/MCUboot 默认 Swap 不是因为 slot1 跑不了代码，而是**因为 Swap 不需要 PIC、不需要两套构建、且支持回滚——用 flash 磨损换构建简单**。
+
+> **核心要点**："CPU 只能从 slot0 执行"是常见的简化误解。真正的限制来自链接地址：编译时固件就决定了它只能在哪个地址跑。如果不信，看一下 §2.6 的 Direct-XIP 模式——它直接从 slot1 执行，证明了 CPU 本身没有限制。
+
+### 2.2 Swap 模式（支持回滚）
+
+Swap 把 slot0 和 slot1 的内容互换，这样新镜像就出现在 slot0 的地址上了。旧镜像保留在 slot1，如果新镜像起不来可以换回去：
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
+flowchart LR
+    subgraph Swap["Swap 模式 (支持回滚)"]
+        direction TB
+        SA0[("slot0: v1 旧")] -.->|swap| SA1[("slot0: v2 新")]
+        SB0[("slot1: v2 新")] -.->|swap| SB1[("slot1: v1 旧")]
+    end
+
+    classDef old fill:#fee2e2, stroke:#dc2626, color:#991b1b, stroke-width:2px
+    classDef new fill:#d1fae5, stroke:#059669, color:#065f46, stroke-width:2px
+
+    class SA0,SB1 old
+    class SA1,SB0 new
+```
+
+为什么 Swap 能回滚？因为旧 v1 没有被销毁，只是搬到了 slot1。下次重启时 MCUboot 读到"新镜像未确认"，再把两个 slot 换回来，v1 回到 slot0 继续跑。代价是每次升级要**完整读写两个 slot**，flash 磨损高、升级时间长。
+
+Swap 有三种实现子模式，区别在于**中转空间"存哪"**：
+
+| 子模式 | 机制 | 需要 scratch 分区 |
+|--------|------|:-:|
+| **swap-using-scratch** | slot0 → scratch、slot1 → slot0、scratch → slot1（三步搬） | 是 |
+| **swap-using-move** | 把 slot0 尾部搬到 slot1 尾部，再逐块交换（flash 原地操作，不用 scratch） | 否 |
+| **swap-using-offset** | 利用两个 slot 的 flash offset 差异直接交叉拷贝 | 否 |
+
+Zephyr 默认 `SWAP_USING_OFFSET`，因为它不需要 scratch 分区（省 flash 空间），又支持回滚（安全），是大多数场景的最佳折中。
+
+### 2.3 Overwrite 模式（无回滚）
+
+Overwrite 把 slot1 的新镜像直接拷贝覆盖到 slot0，然后擦除 slot1。旧镜像被彻底销毁：
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
+flowchart LR
+    subgraph Overwrite["Overwrite 模式 (无回滚)"]
+        direction TB
+        OA0[("slot0: v1 旧")] -->|覆盖| OA1[("slot0: v2 新")]
+        OB0[("slot1: v2 新")] -->|擦除| OB1[("slot1: 空")]
+    end
+
+    classDef old fill:#fee2e2, stroke:#dc2626, color:#991b1b, stroke-width:2px
+    classDef new fill:#d1fae5, stroke:#059669, color:#065f46, stroke-width:2px
+
+    class OA0 old
+    class OA1 new
+```
+
+**优点**：只写 slot0，flash 磨损低、升级快、代码简单。
+**代价**：不可回滚。如果新镜像起不来，设备变砖（除非有第二道防线，如外部看门狗 + 恢复模式）。
+**典型场景**：flash 空间极度受限的设备、或升级频率极低且可接受变砖风险的产品。
+
+### 2.4 RAM-Load 模式（非 XIP flash 的唯一选择）
+
+如果 flash 不支持 XIP（如外挂 QSPI flash 未映射到 CPU 地址空间），swap 和 overwrite 都不可行——slot0 跑不了。此时只能把镜像从 flash 拷到 RAM 再执行：
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
+flowchart LR
+    subgraph RAMLoad["RAM-Load 模式 (XIP 不可用时)"]
+        direction TB
+        RA0[("slot0: v1")] -->|选高版本| RAM[("RAM 执行区")]
+        RA1[("slot1: v2")] -->|选高版本| RAM
+    end
+
+    classDef old fill:#fee2e2, stroke:#dc2626, color:#991b1b, stroke-width:2px
+    classDef new fill:#d1fae5, stroke:#059669, color:#065f46, stroke-width:2px
+    classDef ram fill:#dbeafe, stroke:#2563eb, color:#1e40af, stroke-width:2px
+
+    class RA0,RA1 old
+    class RAM ram
+```
+
+RAM-Load 不做数据搬移（只读 flash），也不覆盖 slot。MCUboot 启动时遍历所有 slot 选最高版本，拷到 RAM 跳转。因此它支持最多 **16 个 slot**，每个保留一个独立版本——适合"多版本仓库"场景。
+
+**代价**：RAM 必须足够大装下完整的解压后镜像。对于 RAM 只有几十 KB 的小 MCU 不适用。
+
+### 2.5 四种策略对比
+
+| 维度 | Swap | Overwrite | Direct-XIP | RAM-Load |
+|------|------|-----------|------------|----------|
+| **flash 操作** | 互换 slot0/slot1 | slot1 拷贝覆盖 slot0 | 只读 flash，无数据搬移 | 读 flash 写入 RAM |
+| **支持回滚** | 是（test 模式） | 否 | with_revert 变体支持 | with_revert 变体支持 |
+| **flash 磨损** | 高（写两次） | 中（写一次） | 无 | 低（不写 flash） |
+| **断电安全** | 两阶段 swap，可恢复 | 拷贝中断电需重传 | 重启后重新选择 | 选错版本可重启再选 |
+| **XIP 要求** | 必须 XIP | 必须 XIP | 必须 XIP | 不需要 |
+| **链接地址** | slot0（编译一次） | slot0（编译一次） | 各自 slot（需要两套构建，或用 PIC） | 不依赖 flash 地址 |
+| **典型场景** | 通用 MCU，回滚是刚需 | 资源极度受限 | 大 flash、可接受两套构建 | flash 不支持 XIP |
+
+> **如何读这张表**：四者的核心差异在"XIP 要求"和"回滚能力"。Swap vs Direct-XIP 是最常见的选择——Swap 用一次构建+磨损换通用性，Direct-XIP 用两套构建（或 PIC 开销）换零磨损。绝大多数通用 MCU 产品走 Swap，因为构建简单且回滚是安全网。
+
+### 2.6 选择策略的决策树
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
+flowchart TD
+    Start([选择升级策略]) --> Q1{flash 支持 XIP?}
+    Q1 -->|否| RAM[RAM-Load 模式]
+    Q1 -->|是| Q2{需要回滚保护?}
+    Q2 -->|否| Q3{能接受两套构建?}
+    Q3 -->|是| DX[Direct-XIP 模式<br/>零磨损，无回滚]
+    Q3 -->|否| OW[Overwrite 模式]
+    Q2 -->|是| Q4{能接受 flash 磨损?}
+    Q4 -->|否| DX2[Direct-XIP with_revert<br/>零磨损，有回滚]
+    Q4 -->|是| Q5{flash 空间紧张?}
+    Q5 -->|是| SM[Swap using move<br/>无需 scratch]
+    Q5 -->|否| SS[Swap using scratch<br/>最经典]
+
+    classDef decision fill:#fef3c7, stroke:#d97706, color:#92400e, stroke-width:2px
+    classDef result fill:#d1fae5, stroke:#059669, color:#065f46, stroke-width:2px
+
+    class Q1,Q2,Q3,Q4,Q5 decision
+    class RAM,OW,SM,SS,DX,DX2 result
+```
+
+> **核心要点**：策略选择的本质是"flash 磨损 / 回滚能力 / XIP 支持 / 构建复杂度"四角权衡。Zephyr 默认 Swap——因为它不需要 PIC 或两套构建（构建简单），支持回滚（安全），是大部分产品的出厂默认。Direct-XIP 适合 flash 大、升级频繁、能接受两套构建的场景。
+
+> **设计洞察**：对比 Linux A/B 升级——Linux 的 A/B 是"改启动标志指向另一个完整分区"，MCUboot 的 swap 是"物理搬数据"。根本原因：MCU flash 太小塞不下两份完整镜像，只能就地交换。这个差异也导致 MCU OTA 的 flash 磨损远超 Linux 系统，因为每次升级要完整读写两个 slot（swap 模式）或至少一个 slot（overwrite 模式），而 Linux 只是改一个标志位。Direct-XIP 在 MCU 上实现了"Linux 式零磨损切换"，代价是每 slot 一份独立构建的镜像。
+
+---
+
+## 3. MCUboot：谁来执行切换
+
+> 上一章选了升级策略——假设我们选 swap。但 swap 不是自动发生的：重启后谁来决定"现在该不该 swap"？谁来做验签确保镜像没被篡改？谁把新镜像从 slot1 搬到 slot0？本章从复位后的第一条指令开始，走完 MCUboot 的完整启动流程。
+
+### 3.1 MCUboot 是什么
+
+MCUboot 是一个开源的、跨 RTOS 的安全引导加载器，目标是 32 位 MCU。它作为独立应用编译，烧录在 flash 最前端（`0x0000`），复位后最先执行。
+
+MCUboot 只做两件事：
+- **验签**：每次启动校验 slot0 和 slot1 中的镜像签名与哈希，防止刷入被篡改的固件。
+- **决策与切换**：读取 slot 末尾的 trailer 状态，决定本次启动跑哪个 slot，然后在需要时执行 swap/overwrite。
+
+它与主应用在 flash 上的物理布局：
 
 ```mermaid
 %%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
@@ -172,32 +325,49 @@ flowchart TD
     class Reset,Jump,App0,App1 flow
 ```
 
-> **如何读这张图**：复位后 MCUboot 先执行，它读取 slot0/slot1 末尾的 trailer 决定本次启动哪个 slot，验签通过后跳转。scratch 分区只在 swap-with-scratch 模式下用作中转，其他模式可省略。
+> **如何读这张图**：MCUboot 占据 flash 最低地址段，复位后 CPU 第一条指令从 MCUboot 开始。它读完 trailer 决策后跳转到 slot0 或 slot1。应用代码不知道自己是从 slot0 还是 slot1 启动的——这是 MCUboot 对应用层的透明性设计。
 
-### 2.2 Zephyr 与 MCUboot 的集成接口
+### 3.2 启动流程：复位到跳转
 
-Zephyr 应用本身不实现 boot 逻辑，只通过 [include/zephyr/dfu/mcuboot.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/dfu/mcuboot.h) 提供的 API 与 MCUboot "对话"——主要是读镜像头、查询/设置下次启动行为、确认当前镜像：
+复位后 MCUboot 的顺序动作：
+
+1. **硬件初始化**：配置时钟、flash 控制器、基本外设
+2. **读 trailer**：读取 slot0 和 slot1 末尾的 trailer，确定 `swap_type`（见 §4.3）
+3. **执行切换**：如果 `swap_type` 要求 swap/overwrite，执行数据搬移
+4. **验签**：用内置公钥验证目标 slot 的镜像签名
+5. **跳转**：验签通过后跳转到目标 slot 执行
+
+步骤 3（执行切换）是最复杂的一环——对于一个 512 KB 的镜像，swap 要逐块搬移和擦除，中途断电时 flash 上可能留下"半搬"状态。这就是 §4.4 要讲的两阶段写。
+
+### 3.3 Zephyr 与 MCUboot 的"对话"接口
+
+MCUboot 是独立项目，Zephyr 应用通过 [include/zephyr/dfu/mcuboot.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/dfu/mcuboot.h) 提供的 API 与它"对话"。应用只需关心两个时机：
+
+**① 升级前**——设置下次启动的行为：
+```c
+boot_request_upgrade(false);   // TEST：试运行，不确认就回滚
+boot_request_upgrade(true);    // PERM：永久切换，即使不确认也不回滚
+```
+
+**② 启动后**——确认当前镜像正常运行：
+```c
+if (!boot_is_img_confirmed()) {
+    boot_write_img_confirmed();  // 写 image_ok 标志，告诉 MCUboot"这个版本可用"
+}
+```
+
+为什么必须主动确认？见 §4.5。其余 API 是辅助功能：
 
 | API | 作用 |
 |-----|------|
 | `boot_read_bank_header(area_id, &hdr, sizeof(hdr))` | 解析 slot 头部的版本号与大小 |
-| `mcuboot_swap_type()` | 查询下次重启的切换类型（NONE/TEST/PERM/REVERT/FAIL） |
-| `boot_request_upgrade(permanent)` | 标记 slot1 镜像为待升级（test 或 permanent） |
-| `boot_is_img_confirmed()` | 当前镜像是否已确认（未确认则下次重启回滚） |
-| `boot_write_img_confirmed()` | 应用启动后自我确认（防止回滚） |
+| `mcuboot_swap_type()` | 查询下次重启的切换类型 |
 | `boot_erase_img_bank(area_id)` | 擦除某个 slot |
+| `boot_is_img_confirmed()` | 当前镜像是否已确认 |
 
-为什么需要 `boot_write_img_confirmed()`？因为 MCUboot 默认采用"试运行"策略：新镜像只在下一次启动试跑，如果应用不主动写 `image_ok` 标志（trailer 中的一个字段，详见 [§3.1](#31-trailer-的位置与内容)），再下次重启就回滚到旧版本。`boot_request_upgrade(permanent)` 中的 `permanent` 参数控制升级是"试运行"还是"永久切换"——两种模式的差异在 [§3.3](#33-五种-swap_type-状态) 的 swap_type 状态机中详细展开。这是断电安全的回滚机制——新镜像起不来（根本没机会写确认）就自动回滚。
+### 3.4 镜像头格式
 
-> **设计洞察**：MCUboot 的"试运行 + 不确认就回滚"是 fail-safe 设计的范本——默认拒绝（revert），需要应用主动确认才留下。这与数据库两阶段提交（2PC）中"协调者超时则 abort"、Kubernetes 的 rollback-on-health-failure、Linux 内核"新模块加载失败则卸载"是同构的设计：把"信任"从"默认给予"改成"默认拒绝，需主动获取"。
->
-> 对比 Android A/B 的 `successful` flag——它在 boot 成功后由系统标记，未标记则回滚到 A 槽，思想完全一致。这种"乐观升级 + 悲观回滚"策略在无人值守设备上几乎是必须的：设备升级后可能因任何原因（硬件兼容、外设初始化失败、看门狗超时）起不来，自动回滚是唯一的"安全网"。
->
-> 工程上的代价是每次启动都要验签 + 检查 trailer，增加几十到几百毫秒启动延迟。MCUboot 把这个代价集中在 boot loader 阶段，主应用启动后无感知——这是"把安全性集中在启动期"的典型权衡，与 TPM 测量启动（measured boot）、ChromeOS 的 verified boot 走的是同一条路。
-
-### 2.3 镜像头格式
-
-MCUboot 镜像在 slot 开头有固定头，[mcuboot.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/dfu/boot/mcuboot.c#L60-L103) 定义了 v1 头格式：
+MCUboot 要求每个 slot 开头的镜像必须有标准头，[mcuboot.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/dfu/boot/mcuboot.c#L60-L103) 定义了 v1 头格式：
 
 ```c
 /* mcuboot.c:60-63 — 头魔数与大小，MCUboot 实现强约束 */
@@ -222,21 +392,51 @@ struct mcuboot_v1_raw_header {
 } __packed;
 ```
 
+这个头由 **imgtool** 在编译时生成——它是 MCUboot 项目的 Python 签名工具，编译链路最后一环把裸 binary 加上头并追加密码学签名，生成最终烧录用的 `signed.bin`。
+
 `boot_read_v1_header()`（[mcuboot.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/dfu/boot/mcuboot.c#L300-L347)）做两件事：读出头、校验魔数与 `header_size ≥ 32`。校验失败返回 `-EIO`，调用者据此判断该 slot 是否有有效镜像。
 
-这里多次提到的 **imgtool** 是 MCUboot 项目提供的 Python 镜像签名工具——编译链路最后一环用它把裸 binary 加上镜像头并追加密码学签名，生成最终烧录用的 `signed.bin`。imgtool 用私钥签名，MCUboot 编译时内置对应公钥，启动时验签确保镜像未被篡改。签名流程的完整使用见 [§9.2](#92-编号步骤完整-ota-时序) 的 `west sign` 命令，密钥不匹配的陷阱见 [§11.3](#113-常见陷阱) 陷阱 2。
-
-> **核心要点**：镜像头放版本与大小，trailer 放切换状态——头是"静态描述"，trailer 是"动态状态"。两者分离是因为头由 imgtool 签名时写死，trailer 由 boot loader / 应用在运行期反复改写。flash 只能从 1 写到 0（除非先擦除），把频繁改写的 trailer 与签名固定的头分开，避免改 trailer 触发头的重签。
+> **核心要点**：镜像头是"静态描述"，trailer 是"动态状态"——头在签名时就写死了，trailer 在运行期反复改写。两者分离的根本原因见下一章。
 
 ---
 
-## 3. Image Trailer 与 Slot 切换
+## 4. Image Trailer：如何做到断电安全
 
-> 第二章提到镜像头是静态描述。但 MCUboot 真正的"切换决策"依据是 slot 末尾的 **trailer**。trailer 是 boot loader 设计的精华——它用最少的 flash 字节记录"该 slot 处于什么状态、下次该做什么"。
+> 上一章讲到 MCUboot 在启动时读 slot 末尾的 trailer 来决定切不切换。但 trailer 在哪、有什么字段、写入时断电怎么办？本章深入 swap 模式下断电安全的实现细节——这是 boot loader 设计中最精巧的部分，也是工业级 OTA 区别于"玩具级 OTA"的分水岭。
 
-### 3.1 trailer 的位置与内容
+### 4.1 为什么 trailer 放在 slot 末尾
 
-trailer 位于 slot 的**末尾**，[mcuboot.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/dfu/boot/mcuboot.c#L502-L505) 给出状态字段偏移：
+NOR flash 有两个写入约束：
+
+1. **写前必须擦除**——只能把 1 写成 0，不能把 0 写成 1（除非整 page 擦除，把所有 bit 复位回 1）
+2. **擦除以 page 为单位**——一次擦几 KB，不能只擦几个字节
+
+MCUboot 利用约束 1 做了一个精巧的设计：**trailer 所有状态变化只走 1→0**（如 `0xFF → 0x00`——`0xFF` 是擦除态，写入 `0x00` 只改变需要的 bit）。这样日常运行时改 `image_ok`、`swap_type` 等字段**不需要擦除**。
+
+但**首次刷写**和**复位所有字段**时，必须把整个 trailer page 从全 0 恢复到全 `0xFF`——这就需要用擦除了。如果 trailer 与镜像头在同一 page：
+
+```
+┌──── 同一擦除 page (4 KB) ────┐
+│ 头+签名 │  镜像体  │ trailer  │
+└──────────────────────────────┘
+```
+
+擦 trailer 会连带擦掉头。**而头的签名是 imgtool 编译时用私钥生成的，运行时没有私钥，无法重新签名**。擦掉头就不能恢复。
+
+所以 trailer 必须放在与头不同的擦除 page 里：
+
+```
+┌─ 擦除 page 1 ─┬─ 擦除 page N ─┐
+│ 头+签名 │ 镜像体  │    trailer   │
+└────────────────┴──────────────┘
+  ↑ 不动              ↑ 擦这里，不影响头
+```
+
+`boot_get_trailer_status_offset` 减 `BOOT_MAX_ALIGN * 2` 正是为了让 trailer 对齐到独立擦除 page 边界。
+
+### 4.2 trailer 字段
+
+trailer 位于 slot 末尾固定偏移处，[mcuboot.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/dfu/boot/mcuboot.c#L502-L505) 给出状态字段偏移：
 
 ```c
 ssize_t boot_get_trailer_status_offset(size_t area_size)
@@ -245,7 +445,7 @@ ssize_t boot_get_trailer_status_offset(size_t area_size)
 }
 ```
 
-即 `trailer_status_offset = slot_size - magic_size - 2 * max_align`。`BOOT_MAX_ALIGN` 是 flash 写对齐（通常 8 或 16），`BOOT_MAGIC_SZ` 是魔数大小（16 字节）。trailer 主要字段：
+即 `trailer_status_offset = slot_size - magic_size - 2 * max_align`。`BOOT_MAX_ALIGN` 是 flash 写对齐（通常 8 或 16），`BOOT_MAGIC_SZ` 是魔数大小（16 字节）。主要字段：
 
 | 字段 | 含义 | 写入时机 |
 |------|------|----------|
@@ -254,19 +454,7 @@ ssize_t boot_get_trailer_status_offset(size_t area_size)
 | `copy_done` | swap 操作已完成 | MCUboot 完成 swap 后 |
 | `swap_type` | 下次启动的切换类型 | `boot_request_upgrade()` 设置 |
 
-### 3.2 为什么 trailer 放在末尾
-
-这是 boot loader 设计的经典权衡。三个候选位置对比：
-
-| 位置 | 优点 | 缺点 |
-|------|------|------|
-| slot 开头（紧跟头） | 读时顺序访问，省一次寻址 | 与签名头共享擦除单元；改 trailer 要擦整个头 |
-| slot 中间 | 任意位置 | 没有任何优点 |
-| **slot 末尾** | 与头分离，可独立擦除改写；断电时"完整写入"语义清晰 | 需要 flash 末尾寻址，但 flash 随机访问成本相同 |
-
-> **核心要点**：trailer 放末尾的根本原因是"flash 擦除粒度"——擦除以 page（几 KB）为单位，把频繁改写的 trailer 与签名固定的头分到不同 page，避免每次改 trailer 都要重签整片头。这也是 `boot_get_trailer_status_offset` 要减 `BOOT_MAX_ALIGN * 2` 的原因——给 trailer 留出独立对齐的擦除空间。
-
-### 3.3 五种 swap_type 状态
+### 4.3 swap_type 五种状态
 
 [include/zephyr/dfu/mcuboot.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/dfu/mcuboot.h#L37-L80) 定义了五种切换类型，构成 slot 的状态机：
 
@@ -283,140 +471,132 @@ stateDiagram-v2
     FAIL --> [*]: 留在 slot0
 ```
 
-- `BOOT_SWAP_TYPE_NONE (1)`：正常运行 slot0，不切换。
-- `BOOT_SWAP_TYPE_TEST (2)`：试运行 slot1，若未确认下次回滚。
-- `BOOT_SWAP_TYPE_PERM (3)`：永久切换到 slot1。
-- `BOOT_SWAP_TYPE_REVERT (4)`：回滚到原 slot。
-- `BOOT_SWAP_TYPE_FAIL (5)`：slot1 镜像无效，放弃升级。
+- `BOOT_SWAP_TYPE_NONE (1)`：正常运行 slot0，不切换
+- `BOOT_SWAP_TYPE_TEST (2)`：试运行 slot1，若未确认下次回滚
+- `BOOT_SWAP_TYPE_PERM (3)`：永久切换到 slot1
+- `BOOT_SWAP_TYPE_REVERT (4)`：回滚到原 slot
+- `BOOT_SWAP_TYPE_FAIL (5)`：slot1 镜像无效，放弃升级
 
-### 3.4 断电安全的小例子
+**TEST 和 PERM 的差异在于断电后的行为**：
+- TEST 模式：下次启动如果没看到 `image_ok` → REVERT
+- PERM 模式：下次启动即使没有 `image_ok`，也不回滚
 
-假设 slot0 跑 v1.0.0，slot1 通过 SMP 收到 v2.0.0。完整时序：
+### 4.4 两阶段写：断电安全的编号步骤
 
-1. 应用调 `boot_request_upgrade(BOOT_UPGRADE_TEST)` → slot1 trailer 写 `swap_type = TEST`。
-2. 重启 → MCUboot 读到 `TEST` → 执行 swap（slot0↔slot1）→ 在新 slot0（原 slot1）的 trailer 写 `copy_done`。
-3. 新 v2.0.0 启动 → 应用自检通过 → 调 `boot_write_img_confirmed()` → 写 `image_ok`。
-4. 下次重启 → MCUboot 看到 `copy_done + image_ok` → `swap_type = NONE`，稳定运行 v2.0.0。
+现在把 slot0/slot1/v1/v2 带入 swap_type 状态机，看一次完整升级中 flash 上发生什么。
 
-如果在第 2 步 swap 中途断电：MCUboot 用 scratch 分区或 move 模式的"两阶段写"保证——任何时刻 flash 上的状态都对应一个明确的操作阶段，重启后从断点续做。如果在第 3 步之前断电（新镜像没机会确认）：下次启动 MCUboot 看到 `copy_done` 但无 `image_ok` → `swap_type = REVERT` → 反向 swap 回 v1.0.0。
+假设 slot0 跑 v1.0.0，slot1 收到 v2.0.0（通过 SMP 传输，见第 7 章）。应用调 `boot_request_upgrade(BOOT_UPGRADE_TEST)`：
 
-> **核心要点**：断电安全靠"两阶段写 + trailer 状态机"实现。每个 trailer 字段的写入都标志一个不可逆的进度节点——重启后 MCUboot 读 trailer 就知道"上次做到哪一步"，从中断点续做或回滚。这是嵌入式 boot loader 的通用设计模式。
+```
+步骤 1: slot1 trailer 写 swap_type = TEST
+         └─ 此时 flash 状态: slot0=v1.0.0, slot1=v2.0.0+TEST
 
-> **设计洞察**：trailer 状态机的本质是 write-ahead logging（WAL）——每个 trailer 字段的写入是一条"日志记录"，记录"我做到了哪一步"。重启后 MCUboot 回放这条"日志"确定断点。这与 ext4 的 journal、数据库的 ARIES 协议、Redis 的 AOF（Append-Only File）是同一种思想：用顺序追加的不可变记录模拟原子操作。
->
-> MCUboot 没有文件系统，无法用 ext4 那样的 journal block 设备，只能把"日志"写在 flash 末尾固定位置。这里有个微妙的硬件特性利用：NOR flash 只能从 1 写到 0（除非先擦除），所以 trailer 字段从 erased 态（0xFF）渐进地写 0 位表示状态推进——状态编码天然单调，不需要擦除就能"累加进度"。这是 flash 物理特性倒逼出的状态编码智慧，与 SSD FTL 的日志结构、NAND 的 out-of-band 区域用法异曲同工。
->
-> 对比 Linux 的 boot flag——它依赖文件系统的原子 rename（同一 inode 的目录项替换在 ext4 上是原子的），而 MCUboot 没有文件系统，只能用"flash 末尾固定偏移 + 两阶段写"模拟原子性。这是"硬件不支持原子操作时，用状态机 + 单调编码合成原子性"的通用模式，也是 SQLite 在 WAL 模式下用 fsync + checkpoint 实现原子提交的同一思路。
+步骤 2: 重启 → MCUboot 读到 TEST → 开始 swap
+         └─ 逐块搬移: v1 搬去 slot1, v2 搬到 slot0
+         └─ swap 完成后: slot1 trailer 写 copy_done
+         └─ 此时 flash 状态: slot0=v2.0.0, slot1=v1.0.0+copy_done
 
----
+步骤 3: v2.0.0 启动 → 应用自检通过
+         └─ 调 boot_write_img_confirmed() → 写 image_ok
+         └─ 此时 flash 状态: slot0=v2.0.0+image_ok, slot1=v1.0.0
 
-## 4. 三种升级策略：swap/overwrite/RAM-load
-
-> 第三章的 trailer 状态机回答了"怎么切换"，但"切换时 flash 上具体发生什么"取决于升级策略。MCUboot 支持多种策略，Zephyr 在 [modules/Kconfig.mcuboot](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/modules/Kconfig.mcuboot#L189) 暴露为 `choice MCUBOOT_BOOTLOADER_MODE`。本节对比三种主流策略的本质差异。
-
-### 4.1 三种策略对比图
-
-```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
-flowchart LR
-    subgraph Swap["Swap 模式 (支持回滚)"]
-        direction TB
-        SA0[("slot0: v1 旧")] -.->|swap| SA1[("slot0: v2 新")]
-        SB0[("slot1: v2 新")] -.->|swap| SB1[("slot1: v1 旧")]
-    end
-
-    subgraph Overwrite["Overwrite 模式 (无回滚)"]
-        direction TB
-        OA0[("slot0: v1 旧")] -->|覆盖| OA1[("slot0: v2 新")]
-        OB0[("slot1: v2 新")] -->|擦除| OB1[("slot1: 空")]
-    end
-
-    subgraph RAMLoad["RAM-Load 模式 (XIP 不可用时)"]
-        direction TB
-        RA0[("slot0: v1")] -->|选高版本| RAM[("RAM 执行区")]
-        RA1[("slot1: v2")] -->|选高版本| RAM
-    end
-
-    classDef old fill:#fee2e2, stroke:#dc2626, color:#991b1b, stroke-width:2px
-    classDef new fill:#d1fae5, stroke:#059669, color:#065f46, stroke-width:2px
-    classDef ram fill:#dbeafe, stroke:#2563eb, color:#1e40af, stroke-width:2px
-
-    class SA0,SB0,OA0,OA1,OB0,OB1,RA0,RA1 old
-    class SA1,SB1 new
-    class RAM ram
+步骤 4: 下次重启 → MCUboot 看到 image_ok → swap_type=NONE
+         └─ 稳定运行 v2.0.0
 ```
 
-### 4.2 三种策略详细对比
+**每个步骤的写入都是一个不可逆的进度节点**。但步骤 2 内部不是原子操作——swap 把一个 slot 分成若干 **swap unit**（通常 4 KB，等于 flash sector 大小），逐块搬移。每块的三个子步骤：
 
-[§1.2](#12-ota-的四个本质问题) 已解释过 XIP 约束——运行镜像不可原地覆盖，这是 MCU OTA 必须有独立 slot1 的根本原因。若 flash 不支持 XIP（如外挂 QSPI 未映射到地址空间），只能走 RAM-Load——先把镜像拷到 RAM 再执行。这也解释了 §4.4 决策树为什么把"flash 是否支持 XIP"作为第一个分叉。
+```
+子步骤 A: 从 slot1 第 N 块读到 RAM 缓冲
+子步骤 B: slot0 第 N 块 → 写到 slot1 第 N 块（旧数据挪走）
+子步骤 C: RAM 中的新块 → 写到 slot0 第 N 块（新数据到位）
+```
 
-Swap 模式本身有三种实现子模式，在比较表中以"move/offset/scratch"标注，这里简要说明：
+三个子步骤之间，MCUboot 在 trailer 前部的 **swap status area** 写入逐块进度——每个 swap unit 用一个固定字节，通过 NOR flash 的 **1→0 累进写**（擦除态 `0xFF`，每写入一步清空若干 bit）编码当前状态，全程不需要擦除：
 
-| 子模式 | 机制 | 需要 scratch 分区 | 对应 Kconfig |
-|--------|------|:-:|------|
-| **swap-using-scratch** | 用 scratch 分区做中转：slot0 → scratch、slot1 → slot0、scratch → slot1 | 是 | `MCUBOOT_BOOTLOADER_MODE_SWAP_USING_SCRATCH` |
-| **swap-using-move** | 不用 scratch，用 flash 原地移动：先把 slot0 尾部搬到 slot1 尾部，再逐块交换 | 否 | `MCUBOOT_BOOTLOADER_MODE_SWAP_USING_MOVE` |
-| **swap-using-offset** | 不用 scratch，利用 flash offset 差异直接交叉拷贝，省去中转 | 否 | `MCUBOOT_BOOTLOADER_MODE_SWAP_USING_OFFSET`（Zephyr 默认） |
+```
+swap unit N 的状态字节:
+  0xFF = 未搬（用 0xFE = 0b1111_1110 表示"子步骤 A 已完成"）
+  后续写入清更多 bit:
+  0xFC = 子步骤 B 完成（旧数据已挪到 slot1）
+  0xF0 = 子步骤 C 完成（新数据已在 slot0，第 N 块搬完）
+```
 
-此外还有一种 **DIRECT-XIP** 模式（不在上图中）：slot0/slot1 镜像编译到不同地址，MCUboot 直接跳转到 slot1 执行，不做任何数据搬移。代价是两个 slot 的镜像必须编译到各自的目标地址（不可互换），且回滚需要特殊处理。§8.2 中 hawkBit 的 Kconfig 依赖 `!MCUBOOT_BOOTLOADER_MODE_DIRECT_XIP` 正是因为 DIRECT-XIP 不需要写 slot1 也能切换，与 hawkBit 的"下载到 slot1 再切换"流程不兼容。
+恢复逻辑：
 
-| 维度 | Swap (move/offset/scratch) | Overwrite | RAM-Load |
-|------|---------------------------|-----------|----------|
-| **flash 操作** | 交换 slot0/slot1 内容 | slot1 拷贝覆盖 slot0 | 选高版本拷贝到 RAM |
-| **是否需要 slot1** | 是 | 是 | 是 |
-| **是否需要 scratch** | scratch 模式需要；move/offset 模式不需要 | 否 | 否 |
-| **支持回滚** | 是（test 模式未确认则 revert） | 否 | with_revert 变体支持 |
-| **flash 磨损** | 高（每次升级写两个 slot） | 中（只写 slot0） | 低（不写 flash，只写 RAM） |
-| **断电安全** | 两阶段 swap，可恢复 | 拷贝中途断电需重传 | 选错版本可重启再选 |
-| **XIP 要求** | 必须 XIP | 必须 XIP | 不需要 XIP（RAM 执行） |
-| **典型场景** | 通用 MCU | 资源极度受限 | flash 不支持 XIP（如外挂 QSPI 未映射） |
-| **对应 Kconfig** | `MCUBOOT_BOOTLOADER_MODE_SWAP_USING_OFFSET`（默认） | `MCUBOOT_BOOTLOADER_MODE_OVERWRITE_ONLY` | `MCUBOOT_BOOTLOADER_MODE_RAM_LOAD` |
+```
+断电发生在 子步骤 A 与 B 之间:
+  slot1 第 N 块可能还没损坏 → 重启读 swap status = 0xFE
+  → 知道"数据还在 slot1，没动 slot0"，重试子步骤 B 即可
 
-> **如何读这张表**：第一行"flash 操作"决定磨损与速度——swap 最慢但可回滚，overwrite 折中，RAM-Load 最快但需要 RAM 足够大。"XIP 要求"是选择 RAM-Load 的根本原因：如果 flash 不能片上执行（例如通过 SPI 外挂且未映射到地址空间），只能拷到 RAM 跑。
+断电发生在 子步骤 B 与 C 之间:
+  slot0 旧数据已搬到 slot1，slot0 第 N 块被破坏
+  但 slot1 第 N 块目前存的是旧数据
+  → 重启读 swap status = 0xFC
+  → 把 slot1 第 N 块（旧数据）拷回 slot0，恢复到原点重新搬
 
-### 4.3 RAM-Load 模式的多 slot 支持
+断电发生在 子步骤 C 之后、status 更新之前:
+  实际第 N 块已搬好，但 status 还是 0xFC
+  → MCUboot 检查 slot0/slot1 第 N 块的内容一致性
+  → 确认已搬好 → 把 status 写到 0xF0，继续下一块
+```
 
-RAM-Load 模式有一个独特能力——支持最多 16 个 slot。 [mcuboot.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/dfu/boot/mcuboot.c#L29-L44) 定义了 `SLOT0_PARTITION` 到 `SLOT15_PARTITION`：
+如果在步骤 2 整体完成前断电（整个 swap 没做完）：
+
+```
+MCUboot 重启 → 读 trailer → copy_done 未写 → 知道 swap 中断
+→ 读每个 swap unit 的 status 字节，找到第一个 status < 0xF0 的块
+→ 从中断点续搬 → 搬完所有块后写 copy_done
+```
+
+**这个机制的本质**：把"搬 N MB 数据"这个宏观操作拆解为 N 个可独立恢复的 swap unit，每个 unit 又拆为 3 个可检测的原子子步骤。重启后只要扫描 status 数组就知道"做到哪了"，不需要额外状态猜测。这是 WAL 思想在 block level 的落地。
+
+如果在步骤 3 之前断电（v2.0.0 没机会确认）：
+
+```
+断电发生在步骤 2-3 之间:
+  下次重启 → MCUboot 看到 copy_done 但无 image_ok
+  → swap_type = REVERT
+  → 反向 swap: v1.0.0 从 slot1 搬回 slot0
+  → slot0 恢复运行 v1.0.0
+```
+
+> **核心要点**：断电安全靠"两阶段写 + trailer 状态机"实现。每个 trailer 字段的写入都是一个不可逆的进度节点——重启后 MCUboot 读 trailer 就知道"上次做到哪一步"，从中断点续做或回滚。这是嵌入式 boot loader 的通用设计模式。
+
+### 4.5 "试运行 + 不确认就回滚"的设计哲学
+
+为什么 MCUboot 要求应用**主动调 `boot_write_img_confirmed()`**？为什么不能像 Android A/B 那样由 boot loader 自动标记成功？
+
+因为 MCU 场景的特殊性：应用启动后可能过几秒才初始化完外设——如果 boot loader 在跳转前就标记"成功"，但应用启动后初始化外设失败（如传感器 I2C 不通），设备就废了。
+
+所以 MCUboot 把确认权交给应用：**只有应用自己知道"我是否正常运行"**。应用在完成所有初始化、自检通过后，主动告诉 MCUboot"这个版本可以"。
 
 ```c
-/* mcuboot.c:29-44 — RAM LOAD 模式支持最多 16 个 slot */
-#define SLOT0_PARTITION  slot0_partition
-#define SLOT1_PARTITION  slot1_partition
-/* ... 中间省略 ... */
-#define SLOT15_PARTITION slot15_partition
+int main(void)
+{
+    int rc = self_test();       // 传感器、网络、存储——所有外设初始化
+    if (rc == 0) {
+        boot_write_img_confirmed();  // 我确认了，别回滚
+    } else {
+        // 不确认，下次重启自动 revert 回旧版本
+    }
+    // 正常运行...
+}
 ```
 
-为什么 RAM-Load 需要 16 个 slot？因为 RAM-Load 不做 swap，每个 slot 可以独立存放一个版本。MCUboot 在启动时通过 [blinfo_lookup(BLINFO_RUNNING_SLOT, ...)](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/dfu/boot/mcuboot.c#L116) 查询当前运行 slot，再遍历所有 slot 选最高版本。这适合"多版本仓库"场景——设备可保留多个历史版本，按需回退到任意一个。
+> **设计洞察**：MCUboot 的"试运行 + 不确认就回滚"是 fail-safe 设计的范本——默认拒绝（revert），需要应用主动确认才留下。这与数据库两阶段提交（2PC）中"协调者超时则 abort"、Kubernetes 的 rollback-on-health-failure 是同构的设计：把"信任"从"默认给予"改成"默认拒绝，需主动获取"。
 
-`boot_fetch_active_slot()`（[mcuboot.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/dfu/boot/mcuboot.c#L111-L210)）通过 `blinfo`（bootloader info）从 retention 区域读取当前 slot 号，再映射回 `PARTITION_ID`。retention 区域是 RAM/寄存器中由 MCUboot 写入的小段信息，复位不丢失——这是 RAM-Load 模式下"知道自己在跑哪个 slot"的关键。
+trailer 状态机的本质是 **write-ahead logging（WAL）**——每个 trailer 字段的写入是一条"日志记录"，记录"我做到了哪一步"。重启后 MCUboot 回放这条"日志"确定断点。这与 ext4 的 journal、数据库的 ARIES 协议、Redis 的 AOF 是同一种思想：用顺序追加的不可变记录模拟原子操作。
 
-### 4.4 选择策略的决策树
+MCUboot 没有文件系统，无法用 ext4 那样的 journal block 设备，只能把"日志"写在 flash 末尾固定位置。这里有个微妙的硬件特性利用：NOR flash 只能从 1 写到 0（除非先擦除），所以 trailer 字段从 erased 态（0xFF）渐进地写 0 位表示状态推进——状态编码天然单调，不需要擦除就能"累加进度"。
 
-```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
-flowchart TD
-    Start([选择升级策略]) --> Q1{flash 支持 XIP?}
-    Q1 -->|否| RAM[RAM-Load 模式]
-    Q1 -->|是| Q2{需要回滚保护?}
-    Q2 -->|否| OW[Overwrite 模式]
-    Q2 -->|是| Q3{flash 空间紧张?}
-    Q3 -->|是| SM[Swap using move<br/>无需 scratch]
-    Q3 -->|否| SS[Swap using scratch<br/>最经典]
-
-    classDef decision fill:#fef3c7, stroke:#d97706, color:#92400e, stroke-width:2px
-    classDef result fill:#d1fae5, stroke:#059669, color:#065f46, stroke-width:2px
-
-    class Q1,Q2,Q3 decision
-    class RAM,OW,SM,SS result
-```
-
-> **核心要点**：策略选择的本质是"flash 磨损 / 回滚能力 / RAM 占用"三角权衡。Zephyr 默认 `SWAP_USING_OFFSET`——它不需要 scratch 分区（省 flash），又支持回滚（安全），是大多数 MCU 的最佳折中。RAM-Load 是为"flash 不支持 XIP"这一硬件限制准备的逃生通道。
+> **核心要点**：四个 trailer 字段（`magic`、`image_ok`、`copy_done`、`swap_type`）各代表一个进度节点。MCUboot 启动时看这四个字段的组合，就知道"当前状态是什么、下一步该做什么"。把整个 swap 过程拆解成一组不可逆的 flash 写入，每次写入前后都是合法可恢复的状态——这是工业级引导加载器的核心设计。
 
 ---
 
 ## 5. Flash Map：设备树分区抽象
 
-> 第四章的策略选择最终落到"slot0/slot1/scratch 在 flash 上的具体位置"。Zephyr 用 Flash Map 子系统把设备树里的 `fixed-partition` 节点抽象成统一的 `flash_area` API，让上层（MCUboot、文件系统、OTA）不必关心物理偏移。这是 [03 章设备树](./03-设备树详解.md) 哲学的延伸——用声明式描述解耦代码与硬件。
+> 前几章讲了 slot0/slot1/scratch 这些分区在逻辑上做什么。但物理上，"slot0 在 flash 的哪个地址"由设备树决定。Flash Map 子系统把设备树的 `fixed-partition` 节点编译成一张只读表，让上层代码用 `flash_area_open(SLOT1_ID, &fa)` 这种符号化 ID 访问，不关心物理偏移。这是 [03 章设备树](./03-设备树详解.md) 哲学的延伸——用声明式描述解耦代码与硬件。
 
 ### 5.1 设备树中的分区定义
 
@@ -672,8 +852,6 @@ static int stream_flash_erase_to_append(struct stream_flash_ctx *ctx, size_t siz
 > **设计洞察**：stream_flash 是 streaming processing 在嵌入式存储上的体现——用 O(1) 的固定缓冲处理 O(N) 的输入，把"装不下"转化为"慢一点"。这与 Unix 管道（`cat | grep | wc`，每段只占小缓冲）、Kafka 的流式消费、Linux 内核的 splice/sendfile（零拷贝流式管道）是同一种思想：拒绝把整个数据集载入内存，让数据像水流过管道一样逐段处理。
 >
 > stream_flash 的"边收边写边擦"还体现了流水线并行——接收（SMP）、擦除（flash erase）、写入（flash program）三个阶段重叠执行，而不是"擦完整个 slot → 写完整包 → 收完整包"的串行批处理。`CONFIG_IMG_ERASE_PROGRESSIVELY` 把擦除摊薄到写入过程中，本质是把"擦除"这个阻塞阶段拆细，让它与"接收"重叠。这与 CPU 流水线、指令级并行（ILP）的思想一致：把大任务切成小段，让各段重叠，提升吞吐率。
->
-> 对比"全收到 RAM 再写"的 batch 模型——它在 RAM 充足时更简单（一次 erase + 一次 program），但 MCU 的 RAM 限制让 streaming 成为唯一可行解。stream_flash 的进度保存（依赖 Settings）则把"中断恢复"也纳入流式模型——断点续传是流式处理的自然延伸，batch 模型要做断点续传反而更难，因为它要持久化"已收到的部分数据"。
 
 ---
 
@@ -708,7 +886,7 @@ SMP（Simple Management Protocol）是应用层协议，与传输无关。[doc/s
 | `Command ID` | 组内命令号 |
 | `Data` | CBOR 编码的载荷 |
 
-Data 用 CBOR（[RFC 8949](https://www.rfc-editor.org/rfc/rfc8949)）编码——比 JSON 紧凑得多，适合带宽受限的 BLE/UART。SMP 帧头固定 8 字节，加上 CBOR 载荷，一帧通常几十到几百字节，正好适配 BLE MTU（默认 23 字节，协商后可达 247+）。
+Data 用 **CBOR**（[RFC 8949](https://www.rfc-editor.org/rfc/rfc8949)）编码——比 JSON 紧凑得多，适合带宽受限的 BLE/UART。SMP 帧头固定 8 字节，加上 CBOR 载荷，一帧通常几十到几百字节，正好适配 BLE MTU（默认 23 字节，协商后可达 247+）。
 
 ### 7.2 传输层选项
 
@@ -790,7 +968,7 @@ NET_BUF_POOL_DEFINE(pkt_pool, CONFIG_MCUMGR_TRANSPORT_NETBUF_COUNT,
 
 ---
 
-## 8. Hawkbit：云端 OTA 集成
+## 8. Hawkbit：从点对点到云
 
 > 第七章的 MCUmgr 是"点对点"协议——需要一个客户端主动推送镜像。但产品化场景通常需要"一对多"：云服务器管理成千上万台设备，按版本/分组/灰度策略推送。Zephyr 集成了 Eclipse hawkBit 客户端来对接云端 OTA 平台。
 
@@ -1003,7 +1181,7 @@ CONFIG_MCUMGR_GRP_IMG_UPLOAD=y
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 
-LOG_MODULE_REGISTER(ota_app, CONFIG_LOG_DEFAULT_LEVEL);
+LOG_MODULE_REGISTER(ota_app, CONFIG_LOG_LEVEL_DBG);
 
 int main(void)
 {
@@ -1045,7 +1223,7 @@ int main(void)
 | **文件系统** | ext4/squashfs 等成熟 FS | 通常无 FS，或 LittleFS |
 | **分区抽象** | GPT/MBR（分区表）+ `/dev/by-name/`（符号链接） | 设备树 fixed-partition（编译期生成表） |
 | **引导加载器** | U-Boot/GRUB + bootloader 模块 | MCUboot（独立项目） |
-| **A/B 切换** | 改 boot flag（ Misc 分区中的标志位），不动数据 | swap 或 direct-xip |
+| **A/B 切换** | 改 boot flag（Misc 分区中的标志位），不动数据 | swap 或 direct-xip |
 | **回滚** | 改回 boot flag | swap 回去（test 模式） |
 | **传输协议** | HTTP/HTTPS 整包下载 | SMP 分块 + CBOR |
 | **RAM 占用** | 几百 MB，可整包缓存 | 几 KB，必须流式 |
