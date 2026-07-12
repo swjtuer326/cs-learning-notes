@@ -5,3 +5,15 @@
 [submodule "edk2/edk2-src"]
 	path = edk2/edk2-src
 	url = https://github.com/tianocore/edk2.git
+[submodule "trusted-firmware/src/tf-a-src"]
+	path = trusted-firmware/src/tf-a-src
+	url = https://github.com/ARM-software/arm-trusted-firmware.git
+[submodule "trusted-firmware/src/opensbi-src"]
+	path = trusted-firmware/src/opensbi-src
+	url = https://github.com/riscv-software-src/opensbi.git
+[submodule "trusted-firmware/src/optee-src"]
+	path = trusted-firmware/src/optee-src
+	url = https://github.com/OP-TEE/optee_os.git
+[submodule "trusted-firmware/src/u-boot-src"]
+	path = trusted-firmware/src/u-boot-src
+	url = https://github.com/u-boot/u-boot.git

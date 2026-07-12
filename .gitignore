@@ -29,3 +29,4 @@ __pycache__/
 # 其他
 .DS_Store
 edk2/edk2-src/
+trusted-firmware/src/
