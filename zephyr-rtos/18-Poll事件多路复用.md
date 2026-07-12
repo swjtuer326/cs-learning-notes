@@ -45,6 +45,10 @@ while (1) { k_msgq_get(&net_msgq, &msg, K_FOREVER); handle_net(msg); }
 
 `k_poll` 提供另一种选择：单线程同时挂到多个对象的等待链上，任一对象就绪即唤醒。这就是"多路复用"——**复用的是线程（栈 + 调度实体）**，把 N 个阻塞点合并到 1 个线程里。
 
+> **设计洞察**：`k_poll` 的"复用线程"思想可追溯到 1983 年 Berkeley UNIX 的 `select()` 系统调用——彼时 Unix 已意识到"一个连接一个进程"模型在千级并发下被进程创建/切换开销压垮。`select`/`poll`/`epoll` 的演进史是"用状态机替代线程"的工程范例：nginx 用单线程 epoll 承载 5 万并发连接，而 Apache prefork 同期只能扛数千。Zephyr 把这套思路搬到 RTOS，但目标不是"高并发"而是"省 RAM"。
+>
+> 体系结构原因是：RTOS 线程是"调度实体 + 独立栈"，1KB 栈 × 10 个线程就是 10KB RAM——对 32KB SRAM 的 Cortex-M0 是不可承受之重。`k_poll` 让一个栈承担多源事件聚合，把"并发"从"线程数"维度压缩到"事件状态"维度。这是嵌入式工程师必须建立的心智模型：不是"为每个事件源开线程"，而是"为每个独立调度优先级开线程"——同优先级的事件源应聚合到单线程，用 `k_poll` 而非多线程实现。
+
 ### 1.2 poll 的内部机制：每个对象内嵌 poller 链表
 
 Zephyr 的同步对象（`k_sem`、`k_fifo`、`k_msgq`、`k_pipe`、`k_poll_signal`）内部都嵌入了 `poll_events` 字段——一个 `sys_dlist_t`，记录"正在 poll 这个对象的 poller"。当对象状态变化（如 `k_sem_give`、`k_fifo_put`）时，内核会调用 `z_handle_obj_poll_events(&obj->poll_events, state)` 通知链上 poller。
@@ -106,6 +110,12 @@ struct z_poller {
 ### 2.2 位域压缩的工程考量
 
 `type`/`state`/`mode` 用位域而非 `enum`，是为了让整个 `k_poll_event` 在 64 位系统上仍是 16 字节（两个 64 位字：一个 `_node`+`poller`，一个位域字+`obj` 指针）。这在事件数组场景下能减少 cache 占用——4 个事件的数组只占 64 字节，能塞进一条 cache line。
+
+> **设计洞察**：位域压缩不是"抠门"，而是体系结构感知的数据结构设计。Cortex-M4/M7 的 cache line 通常是 32 字节，Cortex-A57 是 64 字节——`k_poll_event` 恰好 16 字节，意味着 4 个事件数组在两种架构下都能塞进一条 cache line，一次 cache miss 就能读完所有事件状态，避免 4 次 miss 的 100+ 周期惩罚。
+>
+> 同样的工程智慧在 Linux 内核里随处可见：`struct page` 把 flags、引用计数、mapping 指针压进 64 字节；`sk_buff` 的字段布局经多次重排以减少 cache miss。Zephyr 用位域牺牲少量解码 cycles 换取 cache 命中率，是典型的"算力换带宽"权衡——在 100MHz MCU 上，1 个 cycle 的位域解码远比 100 个 cycle 的 cache miss 划算。
+>
+> 更深一层是 MPU/MMU 友好：4 个 `k_poll_event` 对齐到 64 字节边界，可整体放进一个 MPU region，避免跨 region 访问的硬件一致性检查开销。这种"数据结构按 cache line / MPU region 设计"的思路，是嵌入式系统软件区别于通用软件的硬功夫。
 
 ### 2.3 三种初始化方式
 
@@ -306,6 +316,12 @@ __ASSERT(mode == K_POLL_MODE_NOTIFY_ONLY,
 
 > **核心要点**：`K_POLL_MODE_NOTIFY_ONLY` 不是"暂未实现的占位符"，而是经过权衡的设计选择。Zephyr 把"事件就绪后如何响应"的语义责任留给应用——这是 RTOS "最少内核、最多应用控制"哲学的体现。
 
+> **设计洞察**：`NOTIFY_ONLY` 体现了系统设计中的"策略与机制分离"原则（Saltzer, Reed & Clark, 1984）——内核提供"机制"（检测事件就绪并通知），应用决定"策略"（哪些事件响应、如何响应）。这与 POSIX `poll()` 的设计同源：`poll()` 也只返回 `revents` 告诉用户"FD 可读"，具体读多少、是否读，由应用决定。
+>
+> 反例是早期 Winsock 的 `WSAEventSelect`——它把"事件通知 + 数据接收"耦合在内核里，看似方便，但当应用想"先看一眼数据再决定是否处理"时就必须做多余的 recv。Zephyr 选择 `NOTIFY_ONLY`，让 `k_poll` 在"事件聚合线程 + 业务逻辑分层"的现代架构里保持中性——内核不当"决策者"，决策权留给最了解业务的应用层。
+>
+> 这也是 End-to-End Argument（Saltzer et al., 1984）的体现：只有在通信两端的应用层才能完整判断"这个事件该如何响应"，内核替应用做决定只会让某些场景变简单、另一些场景变复杂。RTOS "最少内核"的哲学，本质就是 End-to-End 论证在内核设计上的投影。
+
 ### 5.3 实际后果：竞争窗口
 
 `NOTIFY_ONLY` 的代价是引入竞争窗口：
@@ -439,6 +455,8 @@ for (;;) {
 
 > 第 6 节讲了 signal 的陷阱。本节转向另一个内部状态机——`z_poller` 的三种 mode。它解释了 `k_poll` 与 `k_work_poll`（触发式工作项）为何能共用同一套 poll 基础设施。
 
+本节涉及"工作队列"与"触发式工作项"两个概念，先做简要说明。工作队列（work queue）是 Zephyr 的延迟处理机制：ISR 或线程把"工作项"（`k_work`）提交到工作队列，由专门的工作队列线程在任务上下文执行。ISR 中不能做耗时操作（如格式化、I/O），工作队列让 ISR 只做"提交"这一轻量动作，重活推迟到线程上下文。`k_work_poll` 是"触发式工作项"——它先注册到一个或多个 poll 事件，事件就绪时自动提交到工作队列，省去"ISR→唤醒线程→k_poll→k_work_submit"的中间跳数。工作队列本身详见 [09-工作队列与延迟处理](./09-工作队列与延迟处理.md)，本节只关注它如何复用 poll 基础设施。
+
 ### 7.1 三态机的来源
 
 [poll.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/poll.c#L38)定义了一个**内部**枚举（不在公共 API 中）：
@@ -571,6 +589,12 @@ while (num_events--) {
 这种"先正确、后优化"的工程哲学与 [12-内存管理](./12-内存管理.md)、[16-SMP多核支持](./16-SMP多核支持.md) 中讨论的"粗粒度锁先行"一致。在 SMP 紧迫性不高的早期 RTOS 阶段，单锁的正确性远比 per-event 锁的并行性重要。
 
 > **核心要点**：`poll.c` 的单锁不是疏忽，而是"正确性优先、并行性其次"的工程权衡。注释坦诚承认 SMP 下的次优性，但指出"重写风险"高于"性能收益"。这是 RTOS 内核代码的典型权衡——可读性、可维护性、低延迟、SMP 并行性四者权衡中，SMP 并行性常被牺牲。
+
+> **设计洞察**：`poll.c` 的单锁史话几乎是 Linux 内核 BKL（Big Kernel Lock, 1995–2011）的微缩复刻——Linux 2.0 用 BKL 把整个内核保护起来，简单正确但 SMP 不可扩展；2.6 开始逐步细化到 per-subsystem 锁，2011 年 BKL 才彻底移除。`poll.c` 的注释"Do the synchronization port later as an optimization"与 BKL 时代的"it works, optimize later"如出一辙。
+>
+> 这是工程界共识的"Make it work, make it right, make it fast"路径（Kent Beck）——先把正确性立住，再谈可维护性，最后才是性能。Zephyr 在 SMP 早期阶段优先单锁，是因为：(1) Zephyr SMP 主要服务于 2-4 核 Cortex-A，contention 有限；(2) RTOS 的 SMP 部署规模远小于 Linux 服务器，单锁的"次优"在实测中可能根本不是瓶颈；(3) 重写加锁方案要回归测试所有 poll 用户（日志、网络、蓝牙），收益不确定。
+>
+> 这条智慧也见于 FreeBSD 的 Giant Lock、MySQL 早期版本的全局锁、Go runtime 的 STW 演进——所有系统软件都遵循"先粗后细"的锁演进路径。RTOS 工程师读 `poll.c` 这段注释时，应看到的不是"次优设计"，而是"诚实的工程权衡"——能写明白"为什么次优"和"为什么不修"的注释，比无注释的精巧代码更有价值。
 
 ### 8.5 顺带修正：poll 等待队列是优先级排序，不是 FIFO
 

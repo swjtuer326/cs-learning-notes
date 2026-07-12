@@ -59,6 +59,10 @@ Zephyr 的内存保护分两层：
 
 > **核心要点**：Zephyr 内存域 API **只控制用户态的内存访问**。对内核态（supervisor mode）的访问没有约束——内核可以读任意内存。官方文档明确指出，用内存域 API 控制内核态访问是"未定义行为"。这意味着内存域保护的是"用户线程之间的隔离"与"用户线程对内核数据的隔离"，而非"内核自身的健壮性"。
 
+> **设计洞察**："内存域只约束用户态，内核态不受限"是 Zephyr 在威胁模型上的明确选择——它假设内核自身可信，只防御不可信或可能有 bug 的用户线程。这与 Linux 的"内核是可信计算基（TCB, Trusted Computing Base）"传统一致：内核 bug 仍是安全漏洞，但内核本身不被自己的内存保护机制防御。对照之下，seL4、MINIX 3、Fuchsia 等 microkernel 系统把驱动、文件系统也放进用户态，内核 TCB 缩小到几千行代码，但代价是每次驱动调用都成为跨地址空间的 IPC——开销显著上升。
+>
+> Zephyr 选择前者是资源约束下的务实判断：MCU 上 RAM 以 KB 计，把每个驱动拆成独立地址空间的开销无法承受；同时 MCU 上的"内核"通常只有几十个驱动几个常用 API，TCB 比服务器 Linux 小一两个数量级，bug 面也相应小。这一选择也意味着"用 Zephyr 用户态做隔离"的有效场景是受限的：它能挡住用户线程的越界写、缓冲区溢出、第三方库 bug，但挡不住内核自身的逻辑错误或驱动 bug。设计时必须把"需要防御的代码"明确放进用户线程，"被防御的资源"留在内核侧，否则隔离形同虚设。
+
 Zephyr 官方文档（[file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/doc/kernel/usermode/memory_domain.rst](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/doc/kernel/usermode/memory_domain.rst)）开篇即说明：Zephyr 的内存保护设计面向带 MPU 的 MCU；对于带分页 MMU 的架构（如 x86），MMU 被当作"分区数无限的 MPU"使用（identity page table）。
 
 ---
@@ -139,6 +143,8 @@ int arch_mem_domain_max_partitions_get(void)
 
 **为什么要在运行时算？** 因为 MPU 总区域数固定（如 ARMv8-M 的 8 或 16 个），但要预留若干区域给"必选项"：线程栈区（每个用户线程上下文切换时需要一个区域）、栈保护（`CONFIG_MPU_STACK_GUARD`）、特权栈保护等。剩下的才能给内存域分区用。
 
+> **`CONFIG_MPU_STACK_GUARD` 是什么？** 栈保护（Stack Guard）是一种用 MPU 区域检测栈溢出的机制。它在线程栈的末端（栈生长方向的反方向）配置一个标记为"不可访问"的 MPU 区域——当栈因递归过深或局部变量过大而越界生长时，写操作落入这个保护区，立即触发 Memory Management Fault。没有栈保护时，栈溢出会静默覆盖邻居线程的内存或内核数据，故障现象与根因往往相距甚远。代价是每个线程多消耗一个 MPU 区域，这就是 `arch_mem_domain_max_partitions_get` 必须把它从可用区域数中减去的原因。
+
 **具体数值演算**：假设某 Cortex-M33 有 8 个 MPU 区域，启用 `CONFIG_MPU_STACK_GUARD`，每个线程栈占 1 个区域、栈保护占 1 个区域：
 
 - 总区域数 = 8
@@ -147,6 +153,10 @@ int arch_mem_domain_max_partitions_get(void)
 - 可用于内存域分区 = 8 - 1 - 1 = **6**
 
 所以 `max_partitions = 6`，即使 `CONFIG_MAX_DOMAIN_PARTITIONS` 编译为 16，该域最多只能配 6 个分区。这就是 MPU 系统分区数紧张的根源——也是第 6 节"链接器段分组"要解决的工程问题。
+
+> **设计洞察**：MPU 区域的预算分配是 RTOS 经典的"静态资源分配"问题。8-16 个区域是硬件固定的稀缺资源，要在"线程栈、栈保护、内存域分区、特权栈"等多个消费者之间预算——这与寄存器分配（编译器把无限变量映射到有限寄存器）、内存 bank 预算、cache way 划分是同类问题：硬件资源有限，必须显式预算而非按需动态分配。Zephyr 的做法是"必选项先扣，剩余给可选项"，简单但有效。对照 Linux 的 MMU 页表项数量近乎无限，这种预算压力在通用 OS 中不存在——这是 MCU 与应用处理器的本质分界。
+>
+> `CONFIG_MPU_STACK_GUARD` 本身是"硬件辅助 fail-fast"的范例。没有它时，栈溢出会静默覆盖邻居内存，故障现象（"网络包乱了"）与根因（"应用栈深递归"）可能相距几个调用栈层级，调试代价巨大。有了 MPU 栈保护，溢出瞬间触发 Memory Management Fault，fault handler 能直接打印当前 SP 与栈边界，根因一目了然。这正是 fail-fast 原则的硬件实现：检测到错误立即暴露，而不是让它扩散成难以追溯的二次故障。在实时系统里，这种"早死早超生"比"含糊继续运行"安全得多——后者可能让设备在错误状态下继续控制物理世界（电机、阀门、制动器），后果远超系统停机。
 
 ### 2.3 check_add_partition 的五重校验
 
@@ -397,6 +407,10 @@ flowchart LR
 ```
 
 > **如何读这张图**：左侧 MPU 系统中，CPU 直接通过物理地址访问内存，MPU 在中间插入"按区域的权限检查"。右侧 MMU 系统中，CPU 发出虚拟地址，经 identity 页表翻译为相同数值的物理地址，翻译同时检查每页权限。两者对上层 API 呈现一致的"分区+权限"模型，差异仅在 `arch_mem_domain_*` 回调实现。
+
+> **设计洞察**：把 MMU 当"分区数无限的 MPU"用——只用权限位、不用地址翻译——是 KISS（Keep It Simple, Stupid）原则的精彩示例。Zephyr 在 MMU 平台上的需求与 MPU 平台相同：给一段内存配权限。地址翻译、进程隔离、demand paging 这些 MMU 的高级能力 Zephyr 都用不上，那就别为它们付费。identity page table 让 MMU 退化为"每页一位权限检查器"，与 MPU 的"每区域权限检查器"在抽象层上等价，差异仅在粒度。
+>
+> 这一选择与 unikernel（MirageOS、IncludeOS、HermitCore）的思路遥相呼应——unikernel 也用 identity mapping，因为单地址空间就够了。对照之下，Linux 必须用完整虚拟内存，因为它要支持多进程、fork/exec、swap、文件 mmap 等丰富语义。系统软件设计的一个核心判断是"硬件能力 ≠ 必须使用的能力"——硬件给你 MMU，不代表你必须用 4 级页表和 per-process ASID。Zephyr 的统一 API 设计（`arch_mem_domain_*` 回调隐藏 MPU/MMU 差异）正是这一判断的产物：上层 API 表达需求，下层硬件按需提供能力，多余的能力不用付费。
 
 ### 5.3 栈隔离的根本差异
 
@@ -684,6 +698,10 @@ ARM Cortex-M MPU 架构不选 `CONFIG_ARCH_MEM_DOMAIN_SYNCHRONOUS_API`，所以 
 这种"延迟到切换时配置"的策略是 MPU 区域数紧张下的合理选择：反正切换时必须重写所有动态区域，提前写也是浪费。
 
 > **核心要点**：`SYNCHRONOUS_API` 是否启用，决定了"添加分区"是立即生效（MMU）还是延迟到下次切换（MPU）。这是同一套 API 适配两种硬件的关键设计——上层逻辑不变，下层时机不同。
+
+> **设计洞察**：ARM Cortex-M MPU 的"延迟到上下文切换再配置"策略，是"延迟工作批处理"原则的实例——既然上下文切换时必须重写所有动态 MPU 区域，那么"添加分区"提前写硬件就是浪费。把多次配置请求累积，在切换时一次性写入，既减少了锁内工作量，也避免了"立即写硬件但下个时钟周期就被切换覆盖"的无效操作。这一思路在系统软件中普遍存在：Linux 的 lazy TLB shootdown（延迟到下次进入内核时刷 TLB）、PostgreSQL 的 hint bit 延迟写入、数据库的 group commit——共同原理是"可推迟的工作，推迟到必须做时再做"。
+>
+> 这一策略还体现了"机制与策略分离"的设计哲学。`k_mem_domain_add_partition` 是机制——它修改数据结构表示；何时把数据结构同步到硬件是策略——MPU 架构选择"延迟"，MMU 架构选择"立即"，由 `CONFIG_ARCH_MEM_DOMAIN_SYNCHRONOUS_API` 在 Kconfig 层声明。上层 API 完全相同，下层策略按硬件特性选最优。这种分层让 Zephyr 能用同一套 `k_mem_domain_*` API 跨 ARM Cortex-M、Cortex-A、x86、RISC-V、ARC 等多个架构——每个架构只实现自己的 `arch_mem_domain_*` 回调，通用逻辑由内核统一维护。这是系统软件可移植性的核心范式：定义清晰的抽象边界，把硬件差异封装在边界之下。
 
 ---
 

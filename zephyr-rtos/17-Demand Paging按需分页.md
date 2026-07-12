@@ -121,6 +121,12 @@ static inline bool k_mem_page_frame_is_evictable(struct k_mem_page_frame *pf)
 
 > **核心要点**：`va_and_flags` 用 union + 位压缩把"标志 + 虚拟地址"塞进一个 `uintptr_t`，是为了在百万页帧级别也能把元数据放进 cache。这是嵌入式内核特有的节俭——Linux 的 `struct page` 远比这复杂。
 
+> **设计洞察**：`va_and_flags` 的位压缩不仅是"省内存"，更是对 cache 行为的精心优化。页帧元数据是缺页处理的热路径——每次 `do_page_fault` 都要遍历 `k_mem_page_frames[]`。若每条元数据膨胀到 16 或 32 字节，扫描时跨越的 cache line 数翻倍，缺页延迟随之上升。压到 8 字节（一个 `uintptr_t`）让相邻元数据共享 cache line，扫描时预取命中率最高。
+>
+> 对比 Linux 的 `struct page`——历史上长期是 56-64 字节，刻意对齐到 L1 cache line 边界。Linux 的考量不同：`struct page` 要承载匿名页/文件页/SLAB/分页/迁移等十几种状态，字段必然多；Zephyr 的页帧元数据只服务 demand paging，字段少，所以能压到 8 字节。这是"职责单一才能极致紧凑"的体现——一个数据结构承担的职责越多，越难优化其内存占用。Linux 内核社区多年来数次试图"瘦身"`struct page`（如 `struct ptdesc`、`struct folio` 重构），都因职责过重而困难重重。
+>
+> 位压缩利用了一个体系结构不变量：页大小是 2 的幂，低位 `log2(page_size)` 个 bit 永远是虚拟地址的零位，可挪用为 flag。这是 MMU 设计留下的"免费比特"，Linux 的页表项 PTE 也用同样手法存 accessed/dirty/PAT 等位。理解这个底层不变量，才能写出正确的位压缩代码——它隐含了一个约束：`CONFIG_MMU_PAGE_SIZE` 必须是 2 的幂，否则 flag 位会与有效地址位重叠。
+
 ### 2.4 page frame 状态机
 
 ```mermaid
@@ -286,6 +292,12 @@ LRU 的工作流（[`lru.c`](file:///home/pbw/rtos/cs-learning-notes/zephyr-proj
 
 > **核心要点**：NRU 简单但不精确（周期清位导致粒度损失），LRU 精确且 O(1) 但要求架构支持访问异常时回调 `accessed()`。Kconfig 默认在 arm64 选 LRU、其他架构选 NRU——arm64 的页表支持细粒度访问位管理，LRU 才能发挥威力。
 
+> **设计洞察**：LRU 用紧凑位数组（`PF_IDX_BITS` 位）而非指针实现双向链表，是 cache-friendly 数据结构的精彩案例。指针链表每节点 16 字节（next+prev），且节点散落在 `struct k_mem_page_frame` 中，遍历时 cache 命中差；位数组链表把所有节点连续存放，扫描驱逐候选时 cache 利用率高得多。这是把"算法复杂度"和"内存访问模式"都纳入考量的真正工程权衡——教科书上的 LRU 用指针链表，工程上的 LRU 必须考虑 cache。
+>
+> LRU 的"队首清 accessed 位"是个反直觉但精妙的设计——它把"维护 LRU 顺序"的开销摊到了"自然发生的缺页"上。队首一旦被访问就触发 fault（因为 accessed 位被清），fault 处理中把它移到队尾。若队首长期不被访问，它就是理想的 victim，零开销地被淘汰。这种"惰性一致性"（lazy consistency）思想在 Linux 的 active/inactive 链表中也有体现——不追求每一刻都精确，而是在淘汰时刻有足够信息做决策。
+>
+> NRU 与 LRU 的选择反映了一个普遍的 OS 设计原则：**算法精度依赖硬件支持**。LRU 要求架构在"页被访问但 accessed 位已清"时触发异常——这需要页表支持"清 accessed 位后下次访问 trap"的语义，arm64 有，许多早期 MMU 没有。Linux 早期也用类似 NRU 的近似算法（clock algorithm），直到主流架构稳定提供 accessed 位支持才转向更精确的 LRU 变体。算法选择从来不是"哪个更好"，而是"硬件给了什么筹码"。
+
 ### 4.5 驱逐算法流程图
 
 ```mermaid
@@ -418,6 +430,12 @@ void k_mem_paging_backing_store_page_in(uintptr_t location)
 
 > **核心要点**：`K_MEM_SCRATCH_PAGE` 不是性能优化，而是安全机制——它把"对数据页的临时可写访问"隔离在专用地址上，避免污染数据页的真实映射权限。省掉它会让所有只读映射在换页时短暂变为可写，破坏 W^X 与代码段完整性保护。
 
+> **设计洞察**：`K_MEM_SCRATCH_PAGE` 体现了"机制与策略分离"的 OS 设计原则——换页这一动作（机制）与数据页的权限策略（只读/可执行/W^X）解耦。backing store 驱动只与 scratch 页打交道，无需知道也不影响数据页的真实权限。这种隔离让换页逻辑可以被独立实现、独立测试、独立演进，不与权限模型纠缠。这也是分层抽象在内核内部的一次微观应用——`arch_mem_scratch` 提供机制，调用者提供策略。
+>
+> W^X（Write XOR Execute）是现代系统对抗代码注入的核心防线——攻击者即便能写内存，也无法让那段内存被执行。Linux 在内核代码段、JIT 引擎（如 eBPF、V8）中强制 W^X，代价是修改代码段需要 mmap+prot 复杂序列。Zephyr 在嵌入式场景下同样面对这个威胁——若有动态加载模块或解释器，W^X 不可或缺。直接改数据页权限来做换页会瞬间击穿这条防线，scratch 页正是为守住它而存在。OpenBSD 与 PaX/SELinux 等加固系统更进一步，对整个用户态也强制 W^X。
+>
+> 这种"用专用地址做临时映射"的手法在系统软件中反复出现。Linux 内核的 `kmap_atomic`/`kmap_local` 在 32 位系统上为高端内存做临时映射，思路如出一辙：给一段物理页一个可写的虚拟地址窗口，用完即弃，不影响它在用户空间的映射权限。模式识别能力强的工程师会注意到：凡是"需要临时改变一块内存的访问属性"的场景，都应该考虑独立映射而非就地修改——这是避免权限污染与并发竞态的通用解法。
+
 ---
 
 ## 6. 主动预取与换出：k_mem_page_in/k_mem_page_out
@@ -462,6 +480,12 @@ void k_mem_page_in(void *addr, size_t size)
 `k_mem_unpin` 解除 pin，让页帧重新进入淘汰候选集（`k_mem_paging_eviction_add`）。
 
 > **为什么 ISR 不能调用这些 API？** 当 `CONFIG_DEMAND_PAGING_ALLOW_IRQ` 启用时，backing store 驱动可能睡眠（如等待 DMA），ISR 中睡眠是非法的；当该选项关闭时，ISR 可以缺页但代价是整个换页路径关中断，严重影响中断延迟。两种情况下 ISR 都应只访问已 pin 的页。
+
+> **设计洞察**：`k_mem_pin` 对应 Linux 的 `mlock(2)`，但两者的设计动机截然不同。Linux 的 `mlock` 主要服务于安全敏感应用（密码学密钥不落盘）和延迟敏感应用（避免 swap 抖动），是"锦上添花"；Zephyr 的 `k_mem_pin` 是硬实时任务的"生死线"——一次意外的换页延迟足以让控制环超时，导致物理系统失稳。这种从"优化"到"正确性"的角色转换，是 RTOS 与通用 OS 的根本分野。
+>
+> 这背后是实时系统的一个核心公理：**确定性优于平均性能**。通用 OS 追求吞吐与平均延迟，可以接受偶发毫秒级 page fault；RTOS 追求最坏情况延迟的可预测，宁愿整体慢一点也不接受不可控尖峰。`PINNED` 标志把"换页"这个本质上不可预测的机制（依赖 backing store I/O 时间）从实时关键路径中剔除，让开发者能对最坏情况做出硬性保证。这也是为什么 RTOS 几乎不做 demand paging——一旦做了，就必须给开发者一个"退出开关"，`PINNED` 就是这个开关。
+>
+> `__pinned_func` 注解（如 `arch_mem_scratch` 上的）把这个思想推广到代码段——换页机制本身的代码绝不能被换出，否则会递归触发缺页死锁。这是系统软件"自举安全"（bootstrapping safety）的典型模式：机制的实现必须独立于该机制提供的便利。Linux 的 swap 代码也类似——`__swapper_pg_dir`、内核核心页不能被换出，否则系统立刻崩溃。识别"哪些代码绝不能依赖待提供机制"是系统程序员的关键能力。
 
 ---
 

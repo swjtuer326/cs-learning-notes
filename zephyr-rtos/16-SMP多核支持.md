@@ -56,6 +56,51 @@ Zephyr 的 SMP 实现位于 [`kernel/smp.c`](file:///home/pbw/rtos/cs-learning-n
 
 > **核心要点**：SMP 不是"多了一倍 CPU 那么简单"——单核下"关中断即互斥"的等价关系在 SMP 下崩塌。Zephyr 通过两层方案应对：①为兼容老代码，用 `z_smp_global_lock()` 把 `irq_lock()` 仿真成全局锁；②新代码直接用 `k_spin_lock`，按数据对象加锁而非全局加锁。
 
+### 1.3 单核→SMP 同步原语迁移全景
+
+> §1.2 揭示了单核假设的崩塌。在深入 §3-§5、§8 的实现细节之前，先用一张迁移路径图和一张全景对比表建立心智模型——后续四章（§3 legacy emulation、§4 全局锁仿真、§5 k_spin_lock、§8 单核编译期消除）都对应这张图上的某条路径。
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
+flowchart TD
+    Start["单核: irq_lock = 关中断 = 互斥"]
+    Start --> Break["SMP: 关本核中断 ≠ 互斥<br/>另一核仍可操作共享数据"]
+    Break --> Legacy["路径1: Legacy emulation<br/>irq_lock → z_smp_global_lock<br/>全局 CAS 自旋 + 嵌套计数"]
+    Break --> Correct["路径2: k_spin_lock<br/>每对象一锁 + 关本核中断"]
+    Legacy --> LegacyCost["代价: 全局单锁竞争<br/>详见 §3-§4"]
+    Correct --> CorrectGain["收益: 细粒度并行"]
+    CorrectGain --> SingleCore["单核 #ifdef 消除<br/>生成代码与 irq_lock 等价<br/>详见 §8"]
+    SingleCore --> ZeroOverhead["零开销: 用更安全的 API 不付代价"]
+
+    classDef start fill:#cffafe, stroke:#0891b2, color:#155e75, stroke-width:2px
+    classDef problem fill:#fee2e2, stroke:#dc2626, color:#991b1b, stroke-width:2px
+    classDef legacy fill:#fef3c7, stroke:#d97706, color:#92400e, stroke-width:2px
+    classDef correct fill:#d1fae5, stroke:#059669, color:#065f46, stroke-width:2px
+    classDef result fill:#dbeafe, stroke:#2563eb, color:#1e40af, stroke-width:2px
+
+    class Start start
+    class Break problem
+    class Legacy,LegacyCost legacy
+    class Correct,CorrectGain,SingleCore correct
+    class ZeroOverhead result
+```
+
+> **如何读这张图**：单核 `irq_lock` 在 SMP 下有两条迁移路径——路径1（黄色）是 legacy emulation，把 `irq_lock` 宏替换为全局自旋锁，老代码零改动但性能差；路径2（绿色）是 `k_spin_lock`，每对象一锁实现细粒度并行。关键洞见：`k_spin_lock` 在单核下通过 `#ifdef` 编译期消除原子变量，生成与 `irq_lock` 等价的代码（蓝色）——这意味着"用 `k_spin_lock` 写新代码"是零成本选择。
+
+四种形态的全景对比：
+
+| 维度 | 单核 `irq_lock` | SMP `irq_lock` (legacy emulation) | SMP `k_spin_lock` | 单核 `k_spin_lock` |
+|------|----------------|-----------------------------------|-------------------|---------------------|
+| **互斥机制** | 关本核中断 | 全局 CAS 自旋 + 嵌套计数 | 每对象 CAS/Ticket + 关本核中断 | 关本核中断（`#ifdef` 消除原子变量） |
+| **锁粒度** | 全局 | 全局 | 每对象 | 每对象 |
+| **可递归** | 是 | 是（`global_lock_count`） | 否 | 否 |
+| **持锁切换** | 自动释放 | 自动释放（`z_smp_release_global_lock`） | 非法 | 非法 |
+| **生成代码** | 1 条关中断指令 | CAS 自旋循环 | CAS/Ticket + 关中断 | 1 条关中断指令 |
+| **适用场景** | 老代码 | 老代码 SMP 兼容 | 新代码 / SMP 临界区 | 新代码 / 单核 |
+| **详解章节** | — | [§3](#3-irq_lock-的局限legacy-emulation)-[§4](#4-z_smp_global_lock全局锁仿真) | [§5](#5-k_spin_locksmp-下的正确互斥) | [§8](#8-单核编译期消除k_spin_lock-的零开销) |
+
+> **核心要点**：从单核到 SMP，同步原语有两条迁移路径——老代码走 `irq_lock` legacy emulation（全局锁仿真，兼容但慢），新代码走 `k_spin_lock`（每对象一锁，正确且单核零开销）。单核下 `k_spin_lock` 通过 `#ifdef` 编译期消除原子变量，生成与 `irq_lock` 等价的代码——这意味着"用 `k_spin_lock` 写新代码"是零成本选择：单核不付代价，SMP 自动正确。
+
 ---
 
 ## 2. SMP 启动流程：cpu_start_flag/ready_flag 握手
@@ -205,7 +250,15 @@ static struct cpu_start_cb {
 | `reinit_timer` | 总是 `true` | 由调用者指定 |
 | `z_init_cpu` 调用 | 是 | 否（保留 per-CPU 数据） |
 
+**per-CPU 数据**指每个 CPU 核心私有的数据区域——包括当前线程指针 `_current`、空闲线程、中断嵌套计数器等。将这些数据按核隔离而非全局共享，访问时无需加锁（只有本核读写自己的副本），是 SMP 避免锁竞争的基础手段。Zephyr 用 `_kernel.cpus[id]` 数组组织 per-CPU 数据，`z_init_cpu(id)` 负责初始化指定核的这一份。
+
 > **核心要点**：`k_smp_cpu_resume` 用于电源管理场景——CPU 之前已经 `k_smp_cpu_start` 过、随后挂起，现在要恢复。此时不应重置中断栈与 per-CPU 数据（可能保留了待处理状态），只重新初始化必要的定时器与调度入口。
+
+> **设计洞察**：per-CPU 数据是 SMP 内核可扩展性的核心杠杆之一。Linux 用 `DEFINE_PER_CPU(type, name)` 宏配合段链接（section-based linker）实现，访问时通过 `this_cpu_ptr()` 直接定位到本核副本——核心思想与 Zephyr 的 `_kernel.cpus[id]` 完全一致：让"只被本核读写"的状态独占一个 cache line，避免跨核 false sharing（错误共享，多核各自修改同一 cache line 的不同字段却引发互斥刷写）。
+>
+> 这背后是计算机体系结构的一个硬事实：x86 多核间 cache 一致性以 cache line（通常 64 字节）为粒度，两个核各写同一 line 的不同字节会触发 MESI 协议的反复 invalidate/transfer，性能损失可达一个数量级。把 per-CPU 数据按核隔离、对齐到 cache line，是让"加核就能涨性能"成立的前提。Linux 内核为此引入 `____cacheline_aligned` 与 `____cacheline_internodealigned` 修饰符，Zephyr 虽未走到这一步，但 `_kernel.cpus[]` 数组天然让每核数据相邻连续、可被预取器一次性带入。
+>
+> Zephyr 选 `_kernel.cpus[]` 数组而非更精细的 per-CPU 段，是 KISS 原则的体现——数组访问只需一次索引，段链接需要链接脚本与特殊宏支持。对 1-12 核的 MCU 级系统，这个简化是合理的；Linux 服务数百核时才不得不付出段链接的复杂度代价。
 
 ---
 
@@ -323,6 +376,8 @@ void z_smp_release_global_lock(struct k_thread *thread)
 }
 ```
 
+`z_swap()` 是 Zephyr 的上下文切换函数——当前线程让出 CPU，调度器选出下一个线程并切换寄存器上下文。无论是线程主动阻塞（如 `k_sem_take`、`k_sleep`）还是被高优先级线程抢占，最终都通过 `z_swap()` 完成切换。调用 `z_swap()` 意味着当前线程**不再运行**，其他线程获得 CPU——这正是后文"持锁切换危险"的根本原因。
+
 为什么需要 `z_smp_release_global_lock`？考虑这个场景：
 
 ```
@@ -367,6 +422,12 @@ void z_smp_release_global_lock(struct k_thread *thread)
 
 > **核心要点**：`z_smp_global_lock()` 用 `atomic_cas(&global_lock, 0, 1)` 自旋实现跨核互斥，用 `global_lock_count` 支持嵌套，用 `z_smp_release_global_lock` 在上下文切换时让锁跟随线程流动。这是"用全局自旋锁仿真单核 irq_lock 语义"的完整工程方案。
 
+> **设计洞察**：`z_smp_global_lock()` 的 13 行实现是 KISS 原则的典范——用一把原子变量 + 一个嵌套计数器，完整复现了单核 `irq_lock` 的语义。这种"用最小机制满足语义"的做法，与 Linux 早期 Big Kernel Lock（BKL，大内核锁）的思路如出一辙：先保证正确性，再谈性能。
+>
+> BKL 的历史很有教益：Linux 2.0 引入 SMP 时也用一把全局锁让老代码继续工作，从 2.6 开始逐步拆解，直到 2011 年（Linux 2.6.37）才彻底移除。Zephyr 走的是同一条路——`irq_lock` 仿真对应 BKL（兼容过渡），`k_spin_lock` 对应细粒度锁。区别是 Zephyr 起步晚，吸取了 Linux 的教训，从一开始就把 `k_spin_lock` 设计为不可递归、持锁不可调度，避免 BKL 那种"持锁能调度"造成的长期重构债。
+>
+> 嵌套计数 `global_lock_count` 用 `uint8_t` 而非 `int` 也有讲究——它放在 `struct k_thread` 里，每个线程一份。线程数可能是数百，每字节都影响整体内存占用。这是嵌入式 RTOS"数据结构紧凑"思维的体现：选最小够用的类型。同思路在 Linux 也常见——例如 `task_struct` 中大量 `unsigned char` 状态字段，都是经年累月优化的结果。
+
 ---
 
 ## 5. k_spin_lock：SMP 下的正确互斥
@@ -393,6 +454,12 @@ void z_smp_release_global_lock(struct k_thread *thread)
 | **典型场景** | 老代码兼容 | 新代码、ISR 共享数据、SMP 临界区 |
 
 > **核心要点**：`irq_lock` 是"递归 + 全局"，`k_spin_lock` 是"不可递归 + 多锁"。语义迁移的核心代价是失去递归——但这正是工程上想要的，递归锁往往掩盖设计问题。Zephyr 内核核心代码已全部迁移到 `k_spin_lock`，`irq_lock` 仅保留兼容性。
+
+> **设计洞察**：从"全局递归锁"到"对象级不可递归锁"的迁移，是系统软件演化的经典模式。递归锁看似方便（调用者不用关心是否已持锁），实则掩盖了调用栈的耦合——当一个函数能"不知不觉"地进入临界区，并发 bug 往往藏在那些没意识到自己持锁的代码路径里。Linux 内核从一开始就禁止 `spinlock_t` 递归，正是这个原因；POSIX `pthread_mutex` 也把 `PTHREAD_MUTEX_NORMAL`（不可递归）作为默认类型。
+>
+> "按数据对象加锁"是 OS 设计中数据局部性原则的直接应用：锁的粒度应与数据的耦合度匹配。两个不相关的数据结构各配一把锁，访问时互不干扰，并行机会自然涌现；若共用一把全局锁，逻辑上的并行就被串行化成"伪并行"。这与数据库领域"行锁 vs 表锁"、Java `synchronized` 从重量级全局锁到偏向锁/轻量级锁的演化是同一思想——锁粒度越细，并行度越高。
+>
+> "持锁切换非法"这一约束体现了 fail-fast 的工程智慧——与其在运行时检测死锁（代价高且不可靠），不如在 API 契约层面禁止危险模式，让开发者在编写时就必须思考"持锁时间是否够短"。`CONFIG_SPIN_VALIDATE` 把这个契约变成运行时 assert，进一步把 bug 提前到开发期暴露。Linux 的 `lockdep` 走得更远——构建锁依赖图检测潜在死锁，但代价是显著的运行时开销，Zephyr 的轻量级校验更适合 MCU 资源约束。
 
 ### 5.2 irq_lock vs k_spin_lock 语义对比图
 
@@ -729,6 +796,12 @@ static ALWAYS_INLINE k_spinlock_key_t k_spin_lock(struct k_spinlock *l)
 4. **可调试性**：`CONFIG_SPIN_VALIDATE` 提供持锁者追踪、持锁时长检测、嵌套错误检查——`irq_lock` 没有这些。
 
 > **核心要点**：单核下 `k_spin_lock` 的"数据分量"（原子变量）被 `#ifdef` 编译期消除，生成代码与 `irq_lock` 等价。这意味着"用 `k_spin_lock` 写新代码"是零成本选择——单核不付代价，SMP 自动正确。这是 Zephyr 内核核心已全部迁移的根本原因。
+
+> **设计洞察**：单核下 `k_spin_lock` 与 `irq_lock` 生成等价代码，是"零开销抽象"（zero-cost abstraction）在 C 中的实现典范。这个概念源自 C++ 模板和 Rust——抽象本身不引入运行时成本，只付出编译期成本。Zephyr 用 `#ifdef CONFIG_SMP` + `ALWAYS_INLINE` + 编译器死代码消除（DCE）三件套达成：条件编译剥掉原子变量、内联让编译器看到完整调用图、DCE 删除空函数体。FreeRTOS 的 `taskENTER_CRITICAL()` 在不同架构下也走类似路径，但 Zephyr 的 `ALWAYS_INLINE` 更激进，把内联决定权从编译器手中拿走。
+>
+> 这背后是 OS 抽象层设计的一条铁律：**机制必须可配置，抽象必须可裁剪**。Linux 的 `CONFIG_SMP` 也走类似路径，但 Linux 的复杂度让"单核消除"难以彻底——很多子系统的 SMP 路径仍有少量运行时分支（如 `nr_cpus` 检查）。Zephyr 凭借规模小、内联激进的优势，做到了"用更安全的 API 不付代价"，这是 RTOS 在工程严谨性上反而能超越通用 OS 的少数地方。
+>
+> 对应用开发者的启示：在 Zephyr 中应**默认使用 `k_spin_lock`** 而非 `irq_lock`，无论目标是否 SMP。单核零开销，将来上 SMP 自动正确，且能享受 `SPIN_VALIDATE` 的调试支持。这是一种"为未来买单"的工程习惯——成本为零时，没有理由不选更严格的 API。类似的"零成本选择更安全 API"思维在 Linux 内核中表现为 `RCU_LOCKED` 优先于 `read_lock`、`seqcount` 优先于全局锁。
 
 ---
 

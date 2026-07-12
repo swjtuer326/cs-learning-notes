@@ -65,6 +65,8 @@ Zephyr 用户态的核心设计见 [overview.rst](file:///home/pbw/rtos/cs-learn
 
 > **核心要点**：Zephyr 用户态不是"给 Linux 应用程序员用的进程隔离"，而是"给 RTOS 应用开发者提供的一道硬件强制防线"——它的目标是让一段不靠谱的代码（解析器、协议栈、第三方算法）即使出 bug 也不能把整个系统搞挂。这与传统 RTOS "all-or-nothing" 模型形成根本对比。
 
+> **llext 是什么？** 表格中提到的 llext 是 Zephyr 的可加载扩展（Loadable Extension）子系统，允许在固件运行时加载独立的 ELF 代码（编译时未链接进主镜像）并在用户线程中执行，定位类似 Linux 的内核模块（.ko）。llext 受限于 RTOS 场景：加载的扩展代码不能创建新内核对象，只能从预分配对象池中取用——因为 gperf 内核对象表在构建期从 `zephyr_prebuilt.elf` 的 DWARF 信息生成，运行时加载的代码不在其中。这一限制是"内核对象必须 build-time 定义"原则的直接后果，详见 §8.1。
+
 ### 1.3 用户态能力对比
 
 下表对照"无用户态 RTOS"、"Zephyr 用户态"、"Linux 进程"三者的能力差异：
@@ -79,6 +81,57 @@ Zephyr 用户态的核心设计见 [overview.rst](file:///home/pbw/rtos/cs-learn
 | 适用场景 | 全可信固件、资源极紧 | 含第三方代码、安全认证场景 | 通用操作系统 |
 
 > **如何读这张表**：第三列"Zephyr 用户态"的能力介于"无隔离"与"Linux 进程"之间——比无隔离多了硬件强制防线，但比 Linux 进程轻量得多（无 fd 表、无虚拟地址翻译、无 fork/exec）。这正是 RTOS 的"中等隔离"定位：在不引入 Linux 量级复杂度的前提下，给关键代码加上防护。
+
+### 1.4 syscall 全链路安全网关视图
+
+> §1.1-1.3 讲了"为什么需要用户态"与"Zephyr 的设计选择"。在深入 §2-§8 的细节之前，先用一张全链路图建立"安全网关"的心智模型——后续每章都对应链路上某个网关的深入展开。
+
+用户线程调用 `k_sem_give(sem)` 时，从用户态到内核实现要经过四道安全网关，任何一道不过就杀线程：
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
+flowchart TD
+    User["用户态调用<br/>k_sem_give(sem)"] --> Entry["入口函数<br/>判断模式"]
+    Entry -->|"supervisor 模式"| Direct["直接调 z_impl_*<br/>零开销"]
+    Entry -->|"user 模式"| SVC["svc #3 陷入内核"]
+    SVC --> G1["网关1: 派发表查找<br/>_k_syscall_table[id]"]
+    G1 -->|无效 ID| Kill["handler_bad_syscall<br/>杀线程"]
+    G1 -->|有效| Mrsh["z_mrsh_*<br/>解 marshalling"]
+    Mrsh --> Vrfy["z_vrfy_*<br/>验证函数"]
+    Vrfy --> G2["网关2: K_SYSCALL_OBJ<br/>对象+类型+权限+初始化"]
+    G2 -->|失败| Kill2["K_OOPS 杀线程"]
+    G2 -->|通过| G3["网关3: K_SYSCALL_MEMORY<br/>缓冲区可访问?"]
+    G3 -->|失败| Kill2
+    G3 -->|通过| G4["网关4: from/to_copy<br/>防 TOCTOU"]
+    G4 --> Impl["z_impl_*<br/>真正干活"]
+    Direct --> Impl
+    Impl --> Ret["返回值经 r0 回用户态"]
+
+    classDef user fill:#cffafe, stroke:#0891b2, color:#155e75, stroke-width:2px
+    classDef kern fill:#d1fae5, stroke:#059669, color:#065f46, stroke-width:2px
+    classDef gate fill:#fef3c7, stroke:#d97706, color:#92400e, stroke-width:2px
+    classDef err fill:#fee2e2, stroke:#dc2626, color:#991b1b, stroke-width:2px
+    classDef trap fill:#dbeafe, stroke:#2563eb, color:#1e40af, stroke-width:2px
+
+    class User user
+    class Entry,Mrsh,Vrfy,Impl,Ret kern
+    class G1,G2,G3,G4 gate
+    class Kill,Kill2 err
+    class SVC,Direct trap
+```
+
+> **如何读这张图**：supervisor 模式（蓝色）直接调 `z_impl_*`，零开销、零校验——因为 supervisor 线程可信。user 模式经 `svc #3` 陷入后依次穿过四道网关（黄色），任一失败进入红色"杀线程"终态。注意网关2-4 都在 `z_vrfy_*` 内部——验证函数是用户态与内核的**唯一信任边界**。
+
+四道网关各自守护不同的安全不变量：
+
+| 网关 | 检查内容 | 失败后果 | 详解章节 |
+|------|---------|---------|---------|
+| **网关1: 派发表查找** | syscall ID 在 `_k_syscall_table` 范围内且对应 `z_mrsh_*` 非空 | `handler_bad_syscall` 杀线程 | [§5.2](#52-两个特殊-handler) |
+| **网关2: K_SYSCALL_OBJ** | 对象指针经 gperf 查到元数据 + 类型匹配 + 当前线程有权限 + 初始化状态符合预期 | `K_OOPS` 杀线程 | [§6.4](#64-权限校验三步) |
+| **网关3: K_SYSCALL_MEMORY** | 缓冲区 `[ptr, ptr+size)` 全部落在用户可读/写区域 + 无整数溢出 | `K_OOPS` 杀线程 | [§7.3](#73-缓冲区校验arch_buffer_validate) |
+| **网关4: from/to_copy** | 校验后立即拷贝到内核栈/拷回用户内存，防止用户线程在校验与使用之间篡改数据 | 拷贝失败 `K_OOPS` 杀线程 | [§7.4](#74-toctou-漏洞与拷贝防御) |
+
+> **核心要点**：syscall 机制的本质是"在用户态到内核实现之间设四道网关"。supervisor 路径绕过所有网关（可信代码无需检查），user 路径必须穿完四道网关才能触及 `z_impl_*`。网关1 挡非法 syscall ID，网关2 挡非法对象指针与越权访问，网关3 挡非法内存区域，网关4 挡校验后的数据篡改。四道网关层层递进，构成纵深防御（defense in depth）。
 
 ## 2. 特权模式与用户模式
 
@@ -156,6 +209,10 @@ static inline bool arch_is_user_context(void)
 
 > **核心要点**：`__ZEPHYR_SUPERVISOR__` / `__ZEPHYR_USER__` 的本质是**编译期消除运行时分支**——内核自身代码标注 supervisor，用户应用代码标注 user，混合代码（如驱动）不标注走运行时检查。这让 Zephyr 用户态在"已知模式"的代码中性能与无用户态 RTOS 持平。
 
+> **设计洞察**：`__ZEPHYR_SUPERVISOR__` / `__ZEPHYR_USER__` 体现了"零成本抽象"在系统软件中的落地——把"运行时该走哪条路"的判断推到编译期，让编译器直接消除分支。这与 Linux 内核的 `__init`/`__exit` 注解（标记 init 代码在启动后可被丢弃）、`likely()`/`unlikely()`（引导分支预测）一脉相承：编译期能确定的信息，绝不应留到运行时浪费 CPU 周期。
+>
+> 对 RTOS 而言这一优化尤其关键。Cortex-M 的分支预测能力远弱于 A 系列——M3/M4 只有简单的静态预测器，错误预测代价 3-6 个周期，对目标确定性时序的系统是不可忽视的抖动来源。把"判断当前模式"的分支在编译期消掉，意味着 supervisor 线程调 `k_sem_give()` 与无用户态 RTOS 的直接函数调用在二进制上完全一致，连流水线气泡都不引入。这是"用编译复杂度换运行时性能"的经典权衡——构建系统多干活，运行时少干活。
+
 ## 3. __syscall 注解：编译期代码生成
 
 ### 3.1 __syscall 在 C 与构建脚本眼中的双重身份
@@ -185,6 +242,10 @@ syscall_regex = re.compile(
 ```
 
 > **为什么不用 C 预处理器？** 因为预处理器会展开宏、去除条件编译块，丢失"原型在哪个头文件"的信息。`parse_syscalls.py` 故意**不预处理**，直接对原始文本做正则匹配，这样能精确知道每个 syscall 来自哪个头文件，从而生成对应的 `syscalls/<header>.h`。
+
+> **设计洞察**：`__syscall` 的"双重身份"是 annotation-driven code generation（注解驱动代码生成）模式的典型实例——用一个对编译器无意义的标记（这里降级为 `static inline`），让外部工具识别并生成样板代码。同一模式出现在许多系统软件中：Linux 的 `SYSCALL_DEFINE*` 宏把系统调用元数据嵌入符号表供 BPF 与 tracing 识别；gRPC 用 protobuf 注解生成 stub；Rust 的 proc-macro 派生 trait 实现。共同动机是"消除人写样板代码的负担与人手写出错的风险"。
+>
+> Zephyr 选择正则扫描而非 libclang 解析是 KISS 原则的体现——syscall 原型语法足够规整，三条限制（首 token、指针表达数组、typedef 函数指针）能被文档化并接受，换取构建工具链零外部依赖（不需要 clang、不需要 LLVM）。这种取舍与 Linux 内核"不依赖外部代码生成器"的传统一致：内核构建必须能在最小工具链上完成，任何对构建期的额外依赖都是发行阻力。代价是开发者要守规矩——三条限制靠 review 强制，编译器不报错。
 
 ### 3.2 三条限制
 
@@ -294,6 +355,10 @@ static inline uintptr_t arch_syscall_invoke3(uintptr_t arg1, uintptr_t arg2,
 ```
 
 调用约定：参数 1-4 进 `r0-r3`，参数 5-6 进 `r4-r5`，syscall ID 进 `r6`，SVC 编号 `3` 进指令立即数。`svc #3` 触发同步异常，进入 SVC 异常向量，由内核的 syscall 派发器接管。
+
+> **设计洞察**：入口函数里两个看似不起眼的细节——`compiler_barrier()` 与 `__pinned_func`——是"安全检查必须与硬件效应同步"原则的具体落地。`compiler_barrier()` 阻止编译器把 `z_impl_*` 中的内存访问重排到 `z_syscall_trap()` 检查之前，否则用户态代码可能"提前"读到本应被隔离的内核数据。这是 C 编译器优化的盲区：编译器只关心单线程可见行为，不理解"用户态/内核态切换"是一个语义屏障。Linux 内核的 `barrier()`、`smp_mb()`、`copy_from_user` 中的 `barrier()` 都在解决同一类问题——优化器不理解安全不变量，必须显式告诉它"这里不能重排"。
+>
+> `__pinned_func` 对应另一类不变量："代码本身必须在内存中才能被执行"。当 syscall 入口可能被缺页中断路径调用时，入口函数不能驻留在可换出的页上——否则会陷入"缺页处理需要缺页处理"的递归 fault。这与 Linux 内核的 `__pinned` 段、UEFI 的 `RuntimeServices` 必须驻留 RAM 同源：任何在异常/fault 路径上可能被调用的代码，都必须满足"无依赖、可立即执行"的约束。在 Zephyr 上这一约束主要见于带 MMU 的 Cortex-A 类平台——MCU 通常无 swap 设备，XIP（eXecute In Place）系统下 .text 直接在 flash 上执行，不存在换出问题。
 
 ### 4.3 实现函数：开发者手写
 
@@ -559,6 +624,10 @@ struct k_object *k_object_find(const void *obj)
 
 > **为什么用 gperf？** 因为内核对象数量在编译时已知（几十到几百个），完美哈希能做到 O(1) 查找且无冲突。这在 syscall 热路径上很关键——每次 `K_SYSCALL_OBJ` 校验都要查一次。
 
+> **设计洞察**：用 gperf 生成完美哈希是"封闭世界优化"的典型——内核对象集合在构建期完全已知，运行时不会增长（llext 等动态扩展除外），这种封闭性使得 O(1) 无冲突哈希成为可能。这一思路在系统软件中随处可见：glibc 用 gperf 生成关键字到 token 的映射；SQLite 的词法分析器对 SQL 关键字用完美哈希；gawk、PostgreSQL 的关键字表同理。共同原理是：动态数据结构（链表、平衡树、开放寻址哈希）的开销只有在键集合不可预测时才值得付出。
+>
+> Zephyr 把"封闭世界"作为安全前提具有双重意义：性能上 gperf 提供 O(1) 查找，使 `K_SYSCALL_OBJ` 校验在每次 syscall 热路径上零负担；安全上构建期审计能列出全部内核对象的地址、类型、初始状态，符合 IEC 61508、Common Criteria 等安全认证对"可追溯性"的要求。这就是为什么 `CONFIG_DYNAMIC_OBJECTS` 默认关闭——一旦允许运行时分配内核对象，封闭世界被打破，安全论证也要相应调整。能用对象池就用对象池，不仅为了性能，更是为了维持"封闭世界"这个安全论证的基础。
+
 ### 6.3 对象类型枚举
 
 `enum k_objects` 定义见 [sys/kobject.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/sys/kobject.h#L30-L44)：
@@ -768,6 +837,43 @@ Zephyr 的防御策略见 [syscalls.rst](file:///home/pbw/rtos/cs-learning-notes
 > **核心要点**：用户态内存隔离的"最后一公里"是 `arch_buffer_validate` + 拷贝防御。前者保证"用户传的指针当前可访问"，后者保证"校验后到使用前用户改不了数据"。两者缺一不可——只校验不拷贝留 TOCTOU 漏洞，只拷贝不校验会让内核读用户不可访问的内存触发 fault。
 
 ## 8. 动态对象与对象池
+
+> §6 讲了内核对象权限表——网关2 通过 gperf 查找对象元数据并校验权限。但一个自然的问题是：**内核对象本身从哪里来？生命周期如何管理？静态对象与动态对象的权限模型有何差异？** 本章把静态对象（gperf 表）与动态对象（对象池/alloc）统一到一张生命周期图里，回答"对象如何出生、如何获权、如何消亡"。
+
+内核对象有两条出生路径——静态定义与动态分配——但生命周期阶段相同：
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
+stateDiagram-v2
+    [*] --> Static : 静态 K_SEM_DEFINE 等
+    [*] --> Dynamic : k_object_alloc
+    Static --> GperfReg : gperf O(1) 查找
+    Dynamic --> DynReg : 链表 O(n) 查找
+    GperfReg --> Initialized : k_object_init
+    DynReg --> Initialized : 自动授权
+    Initialized --> Granted : access_grant
+    Granted --> InUse : syscall 网关2 校验
+    InUse --> Revoked : access_revoke
+    Revoked --> StaticEnd : 静态对象保留在表中
+    Revoked --> DynEnd : 动态对象权限全清释放
+    StaticEnd --> [*]
+    DynEnd --> [*]
+```
+
+> **如何读这张图**：两条路径在"Initialized"处汇合——无论哪种出生方式，对象都必须经过 `k_object_init` 标记初始化、经过 `k_object_access_grant` 授权才能被用户线程使用。消亡阶段再次分叉：静态对象永不释放（gperf 表是只读的），动态对象在所有权限清零时自动释放（`unref_check`）。
+
+| 维度 | 静态对象（gperf 表） | 动态对象（dyn_obj 链表） |
+|------|---------------------|------------------------|
+| **出生** | 编译期 `K_SEM_DEFINE` 等宏 | 运行时 `k_object_alloc()` |
+| **元数据注册** | 构建期 gen_kobject_list.py 扫描 DWARF | 运行时插入 `dyn_obj` 链表 |
+| **查找复杂度** | O(1) gperf 完美哈希 | O(n) 链表遍历 |
+| **权限初始状态** | 全无（需显式授权） | 分配者自动获权 |
+| **释放** | 永不释放（gperf 表只读） | 权限全清时 `unref_check` 自动释放 |
+| **适用场景** | 对象数量编译期已知 | 对象数量运行时才知（如网络连接） |
+| **安全论证** | 构建期封闭世界，可审计 | 运行时开口，需额外论证 |
+| **详解章节** | [§6.2](#62-gperf-哈希表从对象地址找元数据) | [§8.2](#82-动态对象的妥协config_dynamic_objects)-[§8.3](#83-自动释放引用计数) |
+
+> **核心要点**：静态与动态对象的唯一本质区别是"元数据注册方式与生命周期管理"——静态走 gperf O(1) 查找且永不释放，动态走链表 O(n) 查找且权限全清自动释放。两者共享同一套权限位图、同一套校验流程（[§1.4](#14-syscall-全链路安全网关视图) 网关2）、同一套授权 API。`CONFIG_DYNAMIC_OBJECTS` 默认关闭正是为了维持"封闭世界"的安全论证基础。
 
 ### 8.1 为什么内核对象必须 build-time 定义
 
