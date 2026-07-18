@@ -30,3 +30,10 @@ __pycache__/
 .DS_Store
 edk2/edk2-src/
 trusted-firmware/src/
+nccl/src/nccl-src/
+
+# HTML 构建缓存(build_html.py 前端库)
+.html-build/
+
+# hsperi 厂商参考手册(受版权保护,不入库)
+hsperi/reference/
