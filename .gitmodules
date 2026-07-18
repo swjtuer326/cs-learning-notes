@@ -17,3 +17,6 @@
 [submodule "trusted-firmware/src/u-boot-src"]
 	path = trusted-firmware/src/u-boot-src
 	url = https://github.com/u-boot/u-boot.git
+[submodule "nccl/src/nccl-src"]
+	path = nccl/src/nccl-src
+	url = https://github.com/NVIDIA/nccl.git
