@@ -19,6 +19,7 @@
 | FIQ | Fast Interrupt reQuest | ARM 快速中断请求 |
 | GIC | Generic Interrupt Controller | ARM 通用中断控制器 |
 | OP-TEE | Open Portable Trusted Execution Environment | 开源 TEE OS |
+| RME | Realm Management Extension | ARMv9-A 的机密计算架构扩展,引入 Realm 世界 |
 | RMM | Realm Management Monitor | RME 架构中的 Realm 监控器 |
 
 **前置阅读**:[04-tf-a-architecture.md](./04-tf-a-architecture.md) — TF-A 架构与构建系统
@@ -245,23 +246,25 @@ static bool get_handler_for_smc_fid(uint32_t smc_fid, rt_svc_handle_t *handler)
 
 SMC Function ID 的位域编码决定了路由:
 
-| OEN 范围 | 服务类型 | 典型处理者 | 示例 |
-|----------|----------|------------|------|
-| 0x00-0x0F | ARM 标准服务 | PSCI、ARM 架构服务 | `PSCI_VERSION`(0x84000000) |
-| 0x10-0x2F | SiP(Silicon Provider) | 平台自定义 | 厂商电源管理扩展 |
-| 0x30-0x3F | OEM | 平台自定义 | OEM 特定功能 |
-| 0x3A | TOS(Trusted OS) | SPD(opteed/tspd) | OP-TEE 的 TA 调用 |
-| 0x3B | TOS(Trusted OS) | SPD | OP-TEE 快速调用 |
-| 0x40-0x7F | 厂商扩展 | 平台自定义 | — |
+| OEN 值 | 服务类型 | 典型处理者 | 示例 |
+|--------|----------|------------|------|
+| 0x00 | ARM 架构服务 | BL31 | `SMC_VERSION` |
+| 0x01 | CPU 服务 | BL31 | CPU 特定功能 |
+| 0x02 | SiP(Silicon Provider) | 平台自定义 | 厂商电源管理扩展 |
+| 0x03 | OEM | 平台自定义 | OEM 特定功能 |
+| 0x04 | Standard 服务 | BL31(PSCI/SCMI/SDEI) | `PSCI_VERSION`(0x84000000) |
+| 0x05-0x07 | Hypervisor / EL3 扩展 | BL31/Hypervisor | 标准与厂商 Hypervisor 服务 |
+| 0x30-0x31 | Trusted Application | TEE OS | TA 相关调用 |
+| 0x32-0x3F | TOS(Trusted OS) | SPD(opteed/tspd) | OP-TEE 的 TA 调用 |
 
 | 对比维度 | SMC32 | SMC64 |
 |----------|-------|-------|
-| **Bit 31** | 0 | 1 |
+| **Bit 30** | 0 | 1 |
 | **参数宽度** | 32 位(x1-x3) | 64 位(x1-x7) |
 | **FID 示例** | `PSCI_CPU_ON_AARCH32`(0x84000003) | `PSCI_CPU_ON_AARCH64`(0xc4000003) |
 | **适用场景** | AArch32 调用方 | AArch64 调用方 |
 
-> **如何读这两张表**:第一张表说明 OEN 决定 SMC 被路由到哪个服务——PSCI 用 OEN=0,OP-TEE 用 OEN=0x3A。第二张表说明 Bit 31 决定参数宽度——AArch64 的 Linux 用 SMC64 传 64 位地址,AArch32 的 Linux 用 SMC32。
+> **如何读这两张表**:第一张表说明 OEN 决定 SMC 被路由到哪个服务——PSCI 用 OEN=0x04(Standard 服务),OP-TEE 用 OEN=0x32(TOS 范围)。第二张表说明 Bit 30 决定参数宽度——AArch64 的 Linux 用 SMC64 传 64 位地址,AArch32 的 Linux 用 SMC32。
 
 > **核心要点**:BL31 的 SMC 调度基于"链接器段注册 + OEN 索引查表"——各服务用 `DECLARE_RT_SVC` 宏独立声明,链接器收集到 `.rt_svc_descs` 段,启动时建立 OEN→服务 的查找表。SMC 到达时,从 FID 提取 OEN,O(1) 查表分发。
 
@@ -304,7 +307,7 @@ PSCI 版本号定义:
 
 ### 3.3 PSCI SMC 处理
 
-PSCI 服务通过 `DECLARE_RT_SVC` 注册为 OEN=0 的标准服务。SMC 到达后,`psci_smc_handler()` 根据 FID 分发:
+PSCI 服务通过 `DECLARE_RT_SVC` 注册为 OEN=0x4 的标准服务(Standard Service)。SMC 到达后,`psci_smc_handler()` 根据 FID 分发:
 
 ```c
 /* 摘自 [tf-a-src/lib/psci/psci_main.c](./src/tf-a-src/lib/psci/psci_main.c) 第 434-613 行(节选) */
@@ -507,7 +510,7 @@ TF-A 中 SCMI 驱动位于 `drivers/scmi-msg/`,提供消息解析和响应框架
 SPD 是 BL31 的插件,负责:
 
 1. **初始化 TEE OS**:BL31 启动时,SPD 初始化 OP-TEE(加载到 S-EL1 并跳转)
-2. **路由 TEE SMC**:把 OEN=0x3A 的 SMC 转发给 OP-TEE
+2. **路由 TEE SMC**:把 OEN=0x32(TOS 范围)的 SMC 转发给 OP-TEE
 3. **管理上下文切换**:在 REE(Linux)和 TEE(OP-TEE)之间保存/恢复寄存器
 
 ### 5.2 TF-A 内置的 SPD
@@ -572,7 +575,7 @@ if (bl32_init != NULL) {
 
 `bl32_init` 回调执行时,BL31 配置 S-EL1 的上下文(MMU、寄存器),ERET 跳转到 OP-TEE 的入口。OP-TEE 完成自己的初始化后,通过 SMC 返回 BL31,BL31 继续跳转到 BL33。
 
-> **核心要点**:SPD 是 BL31 调度 TEE OS 的插件——用 `DECLARE_RT_SVC` 注册 OEN=0x3A 的服务,把 TEE 相关 SMC 转发给 TEE OS。SPD 还负责初始化 TEE OS(通过 `bl31_register_bl32_init` 注册回调)。不同 TEE OS 有不同 SPD 实现(opteed/tspd/trusty)。
+> **核心要点**:SPD 是 BL31 调度 TEE OS 的插件——用 `DECLARE_RT_SVC` 注册 OEN=0x32(TOS 范围)的服务,把 TEE 相关 SMC 转发给 TEE OS。SPD 还负责初始化 TEE OS(通过 `bl31_register_bl32_init` 注册回调)。不同 TEE OS 有不同 SPD 实现(opteed/tspd/trusty)。
 
 ---
 
@@ -684,6 +687,26 @@ SUBSCRIBE_TO_EVENT(cm_entering_normal_world, ehf_entering_normal_world);
 
 **为什么要在进入安全世界时屏蔽非安全中断?** 如果 OP-TEE 正在处理密钥操作,一个非安全中断打断了它——中断处理在 EL3,可能切换到非安全世界,此时 OP-TEE 的中间状态(如部分加密结果)暴露给非安全世界。EHF 确保安全世界执行期间,非安全中断被屏蔽,直到安全操作完成。
 
+### 6.5 中断处理流程
+
+TF-A 的安全中断和非安全中断处理流程如下图所示:
+
+**安全中断处理流程**:
+
+![TF-A 安全中断处理流程](./images/tf-a-sec-int-handling.png)
+
+*来源:TF-A Documentation, Interrupt Management Framework*
+
+> **如何读这张图**:安全中断(S-EL1/EL3 中断)到达时,CPU 陷入 EL3。BL31 的异常处理器检查中断优先级,如果是高优先级 EL3 中断(如 RAS 错误),直接在 EL3 处理;如果是安全世界中断(S-EL1),则切换到安全世界,由 OP-TEE 处理。处理完成后 ERET 返回原世界。
+
+**非安全中断处理流程**:
+
+![TF-A 非安全中断处理流程](./images/tf-a-non-sec-int-handling.png)
+
+*来源:TF-A Documentation, Interrupt Management Framework*
+
+> **如何读这张图**:非安全中断(REE 中断)到达时,如果当前在安全世界,BL31 先屏蔽非安全中断,切换到非安全世界,然后由 Linux 内核处理;如果当前已在非安全世界,直接由 Linux 处理。关键设计:安全世界执行期间,非安全中断被 EHF 屏蔽,防止中断处理暴露安全世界的中间状态。
+
 > **核心要点**:EHF 是 BL31 的中断优先级管理框架——通过优先级位图和 GIC 优先级掩码,实现高优先级安全中断抢占低优先级处理。进入安全世界时自动屏蔽非安全中断,保护 TEE 操作的原子性。EHF 通过事件订阅机制与上下文管理库协作,自动在 REE↔TEE 切换时调整中断掩码。
 
 ---
@@ -709,10 +732,10 @@ flowchart TD
 
     Linux["Linux (EL1)<br/>REE"] -->|SMC| Entry
     Entry --> Router
-    Router -->|OEN=0| PSCI
-    Router -->|OEN=0x3A| SPD
-    Router -->|OEN=0x6| SiP
-    Router -->|OEN=0| ArchSvc
+    Router -->|OEN=0x4| PSCI
+    Router -->|OEN=0x32| SPD
+    Router -->|OEN=0x2| SiP
+    Router -->|OEN=0x0| ArchSvc
     PSCI -->|平台回调| PlatPM["平台电源管理<br/>plat_psci_ops"]
     SPD -->|ERET 切换| OPTEE["OP-TEE (S-EL1)<br/>TEE"]
     Entry -->|中断| EHF

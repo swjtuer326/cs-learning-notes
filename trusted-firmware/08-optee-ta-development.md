@@ -453,11 +453,22 @@ RPMB 上 OP-TEE 自己维护一个简化的 FAT 文件系统(`RPMB_FS_MAGIC` 标
 1. **加密**:每个文件用 FEK (File Encryption Key) 加密,FEK 又用 TA 的派生密钥加密后存在文件元数据中
 2. **哈希树**:文件元数据组织成 Merkle 哈希树,任何篡改都会导致哈希不匹配,被检测到
 
+安全存储系统的架构分三层:
+- **上层**:GP TEE Storage API(TA 调用)
+- **中间**:OP-TEE Core 的存储管理(加密、哈希树)
+- **底层**:两个后端——RPMB(抗回滚)和 REE FS(大容量)
+
+TA 通过统一的 API 访问存储,底层后端对 TA 透明。
+
 源码在 [core/tee/tee_ree_fs.c](./src/optee-src/core/tee/tee_ree_fs.c) 和 [core/tee/fs_htree.c](./src/optee-src/core/tee/fs_htree.c)。
 
 **REE FS 的局限**:无法抗回滚——攻击者可以把 `/data/tee/` 整个目录回滚到旧版本,哈希树依然匹配(因为旧版本也是合法加密的)。所以 REE FS 适合"防篡改"但不要求"防回滚"的场景。
 
 **为什么还要 REE FS?** 因为 RPMB 容量小(典型 4MB)、写入有寿命限制(eMMC RPMB 通常 1 万次写)。REE FS 容量大、写入快。两者结合:REE FS 存数据,RPMB 存"防回滚计数器"——这是 OP-TEE 的默认配置(`CFG_REE_FS=y` + `CFG_RPMB_FS=y`)。
+
+**元数据加密结构**:每个安全存储文件包含两部分——元数据(encrypted metadata)和数据块(encrypted block data)。元数据包含 FEK(文件加密密钥)、文件大小、时间戳等,用 TA 的派生密钥加密。数据块用 FEK 加密。元数据组织成哈希树(Merkle tree),根哈希存储在安全内存中,防止篡改。
+
+**数据块加密方式**:每个数据块(data block)用 FEK + 块索引(block index)作为 IV 进行 AES-CTR 加密。这种设计确保相同明文在不同块中加密结果不同,防止重放攻击。加密后的数据块存储在 REE 文件系统中,即使 REE 被攻破,攻击者也无法解密(因为 FEK 存储在安全内存中)。
 
 ### 4.3 tee-supplicant 的角色
 

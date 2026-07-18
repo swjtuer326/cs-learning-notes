@@ -172,7 +172,17 @@ include ${SPD_MAKE}
 
 **为什么 BL32 有两种来源?** TSP(测试用 SP)是 TF-A 自带的,可以直接从源码编译。但 OP-TEE 是独立项目,通常先单独编译 OP-TEE 产物,再通过 `BL32=<path>` 传给 TF-A 构建。两种方式互斥——如果同时指定,预编译二进制优先。
 
-### 2.4 构建流程
+### 2.4 运行时服务描述符布局
+
+BL31 通过链接器段收集所有运行时服务描述符,形成统一的服务注册表。下图展示了运行时服务描述符在内存中的布局:
+
+![TF-A 运行时服务描述符布局](./images/tf-a-rt-svc-descs-layout.png)
+
+*来源:TF-A Documentation, Firmware Design*
+
+> **如何读这张图**:链接器将所有通过 `DECLARE_RT_SVC` 宏声明的服务描述符收集到 `.rt_svc_descs` 段。每个描述符包含服务名称、OEN 范围、调用类型(Fast/Yielding)和处理函数指针。`runtime_svc_init()` 遍历这个段,建立 OEN→索引的查找表,实现 O(1) 的 SMC 路由。
+
+### 2.5 构建流程
 
 ```mermaid
 %%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
@@ -433,6 +443,197 @@ flowchart LR
 > **如何读这张图**:镜像从 Flash 经 io_fip 驱动读取,解析 FIP TOC 定位镜像,经认证模块验证签名/哈希后加载到 RAM。验证失败则启动中止——这是 TBBR 的安全保证。
 
 > **核心要点**:构建产物中 `fip.bin` 是核心——它打包了所有 BL 镜像、配置和证书。BL1 不在 FIP 中(它是验证 FIP 的前提)。用 `fiptool info` 可以查看 FIP 内的每个文件及其 UUID、偏移、大小。
+
+---
+
+## 5. 内存布局与地址管理
+
+> 前几章讲了目录结构和构建系统,但 TF-A 各阶段在内存中怎么布局?每个 BL 阶段占多少空间?本章讲 TF-A 的内存模型——这是理解启动链和移植新平台的关键。
+
+### 5.1 TF-A 内存区域分类
+
+TF-A 使用多种内存区域,按安全属性分类:
+
+| 内存类型 | 访问权限 | 典型用途 | 硬件保护机制 |
+|----------|----------|----------|--------------|
+| **Trusted SRAM** | 仅安全状态 | BL1/BL2 代码、安全数据 | TZC(TrustZone Controller)或硬件隔离 |
+| **Trusted DRAM** | 仅安全状态 | BL31/BL32 代码、安全堆栈 | TZC 配置的安全 DRAM region |
+| **Non-trusted SRAM** | 安全+非安全 | BL33(U-Boot)临时数据 | 无特殊保护 |
+| **Non-trusted DRAM** | 安全+非安全 | BL33 主内存、Linux | 无特殊保护 |
+| **Shared memory** | 安全+非安全 | REE↔TEE 通信缓冲区 | 软件边界检查 |
+
+**为什么需要多种内存类型?** 安全启动要求 BL1/BL2 在可信内存中执行,防止非安全代码篡改;BL31/BL32 也需要可信内存保护密钥和敏感数据。但 BL33(Linux)不需要这种保护,且需要访问大量非安全内存。TF-A 通过内存分区实现安全隔离。
+
+### 5.2 典型内存布局示例
+
+以 ARM FVP 平台为例,内存布局如下:
+
+```
+物理地址空间 (64-bit)
+┌─────────────────────────────────────────┐
+│ 0x0000_0000 - 0x03FF_FFFF  (64 MB)     │
+│ Trusted SRAM                           │
+│ ├─ BL1 (ROM 副本)                      │
+│ ├─ BL2 (验证加载阶段)                  │
+│ └─ 安全数据区                          │
+├─────────────────────────────────────────┤
+│ 0x0400_0000 - 0x07FF_FFFF  (64 MB)     │
+│ Trusted DRAM (TZC 保护)                │
+│ ├─ BL31 (Secure Monitor)               │
+│ ├─ BL32 (OP-TEE)                       │
+│ └─ 安全堆栈                            │
+├─────────────────────────────────────────┤
+│ 0x0800_0000 - 0x7FFF_FFFF  (1.9 GB)    │
+│ Non-trusted DRAM                       │
+│ ├─ BL33 (U-Boot/UEFI)                  │
+│ ├─ Linux 内核                          │
+│ └─ 用户空间                            │
+├─────────────────────────────────────────┤
+│ 0x8000_0000 - 0xFFFF_FFFF  (2 GB)      │
+│ Non-trusted DRAM (继续)                │
+│ └─ 共享内存缓冲区                      │
+└─────────────────────────────────────────┘
+```
+
+> **如何读这张图**:内存按安全属性分区——Trusted SRAM/DRAM 由硬件(TZC)保护,仅安全状态可访问;Non-trusted DRAM 对两个世界都可见。BL1/BL2 在 Trusted SRAM,BL31/BL32 在 Trusted DRAM,BL33 和 Linux 在 Non-trusted DRAM。
+
+### 5.3 平台内存配置
+
+平台通过 `platform_def.h` 定义内存布局:
+
+```c
+/* 摘自 [tf-a-src/plat/arm/board/fvp/include/platform_def.h](./src/tf-a-src/plat/arm/board/fvp/include/platform_def.h) 第 45-78 行 */
+
+/* Trusted SRAM 布局 */
+#define ARM_TRUSTED_SRAM_BASE       0x04000000
+#define ARM_TRUSTED_SRAM_SIZE       0x00040000    /* 256 KB */
+
+/* BL1 在 Trusted SRAM 中的位置 */
+#define BL1_RO_BASE                 ARM_TRUSTED_SRAM_BASE
+#define BL1_RO_LIMIT                (ARM_TRUSTED_SRAM_BASE + 0x10000)  /* 64 KB */
+#define BL1_RW_BASE                 (BL1_RO_LIMIT)
+#define BL1_RW_LIMIT                (ARM_TRUSTED_SRAM_BASE + ARM_TRUSTED_SRAM_SIZE)
+
+/* Trusted DRAM 布局 */
+#define ARM_TRUSTED_DRAM_BASE       0x06000000
+#define ARM_TRUSTED_DRAM_SIZE       0x02000000    /* 32 MB */
+
+/* BL31 在 Trusted DRAM 中的位置 */
+#define BL31_BASE                   ARM_TRUSTED_DRAM_BASE
+#define BL31_LIMIT                  (BL31_BASE + 0x20000)     /* 128 KB */
+
+/* BL32 (OP-TEE) 在 Trusted DRAM 中的位置 */
+#define BL32_BASE                   BL31_LIMIT
+#define BL32_LIMIT                  (ARM_TRUSTED_DRAM_BASE + ARM_TRUSTED_DRAM_SIZE)
+
+/* Non-trusted DRAM */
+#define ARM_DRAM1_BASE              0x80000000
+#define ARM_DRAM1_SIZE              0x80000000    /* 2 GB */
+```
+
+**为什么内存布局要平台定义?** 不同 SoC 的 SRAM/DRAM 大小和地址完全不同——FVP 有 256 KB Trusted SRAM,但 STM32MP15 只有 128 KB。平台通过 `platform_def.h` 告诉 TF-A 各阶段的内存位置,通用代码根据这些定义分配空间。
+
+### 5.4 内存保护机制
+
+TF-A 使用多种硬件机制保护内存:
+
+| 机制 | 保护对象 | 实现方式 |
+|------|----------|----------|
+| **TZC (TrustZone Controller)** | Trusted DRAM region | ARM PL011 TZC 硬件,配置安全/非安全访问权限 |
+| **MPU (Memory Protection Unit)** | Cortex-M 子系统 | 区域基址+大小,权限位 |
+| **MMU (Memory Management Unit)** | Cortex-A 各阶段 | 页表映射,AP 权限位 |
+| **SCR_EL3.NS** | 安全/非安全状态切换 | EL3 寄存器,控制物理地址空间的安全属性 |
+
+**TZC 配置示例**(FVP 平台):
+
+```c
+/* 摘自 [tf-a-src/plat/arm/board/fvp/fvp_security.c](./src/tf-a-src/plat/arm/board/fvp/fvp_security.c) 第 32-45 行 */
+void plat_arm_security_setup(void)
+{
+    /* 配置 TZC400,保护 Trusted DRAM */
+    arm_tzc400_setup(ARM_TRUSTED_DRAM_BASE, ARM_TRUSTED_DRAM_SIZE);
+    
+    /* 区域 0: 整个 DRAM,非安全访问 */
+    tzc400_configure_region0(TZC_REGION_S_NONE, 0x00000000, 0xFFFFFFFF);
+    
+    /* 区域 1: Trusted DRAM,仅安全访问 */
+    tzc400_configure_region1(
+        TZC_REGION_S_RDWR,              /* 安全状态可读写 */
+        ARM_TRUSTED_DRAM_BASE,          /* 基址 */
+        ARM_TRUSTED_DRAM_SIZE           /* 大小 */
+    );
+}
+```
+
+> **核心要点**:TF-A 内存布局分 Trusted SRAM/DRAM(安全)和 Non-trusted DRAM(非安全)。平台通过 `platform_def.h` 定义各阶段的内存位置,通用代码根据这些定义分配空间。TZC 硬件保护 Trusted DRAM,防止非安全状态访问。
+
+---
+
+## 6. 设备树与 FCONF 配置框架
+
+> 前几章讲了内存布局,但 TF-A 怎么知道硬件的具体参数(如 UART 基址、GIC 地址)?本章讲 TF-A 的配置机制——设备树和 FCONF 框架。
+
+### 6.1 设备树在 TF-A 中的角色
+
+TF-A 使用设备树(Device Tree)描述硬件配置,与 Linux 内核类似但更简化:
+
+| 用途 | 设备树类型 | 内容 |
+|------|-----------|------|
+| **硬件配置** | HW_CONFIG | UART、GIC、定时器、内存布局 |
+| **固件配置** | FW_CONFIG | BL 阶段参数、启动选项 |
+| **安全配置** | TOS_FW_CONFIG | OP-TEE 参数、共享内存地址 |
+| **非安全配置** | NT_FW_CONFIG | BL33 参数、启动地址 |
+
+### 6.2 FCONF 框架
+
+FCONF(Firmware Configuration Framework)是 TF-A 的配置抽象层,允许从多种来源读取配置:
+
+```c
+/* 摘自 [tf-a-src/include/lib/fconf/fconf.h](./src/tf-a-src/include/lib/fconf/fconf.h) 第 15-28 行 */
+
+/* FCONF 属性获取宏 */
+#define FCONF_GET_PROPERTY(provider, populator, name) \
+    fconf_get_property(FCONF_PROP_ID(provider, populator, name))
+
+/* 示例:获取 UART 基址 */
+uint64_t uart_base = FCONF_GET_PROPERTY(hw, uart, base);
+
+/* 示例:获取 GIC  redistributor 地址 */
+uint64_t gicr_base = FCONF_GET_PROPERTY(hw, gic, redist_base);
+```
+
+**为什么需要 FCONF?** 不同平台的硬件配置不同(FVP 的 UART 在 0x1C090000,QEMU 在 0x09000000)。FCONF 提供统一接口,平台实现具体的配置提供者(provider),通用代码通过 `FCONF_GET_PROPERTY` 获取配置,无需知道底层细节。
+
+### 6.3 设备树解析
+
+TF-A 使用 libfdt 库解析设备树:
+
+```c
+/* 摘自 [tf-a-src/common/fdt_wrappers.c](./src/tf-a-src/common/fdt_wrappers.c) 第 45-62 行 */
+int fdt_get_reg_props_by_index(const void *dtb, int node,
+                               int index, uintptr_t *base, size_t *size)
+{
+    int rc;
+    uint64_t addr, sz;
+    
+    /* 从设备树读取 "reg" 属性 */
+    rc = fdt_get_reg_props_by_index_internal(dtb, node, index, &addr, &sz);
+    if (rc < 0)
+        return rc;
+    
+    *base = (uintptr_t)addr;
+    *size = (size_t)sz;
+    return 0;
+}
+
+/* 使用示例:获取 UART 基址 */
+int uart_node = fdt_path_offset(dtb, "/uart@1c090000");
+uintptr_t uart_base;
+size_t uart_size;
+fdt_get_reg_props_by_index(dtb, uart_node, 0, &uart_base, &uart_size);
+```
+
+> **核心要点**:TF-A 使用设备树描述硬件配置,FCONF 框架提供统一接口获取配置。平台实现配置提供者,通用代码通过 `FCONF_GET_PROPERTY` 获取参数,实现硬件无关性。
 
 ---
 

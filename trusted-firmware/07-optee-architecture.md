@@ -16,9 +16,9 @@
 | GP API | GlobalPlatform API | GP 规范定义的 TEE Client/Internal API |
 | libteec | — | REE 侧 CA 链接的库,实现 TEE Client API |
 | libutee | — | TEE 侧 TA 链接的库,实现 TEE Internal Core API |
-| ldelf |Loader of ELF| OP-TEE 加载 TA 时使用的 ELF 加载器 |
+| ldelf | Loader of ELF | OP-TEE 加载 TA 时使用的 ELF 加载器 |
 | PTA | Pseudo TA | OP-TEE 内核态(S-EL1)伪 TA,与用户态 TA 相对 |
-| FFA | FF-A, Firmware Framework for Arm | ARMv9 推荐的新一代 TEE 通信框架,可替代 SMC+SHM |
+| FF-A | Firmware Framework for Arm | ARMv9 推荐的新一代 TEE 通信框架,可替代 SMC+SHM |
 | TA | Trusted Application | 运行在 S-EL0 的可信应用 |
 | CA | Client Application | 运行在 REE 的客户端应用 |
 
@@ -133,6 +133,77 @@ flowchart TD
 ```
 
 > **如何读这张图**:TA 跑在 S-EL0(用户态),OP-TEE Core 跑在 S-EL1(内核态)。TA 调用 `TEE_AllocateOperation` 等 GP Internal API 时,libutee 把它转成 `_utee_*` syscall 进入 S-EL1,由 `tee_svc_cryp.c` 等内核态代码处理。注意:OP-TEE 还有"Pseudo TA"(PTA)——它跑在 S-EL1 内核态,用于实现设备相关服务(如 RPMB、attestation),性能更高但隔离性弱于用户态 TA。
+
+### 2.4 内存管理与分页机制
+
+OP-TEE 的内存管理是理解其架构的关键。下图展示了 OP-TEE 的 pager 区域布局:
+
+![OP-TEE Pager 区域布局](./images/optee-tee-pager-area.png)
+
+*来源:OP-TEE Documentation, Architecture - Core*
+
+> **如何读这张图**:OP-TEE 使用分页机制(pager)来管理安全内存。图中展示了:
+> - **Pager area**:可分页的代码和数据区域,不常用的页面会被换出到非安全内存
+> - **Non-paged area**:常驻内存的核心代码,如中断处理、关键数据结构
+> - **TA area**:每个 TA 有独立的地址空间,通过 MMU 隔离
+> 
+> 这种设计让 OP-TEE 能在有限的安全内存(通常只有几 MB)中运行大量 TA。
+
+#### 2.4.1 Pager 工作原理
+
+OP-TEE 的 pager 机制类似于操作系统的虚拟内存,但更简化:
+
+```c
+/* 摘自 [optee-src/core/arch/arm/mm/tee_pager.c](./src/optee-src/core/arch/arm/mm/tee_pager.c) 第 89-125 行 */
+
+/* Pager 区域定义 */
+struct tee_pager_area {
+    vaddr_t base;           /* 虚拟地址基址 */
+    size_t size;            /* 区域大小 */
+    uint32_t flags;         /* 权限标志(读/写/执行) */
+    struct fobj *fobj;      /* 后端存储对象 */
+};
+
+/* 页面换出流程 */
+static void tee_pager_pageout(struct tee_pager_area *area, vaddr_t page_addr)
+{
+    /* 1. 找到要换出的页面 */
+    struct fobj *fobj = area->fobj;
+    size_t page_idx = (page_addr - area->base) / SMALL_PAGE_SIZE;
+    
+    /* 2. 保存页面内容到非安全内存(加密) */
+    fobj->ops->save_page(fobj, page_idx, page_addr);
+    
+    /* 3. 清除页表项,标记为不在内存中 */
+    core_mmu_set_entry(&area->pgt, page_idx, 0, 0);
+    
+    /* 4. 更新 pager 状态 */
+    area->flags |= TEE_PAGER_AREA_FLAG_PAGEOUT;
+}
+
+/* 页面换入流程 */
+static void tee_pager_pagein(struct tee_pager_area *area, vaddr_t page_addr)
+{
+    /* 1. 分配一个物理页面 */
+    void *page = tee_mm_alloc(&tee_mm_pool, SMALL_PAGE_SIZE);
+    
+    /* 2. 从非安全内存加载页面内容 */
+    area->fobj->ops->load_page(area->fobj, page_idx, page);
+    
+    /* 3. 更新页表,映射到虚拟地址 */
+    core_mmu_set_entry(&area->pgt, page_idx, (uintptr_t)page, area->flags);
+    
+    /* 4. 刷新 TLB */
+    tlbi_mva_allasid(page_addr);
+}
+```
+
+**为什么需要 pager?** ARM TrustZone 的安全内存(Trusted DRAM)通常只有几 MB(如 FVP 默认 32 MB),但 OP-TEE 需要支持多个 TA,每个 TA 可能有几十 KB 到几 MB 的代码。如果所有 TA 都常驻内存,安全内存很快耗尽。Pager 机制让不常用的 TA 代码页换出到非安全内存(加密存储),需要时再换入,实现"小内存跑大应用"。
+
+**Pager 的安全性**:换出的页面存储在非安全内存中,但经过加密和完整性保护。攻击者无法篡改或重放这些页面,因为:
+1. 加密密钥存储在安全内存中,非安全世界无法访问
+2. 每个页面有唯一的 IV(基于虚拟地址),防止重放攻击
+3. 换入时验证完整性,篡改的页面会被拒绝
 
 ---
 

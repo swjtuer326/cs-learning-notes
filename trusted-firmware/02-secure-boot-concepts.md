@@ -15,6 +15,7 @@
 | RSA | Rivest–Shamir–Adleman | 非对称加密/签名算法 |
 | SHA | Secure Hash Algorithm | 安全哈希算法,如 SHA-256 |
 | X.509 | — | 公钥证书的国际标准格式(ITU-T X.509) |
+| ASN.1 | Abstract Syntax Notation One | 数据结构描述与编码标准,X.509 证书基于此定义 |
 | DER | Distinguished Encoding Rules | ASN.1 编码格式,证书签名使用 |
 | Measured Boot | — | 度量启动,记录哈希到 TPM/安全存储 |
 | Verified Boot | — | 验证启动,启动前校验签名 |

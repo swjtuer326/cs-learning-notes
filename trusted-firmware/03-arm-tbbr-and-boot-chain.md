@@ -15,6 +15,7 @@
 | SMC | Secure Monitor Call | ARM 触发 EL3 调用的指令 |
 | SMCCC | SMC Calling Convention | SMC 调用约定规范(ARM DEN0028) |
 | OEN | Owning Entity Number | SMC Function ID 中的服务归属号 |
+| ASN.1 | Abstract Syntax Notation One | 数据结构描述与编码标准,X.509 证书基于此定义 |
 | DER | Distinguished Encoding Rules | ASN.1 编码格式,证书签名/哈希使用 |
 | BL1/BL2/BL31/BL32/BL33 | Boot Loader stage 1~3 | ARM 启动链各阶段 |
 | EL3 | Exception Level 3 | ARM 最高特权级,Secure Monitor 所在 |
@@ -73,7 +74,7 @@ TBBR 规范(ARM DEN0006)的核心要求:
 %%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 flowchart TD
     PowerOn([上电]) --> BL1[BL1 ROM Code<br/>EL3<br/>验证并加载 BL2]
-    BL1 -->|SMC 跳转| BL2[BL2 Trusted Boot<br/>S-EL1<br/>验证并加载 BL31/BL32/BL33]
+    BL1 -->|加载并 ERET 跳转| BL2[BL2 Trusted Boot<br/>S-EL1<br/>验证并加载 BL31/BL32/BL33]
     BL2 -->|加载| BL31[BL31 Secure Monitor<br/>EL3 常驻]
     BL2 -->|加载| BL32[BL32 TEE OS<br/>S-EL1 常驻]
     BL2 -->|加载| BL33[BL33 U-Boot/UEFI<br/>EL2/EL1]
@@ -92,6 +93,35 @@ flowchart TD
 ```
 
 > **如何读这张图**:纵向展示启动时序。红色是上电起点;黄色(BL1/BL2)是验证阶段,执行完即退出;绿色(BL31/BL32)是常驻运行时;灰色(BL33/Linux)是普通世界。BL2 是验证枢纽——它一次性验证并加载 BL31、BL32、BL33 三个镜像。BL31 是运行时枢纽——它常驻 EL3,既初始化 BL32,又跳转 BL33。
+
+#### 2.1.1 TBBR 认证框架
+
+TF-A 的认证框架实现了 TBBR 规范的信任链验证。下图展示了认证框架的模块化架构:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                   Authentication Framework              │
+├─────────────────────────────────────────────────────────┤
+│  Image Verification API (img_verify_*)                  │
+│  - 验证镜像完整性和真实性                                │
+│  - 调用认证模块完成签名验证                              │
+├─────────────────────────────────────────────────────────┤
+│  Authentication Module (auth_mod_*)                     │
+│  - 管理证书链验证流程                                    │
+│  - 协调哈希/签名验证                                     │
+├─────────────────────────────────────────────────────────┤
+│  Key Parser (key_parser_*)                              │
+│  - 解析 X.509 证书                                       │
+│  - 提取公钥和扩展字段                                    │
+├─────────────────────────────────────────────────────────┤
+│  Hash/Crypto Backend (mbedtls_*)                        │
+│  - SHA-256/384 哈希计算                                  │
+│  - RSA/ECDSA 签名验证                                    │
+│  - 基于 mbedTLS 库                                       │
+└─────────────────────────────────────────────────────────┘
+```
+
+> **如何读这张图**:认证框架分四层——顶层是镜像验证 API(供 BL1/BL2 调用),中间是认证模块(管理证书链验证),底层是密钥解析器和加密后端(基于 mbedTLS)。这种分层设计允许平台替换加密后端(如使用硬件加速),而不影响上层逻辑。
 
 ### 2.2 BL1:不可变的信任根
 
@@ -519,8 +549,8 @@ SMC 调用通过 x0 寄存器传递 Function ID(FID),标识请求的服务类型
 %%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 flowchart LR
     subgraph "SMC Function ID (32 bit)"
-        Bit31["Bit 31<br/>SMC32/64"]
-        Bit30["Bit 30<br/>Fast/Yield"]
+        Bit31["Bit 31<br/>Fast/Yield"]
+        Bit30["Bit 30<br/>SMC32/64"]
         Bits29_24["Bits 29:24<br/>OEN"]
         Bits23_0["Bits 23:0<br/>Function Number"]
     end
@@ -531,16 +561,16 @@ flowchart LR
 
 | 位域 | 含义 | 值 |
 |------|------|----|
-| Bit 31 | 调用约定 | 0=SMC32(参数为 32 位),1=SMC64(参数为 64 位) |
-| Bit 30 | 调用类型 | 0=Fast(原子,不可抢占),1=Yield(可被中断抢占) |
-| Bits 29:24 | OEN(Owning Entity Number) | 标识服务归属(ARM 标准=0x0,PSCI=0x0,SiP=0x6,OEM=0x8,TOS=0x3A) |
+| Bit 31 | 调用类型 | 0=Yield(可被中断抢占),1=Fast(原子,不可抢占) |
+| Bit 30 | 调用约定 | 0=SMC32(参数为 32 位),1=SMC64(参数为 64 位) |
+| Bits 29:24 | OEN(Owning Entity Number) | 标识服务归属(ARM 架构=0x0,CPU=0x1,SiP=0x2,OEM=0x3,Standard/PSCI=0x4,TOS=0x32~0x3F) |
 | Bits 23:0 | 功能号 | 具体功能编号 |
 
 ### 5.3 Fast SMC vs Yielding SMC
 
 | 对比维度 | Fast SMC | Yielding SMC |
 |----------|----------|--------------|
-| **Bit 30** | 0 | 1 |
+| **Bit 31** | 1 | 0 |
 | **可抢占性** | 不可被中断抢占 | 可被中断抢占 |
 | **执行时间** | 必须极短(微秒级) | 可以较长(毫秒级) |
 | **典型用途** | PSCI_CPU_ON、PSCI_VERSION | OP-TEE 的 TA 调用 |
@@ -559,7 +589,7 @@ SMC 通过寄存器传递参数和返回值:
 | x4-x6 | 输入:参数 4-6(仅 SMC64) |
 | x7 | 输入:参数 7(仅 SMC64) |
 
-以 PSCI CPU_ON 为例,SMC64 的 FID 是 `0xc4000003`(Bit31=1, Bit30=0, OEN=0, 功能号=3):
+以 PSCI CPU_ON 为例,SMC64 的 FID 是 `0xc4000003`(Bit31=1 即 Fast,Bit30=1 即 SMC64,OEN=0x4 即 Standard Service,功能号=3):
 
 ```
 x0 = 0xc4000003  (PSCI_CPU_ON_AARCH64)
