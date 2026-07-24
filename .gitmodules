@@ -20,3 +20,6 @@
 [submodule "nccl/src/nccl-src"]
 	path = nccl/src/nccl-src
 	url = https://github.com/NVIDIA/nccl.git
+[submodule "cuda/src/cuda-samples"]
+	path = cuda/src/cuda-samples
+	url = https://github.com/NVIDIA/cuda-samples.git
