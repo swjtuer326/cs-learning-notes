@@ -228,7 +228,13 @@ float addend = (tid % 2 == 0) ? 0.0f : 1.0f;
 float result = data[tid] * multiplier + addend;
 ```
 
-> **核心要点**：SIMT 模型允许线程走不同路径，但代价是串行化。CUDA 编程的重要优化技巧是减少 Warp 内的分支发散。
+**为什么"好"的版本没有分支？** 关键在于三元表达式选的是**操作还是数据**。
+
+- **差版本**：三元表达式选择两种**操作**（`data[tid] * 2.0f` 是 MUL，`data[tid] + 1.0f` 是 ADD）。编译器必须生成分支——偶数线程走 MUL pass，奇数线程走 ADD pass，warp 内串行化。
+
+- **好版本**：三元表达式选择两种**数据**（`multiplier` 和 `addend` 各两个候选值）。GPU 从 Fermi 起就有硬件 **SEL（predicated select）指令**，一条指令根据 predicate 从两个源操作数中选一个写入目标。所有 32 线程执行完全相同的指令序列（SEL → SEL → MUL → ADD），只是 predicate 值不同导致 SEL 选回不同的数据。**没有分支，没有串行化。**
+
+> **核心要点**：SIMT 模型允许线程走不同路径，但代价是串行化。CUDA 编程的重要优化技巧是减少 Warp 内的分支发散——把"条件驱动操作差异"转化为"条件驱动数据差异"，利用硬件 SEL 消除分支。
 
 ***
 
@@ -294,6 +300,38 @@ __global__ void matrixTranspose(float *input, float *output, int width) {
     output[outY * width + outX] = tile[threadIdx.x][threadIdx.y];
 }
 ```
+
+下图以 Block `(bx, by) = (1, 0)`、一个 4×4 tile 为例，展示 Thread `(tx, ty) = (1, 2)` 的完整数据路径：
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
+flowchart TD
+    subgraph Input["输入矩阵 (行优先 1D)"]
+        I0["...<br>row=by*4+ty=2, col=bx*4+tx=5<br>→ input[2*W+5]"]
+    end
+
+    subgraph SMEM["共享内存 tile[4][4]"]
+        direction LR
+        T["存入: tile[ty][tx] = tile[2][1]<br>读取: tile[tx][ty] = tile[1][2]"]
+    end
+
+    subgraph Output["输出矩阵 (行优先 1D)"]
+        O0["...<br>row=bx*4+ty=6, col=by*4+tx=1<br>→ output[6*W+1]"]
+    end
+
+    I0 -->|"Step 1: 连续读 ✓"| T
+    T -->|"Step 2: 转置后写出, 连续写 ✓"| O0
+
+    style Input fill:#dbeafe,stroke:#2563eb
+    style SMEM fill:#d1fae5,stroke:#059669
+    style Output fill:#dbeafe,stroke:#2563eb
+```
+
+**如何读这张图**：
+- Step 1：Thread `(1,2)` 从 input 读 `input[2*W+5]`（即 input 位置 `(row=2, col=5)`），存到 `tile[2][1]`。共享内存中 `tile[ty][tx]` 的行列与原始矩阵一致。
+- Step 2：`__syncthreads()` 之后，Thread `(1,2)` 读 `tile[1][2]`——这是 Step 1 中 Thread `(2,1)` 写入的数据（来自 input 位置 `(row=1, col=6)`），写到 `output[6*W+1]`（即 output 位置 `(row=6, col=1)`）。**input `(1,6)` → output `(6,1)`**，行号变成列号——转置完成。
+- 对称地，Thread `(1,2)` 在 Step 1 写入 `tile[2][1]` 的数据（input `(2,5)`）会被 Thread `(2,1)` 在 Step 2 读走并写到 `output[5*W+2]`（output `(5,2)`）。每个线程同时充当"写入者"与"被读出者"两种角色。
+- 两段全局内存访问都是连续线程访问连续地址，保持 coalesced。
 
 **Bank 冲突 (Bank Conflict)**：共享内存分为 32 个 Bank，每个 Bank 4 字节。如果多个线程同时访问同一个 Bank 的不同地址，会串行化。
 
