@@ -20,9 +20,10 @@
 | L1/L2         | Level 1/Level 2 Cache               | GPU 缓存层级                  |
 | Register File | —                                   | 寄存器文件，SM 内最快的存储           |
 | Shared Memory | —                                   | SM 内的用户可控共享存储             |
+| KMD           | Kernel Mode Driver                  | 内核态驱动（`nvidia.ko`），管理硬件资源与 ioctl 调度 |
 
 
-### 1.1 前置知识
+### 前置知识
 
 
 | 需要了解                  | 参考文档 |

@@ -20,7 +20,7 @@
 | nvcc | NVIDIA CUDA Compiler | CUDA 编译器 |
 | nvrtc | NVIDIA Runtime Compilation | 运行时编译库 |
 
-### 7.1 前置知识
+### 前置知识
 
 | 需要了解 | 参考文档 |
 |----------|----------|

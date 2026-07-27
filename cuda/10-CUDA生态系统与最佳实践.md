@@ -21,7 +21,7 @@
 | Enhanced Compatibility | — | 增强兼容性（向后兼容） |
 | Minor Version Compatibility | — | 次要版本兼容性 |
 
-### 10.1 前置知识
+### 前置知识
 
 | 需要了解 | 参考文档 |
 |----------|----------|

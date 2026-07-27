@@ -21,8 +21,10 @@
 | MIO | Memory IO | GPU 内存 IO 子系统，处理 in-flight 的内存访问请求 |
 | TLB | Translation Lookaside Buffer | 地址翻译后备缓冲器，缓存 VA→PA 映射，context 切换时需 flush |
 | VA | Virtual Address | 虚拟地址，每个 context 有独立的 VA 空间 |
+| FE | Front End | GPU 前端单元，从 ring buffer 取任务描述符并分发到 SM |
+| KMD | Kernel Mode Driver | 内核态驱动（`nvidia.ko`），管理硬件资源与 ioctl 调度 |
 
-### 5.1 前置知识
+### 前置知识
 
 | 需要了解 | 参考文档 |
 |----------|----------|

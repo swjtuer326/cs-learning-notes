@@ -20,7 +20,7 @@
 | blockDim | Block Dimension | Block 的维度（每维的线程数） |
 | gridDim | Grid Dimension | Grid 的维度（每维的 Block 数） |
 
-### 2.1 前置知识
+### 前置知识
 
 | 需要了解 | 参考文档 |
 |----------|----------|
