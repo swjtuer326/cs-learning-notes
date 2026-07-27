@@ -12,12 +12,52 @@
 | DBI | Data Bus Interface | DWC控制器内部寄存器访问接口 |
 | RC | Root Complex | 根复合体，PCIe拓扑的根节点 |
 | BDF | Bus/Device/Function | PCIe设备的三级地址编号 |
+| iATU | Internal Address Translation Unit | DWC控制器内部地址转换单元,可生成 Config TLP |
+| DWC | DesignWare PCIe | Synopsys 的可综合 PCIe Controller IP,业界最流行 |
 
 ---
 
 ## 0. 前置背景
 
-### 0.1 什么是配置空间
+### 0.1 系统上下文
+
+ECAM (Enhanced Configuration Access Mechanism) 在 PCIe 软件栈中是 CPU 访问设备配置空间的统一通道——它把每个 Function 的 4KB 配置空间映射到 MMIO 区域,使 Linux PCI 核心可以通过普通的 `readl/writel` 访问,无需依赖 x86 端口 I/O。理解 ECAM 必须同时看到三个耦合点:
+
+**项目定位**:ECAM 是 PCIe 规范定义的配置访问机制,介于 Linux PCI 核心(枚举/配置)与 Host Bridge 硬件(地址译码)之间。规范只定义"如何把 BDF+Offset 映射为 MMIO 地址",具体实现由 SoC 厂商的 Host Bridge 与 PCIe 控制器落地。
+
+**软硬件耦合点**:
+
+- CPU 发出 MMIO 访问 → Host Bridge 地址译码命中 ECAM 区域 → 生成 CfgRd/CfgWr TLP → 下游设备配置空间
+- ECAM 基址由固件描述:ACPI 系统通过 MCFG 表,DT 系统通过 `ranges` 属性
+- DWC (DesignWare) 控制器有两条路径:硬件 ECAM 译码器(标准路径)或 iATU 出向窗口(非 ECAM 路径);RC 自身配置空间则通过 DBI 直访,不生成 TLP
+
+**跨实现/跨架构对比**:
+
+- 通用 ECAM (`pci-host-ecam-generic`):硬件直接译码 `Bus<<20 + Dev<<15 + Func<<12`,1 次 MMIO 完成访问
+- DWC iATU (`native_ecam=true`):每次 BDF 变化需重写 iATU 寄存器,再 1 次 MMIO 访问;不要求 256MB 对齐
+- SG2046 实例:`config` 区域虽为 256MB,但 `native_ecam=true` 强制走 iATU 路径,体现 SoC 设计取舍
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
+flowchart TD
+    subgraph "上层"
+        KERN["Linux PCI 核心<br/>pci_read_config_*()"]
+    end
+    subgraph "本文研究对象"
+        ECAM["ECAM 访问机制<br/>§1 规范 / §2 内核实现 / §3 控制器变体"]
+    end
+    subgraph "下层"
+        HB["Host Bridge<br/>地址译码: ECAM 区域 → Config TLP"]
+        DWC["DWC 控制器<br/>DBI 直访 / iATU 生成 Config TLP"]
+    end
+    KERN -->|"读写配置空间"| ECAM
+    ECAM -->|"MMIO 访问"| HB
+    ECAM -.->|"非 ECAM 路径"| DWC
+```
+
+> **如何读这张图**:本文研究对象是 ECAM 访问机制(中间层),它向上对接 Linux PCI 核心的配置读写 API,向下通过 MMIO 访问 Host Bridge 触发地址译码。Host Bridge 命中 ECAM 区域后生成 Config TLP(实线),这是标准 ECAM 路径;DWC 控制器在 `native_ecam=true` 时改走 iATU 路径(虚线),由软件编程 iATU 寄存器生成 Config TLP,不经过硬件 ECAM 译码器。
+
+### 0.2 什么是配置空间
 
 每个PCIe Function拥有4KB配置空间，包含设备身份、能力声明、控制/状态寄存器等。软件必须先通过配置空间发现设备、了解其能力，才能正确使用设备。
 
@@ -36,7 +76,7 @@
     └── ...
 ```
 
-### 0.2 Host Bridge的角色
+### 0.3 Host Bridge的角色
 
 Host Bridge是Root Complex内的核心硬件模块，是CPU访问PCIe世界的门户：
 
@@ -47,9 +87,9 @@ CPU发出Memory访问 → Host Bridge地址译码:
   └── 未命中 → 访问本地内存 (DDR)
 ```
 
-Host Bridge本身不是PCIe设备，它没有标准的配置空间（不通过ECAM/CfgRd TLP访问）。但Root Port作为PCIe拓扑中的Bridge，拥有Type 1配置空间，通过DBI接口访问（见§3.4）。Host Bridge的地址译码规则由SoC设计者通过硬件连线或固件（ACPI/DT）配置。
+Host Bridge本身不是PCIe设备，它没有标准的配置空间（不通过ECAM/CfgRd TLP访问）。但Root Port作为PCIe拓扑中的Bridge，拥有Type 1配置空间，通过DBI接口访问（见§3.7）。Host Bridge的地址译码规则由SoC设计者通过硬件连线或固件（ACPI/DT）配置。
 
-### 0.3 配置空间访问的演进
+### 0.4 配置空间访问的演进
 
 | 机制 | 时代 | 访问方式 | 空间范围 |
 |------|------|---------|---------|
@@ -59,6 +99,8 @@ Host Bridge本身不是PCIe设备，它没有标准的配置空间（不通过EC
 ---
 
 ## 1. 规范机制
+
+> 上一章建立了配置空间访问的基础框架——明确了 4KB 配置空间的结构、Host Bridge 的地址译码角色、以及从 CAM 到 ECAM 的演进。一个自然的问题是:ECAM 在规范层面究竟如何把 BDF 映射为 MMIO 地址？本章用规范机制来回答这个问题——先讲为什么需要 ECAM、与传统 CAM 的差异,再讲 ECAM 地址计算的位域布局,最后讲 ACPI MCFG 表如何描述 ECAM 基址与多 Segment 场景。
 
 ### 1.1 为什么需要ECAM
 
@@ -151,6 +193,8 @@ MCFG表 (多Segment示例):
 ---
 
 ## 2. Linux内核实现
+
+> 上一章建立了 ECAM 规范机制的核心框架——地址映射公式 `Bus<<20 + Dev<<15 + Func<<12 + Offset`、MCFG 表对 ECAM 基址的描述。一个自然的问题是:Linux 内核如何把这套规范落地为可运行的代码？本章用 Linux 内核实现来回答这个问题——先讲 `pci_config_window`/`pci_ecam_ops` 等关键数据结构,再讲 `pci_ecam_create()` 的初始化流程与 `pci_ecam_map_bus()` 的地址计算入口,最后讲配置空间读写的完整调用链与并发保护。
 
 ### 2.1 关键数据结构
 
@@ -393,6 +437,8 @@ void pci_lock_config(void)
 
 ## 3. 控制器变体
 
+> 上一章建立了 Linux 通用 ECAM 实现的核心框架——`pci-host-ecam-generic` 驱动、`pci_ecam_map_bus()` 的标准地址计算、全局 `pci_lock` 的并发保护。一个自然的问题是:真实 SoC 的 PCIe 控制器都严格遵循标准 ECAM 吗？本章用控制器变体来回答这个问题——先讲 DWC 控制器在 ECAM 模式下的幽灵设备过滤,再讲 `native_ecam=true` 时 iATU 生成 Config TLP 的非 ECAM 路径,接着用 SG2046 实例展示完整取舍,最后对比 CAM、DBI 等其他配置访问机制。
+
 不同SoC的PCIe控制器可能需要定制ECAM操作：
 
 ### 3.1 DWC控制器的ECAM过滤
@@ -413,7 +459,170 @@ static bool pci_dw_valid_device(struct pci_bus *bus, unsigned int devfn)
 
 > DWC RC只有一个下游端口，Bus 0上只应存在Dev 0。不过滤会导致"幽灵设备"。
 
-### 3.2 非标准ECAM控制器
+### 3.2 DWC 通用 ECAM 路径（`dw_pcie_ecam_ops`）
+
+DWC host 核心在 [pcie-designware-host.c](file:///home/pbw/sg2046/linux-common/drivers/pci/controller/dwc/pcie-designware-host.c) 中自带一套 ECAM ops,与 `pci-host-generic.c` 的 `pci_dw_ecam_bus_ops` 思路一致——Bus 0 Dev 0 走 DBI,Bus 0 Dev>0 过滤,Bus>0 走标准 ECAM:
+
+```c
+// drivers/pci/controller/dwc/pcie-designware-host.c 第 834-860 行
+static void __iomem *dw_pcie_ecam_conf_map_bus(struct pci_bus *bus,
+                                               unsigned int devfn, int where)
+{
+    struct pci_config_window *cfg = bus->sysdata;
+    struct dw_pcie_rp *pp = cfg->priv;
+    struct dw_pcie *pci = to_dw_pcie_from_pp(pp);
+    unsigned int busn = bus->number;
+
+    if (busn > 0)
+        return pci_ecam_map_bus(bus, devfn, where);  // 下游:标准 ECAM
+
+    if (PCI_SLOT(devfn) > 0)
+        return NULL;                                  // 幽灵设备过滤
+
+    return pci->dbi_base + where;                     // RC 自身:DBI
+}
+
+static struct pci_ops dw_pcie_ecam_ops = {
+    .map_bus = dw_pcie_ecam_conf_map_bus,
+    .read    = pci_generic_config_read,
+    .write   = pci_generic_config_write,
+};
+```
+
+**启用条件**——`dw_pcie_ecam_enabled()` 三项检查全过才走此路径:
+
+```c
+// drivers/pci/controller/dwc/pcie-designware-host.c 第 478-504 行
+static bool dw_pcie_ecam_enabled(struct dw_pcie_rp *pp, struct resource *config_res)
+{
+    /* Vendor glue drivers may implement their own ECAM mechanism */
+    if (pp->native_ecam)        // ① vendor 标记自行处理
+        return false;
+
+    /* PCIe spec r6.0 sec 7.2.2: ECAM 基址必须 2^(n+20) 对齐,DWC n=8 → 256MB */
+    if (!IS_256MB_ALIGNED(config_res->start))  // ② 对齐检查
+        return false;
+
+    bus_range = resource_list_first_type(...)->res;
+    nr_buses = resource_size(config_res) >> PCIE_ECAM_BUS_SHIFT;
+    return nr_buses >= resource_size(bus_range);  // ③ 容量检查
+}
+```
+
+> **如何读这段代码**:三个条件任一不满足就回退到 iATU 路径(§3.3)。条件②要求 DT `config` 区域的物理基址 256MB 对齐——因为 DWC 用 8 位 Bus 号,ECAM 偏移 `Bus<<20` 需要 28 位地址空间,基址必须 2^28 对齐。条件③要求 config 区域足够覆盖所有 Bus。
+
+### 3.3 DWC iATU 配置访问路径（`native_ecam=true` 或不对齐时）
+
+当 `dw_pcie_ecam_enabled()` 返回 `false` 时,DWC 走 **iATU 出向窗口** 生成 Config TLP——这是 DWC 的"原生"(非 ECAM)配置访问方式。**注意变量名 `native_ecam` 的误导性**:它为 `true` 时实际走的是**非 ECAM**(iATU)路径,Sophgo 提交此特性的 commit message 明确写 "Support non-ecam mode"。
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "'trebuchet ms', verdana, arial, sans-serif"}}}%%
+flowchart TD
+    CPU["CPU 发出 MMIO 读<br/>(va_cfg0_base + where)"] --> ATU{"iATU 出向窗口<br/>已配置目标 BDF?"}
+    ATU -->|"否,首次访问或 BDF 变化"| PROG["dw_pcie_prog_outbound_atu()<br/>写 iATU 寄存器:<br/>type=CFG0/CFG1, pci_addr=BDF"]
+    PROG --> WRITE
+    ATU -->|"是"| WRITE["MMIO 读写 va_cfg0_base+where"]
+    WRITE --> TLP["DWC 生成 CfgRd/CfgWr TLP<br/>Requester ID=RC, BDF=目标"]
+    TLP --> EP["下游设备配置空间"]
+
+    RC_OWN["RC 自身配置<br/>(Bus 0 Dev 0)"] -.->|"不走 iATU"| DBI["直接读 dbi_base+where"]
+
+    style CPU fill:#dbeafe,stroke:#2563eb
+    style ATU fill:#fef3c7,stroke:#d97706
+    style TLP fill:#e8f5e9,stroke:#059669
+    style DBI fill:#e8f5e9,stroke:#059669
+```
+
+**核心函数 `dw_pcie_other_conf_map_bus()`**——每次下游配置访问都重配 iATU:
+
+```c
+// drivers/pci/controller/dwc/pcie-designware-host.c 第 724-761 行
+// 简化实现,省略了 dw_pcie_link_up 检查、PCIE_ATU_TYPE_CFG0/1 选择逻辑的注释
+static void __iomem *dw_pcie_other_conf_map_bus(struct pci_bus *bus,
+                                                unsigned int devfn, int where)
+{
+    struct dw_pcie_rp *pp = bus->sysdata;
+    struct dw_pcie *pci = to_dw_pcie_from_pp(pp);
+    struct dw_pcie_ob_atu_cfg atu = { 0 };
+    u32 busdev;
+
+    if (!dw_pcie_link_up(pci))
+        return NULL;  // 链路未就绪直接失败,不产生 TLP
+
+    // 把目标 BDF 编码到 iATU 的 pci_addr 字段
+    busdev = PCIE_ATU_BUS(bus->number) | PCIE_ATU_DEV(PCI_SLOT(devfn)) |
+             PCIE_ATU_FUNC(PCI_FUNC(devfn));
+
+    // Root Bus 直接下游用 Type 0,更深层用 Type 1
+    if (pci_is_root_bus(bus->parent))
+        atu.type = PCIE_ATU_TYPE_CFG0;
+    else
+        atu.type = PCIE_ATU_TYPE_CFG1;
+
+    atu.parent_bus_addr = pp->cfg0_base - pci->parent_bus_offset;
+    atu.pci_addr = busdev;
+    atu.size = pp->cfg0_size;
+
+    // 每次配置访问都要重写 iATU 寄存器(几次 MMIO 写)
+    if (dw_pcie_prog_outbound_atu(pci, &atu))
+        return NULL;
+
+    return pp->va_cfg0_base + where;  // CPU 访问此地址,经 iATU 生成 Config TLP
+}
+```
+
+**ECAM 路径 vs iATU 路径对比**:
+
+| 对比维度 | 通用 ECAM (`dw_pcie_ecam_ops`) | iATU (`dw_pcie_ops`) |
+|----------|-------------------------------|---------------------|
+| **启用条件** | `native_ecam=false` + 256MB 对齐 + 容量足够 | `native_ecam=true` 或对齐/容量不满足 |
+| **配置访问开销** | 1 次 MMIO 读写(硬件直接译码) | 每次 BDF 变化需重配 iATU(数次 MMIO 写) + 1 次读写 |
+| **地址计算** | 硬件译码 `Bus<<20 + Dev<<15 + Func<<12` | iATU 寄存器编程,每次只指向一个 BDF |
+| **RC 自身配置** | `dbi_base + where` | `dbi_base + where`(相同) |
+| **幽灵设备过滤** | `dw_pcie_ecam_conf_map_bus` 中 `PCI_SLOT>0 → NULL` | `dw_pcie_own_conf_map_bus` 中 `PCI_SLOT>0 → NULL` |
+| **链路检查** | 无(硬件自动处理) | `dw_pcie_link_up()` 检查,链路 down 时返回 NULL |
+| **DT `config` 资源用途** | 作为 `pci_config_window` 映射 | 作为 iATU 出向窗口的 CPU 侧地址 |
+| **典型控制器** | 256MB 对齐的通用 DWC 设计 | SG2046、Amazon al_pcie |
+
+> **核心要点**:iATU 路径下每次下游配置访问都要重写 iATU 寄存器,性能远低于硬件 ECAM 译码。大量 VF 枚举(数百次配置访问)时差异明显。但 iATU 路径不要求 256MB 对齐,对 SoC 地址映射更灵活。SG2046 选择 iATU 路径是设计取舍——可能是为了避开 256MB 对齐约束,或因控制器硬件未实现 ECAM 译码器。
+
+### 3.4 SG2046 实例:`native_ecam=true` 的完整路径
+
+SG2046 PCIe 驱动 [pcie-sophgo.c](file:///home/pbw/sg2046/linux-common/drivers/pci/controller/dwc/pcie-sophgo.c) 设置 `pp->native_ecam = true`,走 §3.3 的 iATU 路径:
+
+```c
+// drivers/pci/controller/dwc/pcie-sophgo.c 第 233-245 行
+static int sophgo_pcie_configure_rc(struct sophgo_pcie *sophgo)
+{
+    struct dw_pcie_rp *pp;
+
+    pp = &sophgo->pci.pp;
+    pp->ops = &sophgo_pcie_host_ops;  // 只定义 .init 回调,不覆盖 pci_ops
+
+#ifdef CONFIG_PCIE_SG2046_DW
+    pp->native_ecam = true;           // 强制走 iATU 配置访问
+#endif
+
+    return dw_pcie_host_init(pp);     // 进入 DWC 通用 host 初始化
+}
+```
+
+**SG2046 DTS 的 `config` 区域**:
+
+```dts
+// arch/riscv/boot/dts/sophgo/sg2046-pcie-s.dtsi 第 29-33 行
+reg = <0x2001 0x02400000  0x0 0x00001000>,   // dbi
+      <0x2001 0x02700000  0x0 0x00004000>,   // atu
+      <0x2001 0x00a0b000  0x0 0x00001000>,   // app
+      <0x3000 0x00000000  0x0 0x10000000>;   // config: 256MB @ 0x3000_00000000
+reg-names = "dbi", "atu", "app", "config";
+```
+
+虽然 `config` 区域是 256MB 且看起来像 ECAM 窗口,但由于 `native_ecam=true`,`dw_pcie_ecam_enabled()` 直接返回 `false`,DWC 跳过通用 ECAM 库,改用 `dw_pcie_ops`/`dw_child_pcie_ops`(iATU 路径)。`config` 区域被 `devm_pci_remap_cfg_resource()` 映射为 `va_cfg0_base`,作为 iATU 出向窗口的 CPU 侧访问地址。
+
+> **调试提示**:在 SG2046 上 `lspci` 偶发性看不到下游设备时,首先检查 `dw_pcie_link_up()`——iATU 路径在链路 down 时直接返回 NULL,而通用 ECAM 路径没有这个检查。详见 [工程踩坑指南](./pcie-engineering-pitfalls.md) §10.1。
+
+### 3.5 非标准ECAM控制器
 
 | 控制器 | 文件 | 特殊处理 |
 |--------|------|----------|
@@ -423,7 +632,7 @@ static bool pci_dw_valid_device(struct pci_bus *bus, unsigned int devfn)
 | Aardvark | pci-aardvark.c | 完全自定义，无ECAM |
 | Altera | pcie-altera.c | 自定义读写，无ECAM |
 
-### 3.3 CAM (Configuration Access Mechanism)
+### 3.6 CAM (Configuration Access Mechanism)
 
 CAM是ECAM的前身，使用x86端口I/O访问配置空间，bus_shift=16（只支持256B配置空间）：
 
@@ -472,7 +681,7 @@ static const struct pci_ecam_ops gen_pci_cfg_cam_bus_ops = {
 };
 ```
 
-### 3.4 DBI —— 控制器内部配置空间访问
+### 3.7 DBI —— 控制器内部配置空间访问
 
 ECAM用于访问**下游设备**的配置空间（生成CfgRd/CfgWr TLP），但**Root Complex自身**也有配置空间（Root Port的Type 1 Header、Link Capability等）。这部分配置空间不通过TLP访问，而是通过控制器的**DBI (Data Bus Interface)** 直接MMIO访问。
 
@@ -578,6 +787,8 @@ dw_pcie_dbi_ro_wr_dis(pci);
 
 ## 4. 实战调试
 
+> 上一章建立了控制器变体的核心框架——通用 ECAM、DWC iATU、SG2046 实例、CAM、DBI 等多种配置访问路径的差异。一个自然的问题是:面对一台真实机器,如何确认它走的是哪条路径、出了问题怎么排查？本章用实战调试来回答这个问题——先讲查看 MCFG 表与 ECAM 映射的命令,再列举 `lspci` 全 FF、Bus 0 重复设备等常见现象的根因与排查方法,最后给出内核启动日志中的关键信息。
+
 ### 4.1 查看ECAM映射
 
 ```bash
@@ -612,6 +823,8 @@ ECAM at [mem 0x4010000000-0x401fffffff] for [bus 00-ff]
 
 ## 5. 代码阅读路线
 
+> 上一章建立了实战调试的核心框架——MCFG 表查看、`/proc/iomem` 检查、常见现象的根因排查。一个自然的问题是:想深入理解 ECAM 实现细节,应该按什么顺序读源码？本章用代码阅读路线来回答这个问题——先给出文件依赖的 Mermaid 图,再用阅读顺序表标注每个文件的关注点。
+
 ```mermaid
 %%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "'trebuchet ms', verdana, arial, sans-serif"}}}%%
 flowchart TD
@@ -638,9 +851,13 @@ flowchart TD
 
 ## 参考资料
 
-- [PCIe Base Specification 6.0](https://pcisig.com/specifications) — §7.2.2 ECAM机制定义
-- [ACPI Specification 6.5](https://uefi.org/specifications) — §5.2.12.16 MCFG Table定义
-- [Linux Kernel Source](https://git.kernel.org/) — `drivers/pci/ecam.c`, `drivers/pci/access.c`
+- [PCIe Base Specification 6.0](https://pcisig.com/specifications) — §7.2.2 ECAM 机制定义,§7.2.2.1 ECAM 地址映射
+- [ACPI Specification 6.5](https://uefi.org/specifications) — §5.2.12.16 MCFG Table 定义
+- [Linux Kernel Source](https://git.kernel.org/) — `drivers/pci/ecam.c`, `drivers/pci/access.c`, `drivers/pci/controller/pci-host-generic.c`
+- [DWC PCIe Host 驱动(本地)](file:///home/pbw/sg2046/linux-common/drivers/pci/controller/dwc/pcie-designware-host.c) — `dw_pcie_ecam_enabled()`、`dw_pcie_other_conf_map_bus()`、`dw_pcie_ecam_ops`/`dw_pcie_ops` 的分支选择
+- [SG2046 PCIe 驱动(本地)](file:///home/pbw/sg2046/linux-common/drivers/pci/controller/dwc/pcie-sophgo.c) — `native_ecam=true` 的实际使用
+- [SG2046 PCIe DTS(本地)](file:///home/pbw/sg2046/linux-common/arch/riscv/boot/dts/sophgo/sg2046-pcie-s.dtsi) — `reg-names = "dbi", "atu", "app", "config"` 的区域划分
+- [PCIe 工程踩坑指南](./pcie-engineering-pitfalls.md) — §2 ECAM 配置访问问题、§10.1 `native_ecam` 标志的真实含义
 
 ---
 
@@ -648,4 +865,4 @@ flowchart TD
 
 ---
 
-*源码版本：Linux 6.x | 更新：2026-04-21*
+*源码版本：Linux 6.x (SG2046) | 更新：2026-07-27*

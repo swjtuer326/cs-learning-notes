@@ -61,9 +61,50 @@ pci_host_bridge (Segment 0)
             └── 05:00.0 NIC (Endpoint)
 ```
 
+### 0.4 系统上下文
+
+枚举在 PCIe 软件栈中处于"承上启下"的位置：对上，它为设备驱动提供可发现的 `pci_dev` 结构；对下，它通过 Host Bridge / Root Port 发出 Config TLP 与硬件交互。它的核心耦合点有三处：
+
+1. **固件 ↔ 内核**：x86 BIOS/UEFI 通常在 SEC/PEI/DXE 阶段已完成枚举，把结果通过 ACPI 的 MCFG 表、`_SB._SEG`、`_CRS` 资源描述符传给内核，内核基于此复用拓扑；嵌入式平台（如 ARM 服务器、Th1520 等）则常由内核从零枚举，固件只负责 Host Bridge 寄存器与链路初始化；SG2046 RISC-V 平台介于两者之间——SBI 固件先做部分 Host Bridge 通道初始化，内核接管后再完成完整枚举。
+2. **Host Bridge ↔ Root Port ↔ Bridge ↔ Endpoint**：枚举软件通过 Host Bridge 把 CPU 的 MMIO 访问转成 Config TLP；Type 1 配置事务穿透每级桥（依据 Secondary/Subordinate Bus 号判断转发），到达目标总线时由最后一层桥转换为 Type 0 终结于 Endpoint。任一级桥的 Bus 号或窗口寄存器配置错误，都会让下游设备"隐形"。
+3. **CRS/RRS 等待机制**：NVMe 等设备上电后需要加载内部固件，可能数秒内无法响应 Config 请求。Root Port 的 CRS Software Visibility（PCIe Spec §6.6）让软件能区分"设备不存在（返回 0xFFFFFFFF）"与"设备存在但未就绪（返回 Vendor ID=0x0001）"，配合 `pci_bus_wait_rrs()` 的指数退避轮询，避免漏枚举慢启动设备。
+
+跨实现/跨架构对比如下：
+
+| 维度 | x86 BIOS/UEFI | 嵌入式内核枚举 | SG2046 RISC-V (SBI + 内核) |
+|------|---------------|---------------|---------------------------|
+| Host Bridge 初始化 | 固件完成 | 内核驱动完成 | SBI 固件部分完成，内核补全 |
+| 枚举执行者 | 固件 | 内核 | 内核（SBI 仅初始化通道） |
+| 信息传递 | ACPI MCFG + `_CRS` | 设备树 `ranges` + ECAM 节点 | DT + SBI ecall 查询 |
+| 内核角色 | 复用固件结果 | 从零扫描 | 从零扫描，信任 SBI 配置 |
+
+> **核心要点**：枚举不只是"读 Vendor ID"这么简单，它横跨固件、Host Bridge、桥、Endpoint 四层，任何一层的配置错误或时序问题都会让下游设备消失。理解本章后，调试"设备没枚举到"的问题才能定位到具体环节。
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "'trebuchet ms', verdana, arial, sans-serif"}}}%%
+flowchart TD
+    subgraph "上层"
+        DRV["设备驱动<br/>基于枚举结果绑定设备"]
+    end
+    subgraph "本文研究对象"
+        ENUM["设备枚举流程<br/>§1 全流程 / §2 关键函数 / §3 桥配置"]
+    end
+    subgraph "下层"
+        HB["Host Bridge / Root Port<br/>Config TLP 通道"]
+        FW["固件 (BIOS / SBI)<br/>ACPI 传递 / DT ranges"]
+    end
+    DRV -->|"消费枚举结果"| ENUM
+    ENUM -->|"发 ConfigRd / ConfigWr TLP"| HB
+    FW -.->|"传递已枚举信息或 ranges"| ENUM
+```
+
+> **如何读这张图**：上下方向体现依赖关系——驱动依赖枚举结果，枚举依赖 Host Bridge 的 Config TLP 通道。固件以虚线表示，因为它只在启动阶段传递信息，运行时不参与每次 Config 访问。固件与 Host Bridge 都在下层子图中，因为它们都提供"通道"而非"消费者"。
+
 ---
 
 ## 1. 枚举全流程
+
+> 上一章建立了"枚举是软件主动扫描 PCIe 拓扑"的基本概念，并列出了 Host Bridge 初始化、链路训练、ECAM 可访问等前提条件。一个自然的问题是：这些前提满足后，内核究竟按什么顺序把整棵设备树建起来？本章用一张全流程图回答这个问题——先讲从 Host Bridge 创建到驱动绑定的主流程，再点出资源计算与分配的阶段切分。
 
 ```mermaid
 %%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "'trebuchet ms', verdana, arial, sans-serif"}}}%%
@@ -89,6 +130,8 @@ flowchart TD
 ---
 
 ## 2. 关键函数详解
+
+> 上一章给出了枚举的全景流程图，但每个方框背后对应哪些内核函数、为什么这么设计还没展开。一个自然的问题是：`pci_scan_child_bus()` 等关键函数内部到底做了什么、两遍扫描和 CRS 等待为什么是必须的？本章用逐函数剖析来回答——先讲总线/Slot/Device 三级扫描入口，再讲设备配置与桥递归的细节。
 
 ### 2.1 pci_scan_child_bus() —— 总线扫描入口
 
@@ -445,6 +488,8 @@ out:
 
 ## 3. 桥配置寄存器
 
+> 上一章拆解了关键函数，可以看到 `pci_scan_bridge_extend()` 反复读写 Primary/Secondary/Subordinate Bus 寄存器与 Base/Limit 窗口。一个自然的问题是：这些寄存器字段如何编码、Type 0/Type 1 配置事务如何据此路由？本章用寄存器布局表与转发流程图来回答——先讲 Bus 号寄存器与三类桥窗口的编码规则，再讲 Type 0/Type 1 的转换时机与终结条件。
+
 ### 3.1 Bus号寄存器
 
 ```
@@ -523,6 +568,8 @@ flowchart TD
 ---
 
 ## 4. 枚举后的资源分配
+
+> 上一章讲清了桥窗口寄存器的编码与 Type 0/1 路由，但寄存器里的 Base/Limit 值是哪里来的、什么时候写入还没说。一个自然的问题是：枚举完成后，内核如何把下游 BAR 需求汇总并分配到每个桥窗口？本章用分配顺序与地址转换来回答——先讲自底向上 size 与自顶向下 assign 的两阶段流程，再讲 CPU 物理地址与 PCIe 总线地址之间的 offset 转换。
 
 ### 4.1 分配顺序
 
@@ -624,6 +671,8 @@ void pcibios_resource_to_bus(struct pci_bus *bus,
 
 ## 5. Capability发现
 
+> 上一章解决了资源分配，设备的 BAR 与中断已就位，但 PCIe 设备的能力（MSI/MSI-X、AER、SR-IOV 等）尚未探查。一个自然的问题是：内核如何把分散在配置空间 0x34 链表与 0x100 起的 Extended Cap 链表中的能力逐一发现并挂到 `pci_dev`？本章用 Capability 链表遍历机制来回答——先讲 Standard 与 Extended 两类链表的格式与终止条件，再给出链表示例。
+
 枚举过程中，`pci_read_capabilities()` 扫描设备的Capability链表：
 
 ```mermaid
@@ -646,6 +695,8 @@ flowchart LR
 ---
 
 ## 6. 实战调试
+
+> 上一章完成了 Capability 发现，至此枚举的代码路径与数据结构都已铺清。一个自然的问题是：现场设备没枚举到、Bus 号冲突、BAR 分配失败时怎么定位？本章用日志、排查表与重扫描命令来回答——先讲 dmesg/lspci 的常用查询与典型故障对照，再讲 Hot-Plug 触发的二次枚举与启动枚举的关键差异。
 
 ### 6.1 枚举日志
 
@@ -735,6 +786,8 @@ echo 0 > /sys/bus/pci/slots/1/power  # 下电
 ---
 
 ## 7. 代码阅读路线
+
+> 上一章用调试命令把"现象 → 原因 → 排查"的链路打通了，但若想顺着内核源码系统读一遍，仍缺一张阅读地图。一个自然的问题是：从 `pci_host_probe()` 到驱动绑定，按什么顺序读 probe.c / setup-bus.c / setup-res.c / pci-driver.c 最高效？本章用一张阅读顺序表与函数调用图来回答——按扫描、桥窗口、资源、驱动的依赖顺序逐文件列出关注点。
 
 | 顺序 | 文件 | 关注函数 |
 |------|------|----------|

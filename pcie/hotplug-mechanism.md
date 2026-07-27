@@ -39,7 +39,62 @@
 | BAR 分配与资源管理              | [BAR与资源分配](./bar-resource-allocation.md) |
 | MSI/MSI-X 中断机制           | [MSI中断](./msi-interrupt.md)              |
 
-### 1.2 计划性移除 vs 意外拔出
+### 1.2 系统上下文
+
+**项目定位**：PCIe Hot-Plug 是 PCIe Spec §6.7 定义的标准机制，允许在不关机的情况下在线添加、移除 PCIe 卡片。它是服务器高可用性与可维护性的关键能力——支持 NVMe SSD 在线更换、Thunderbolt 拓扑动态变化、卡上故障组件热替换等场景。在 ARM/RISC-V 嵌入式平台上，热插拔同样用于 AI 加速卡的现场更换与固件热升级。
+
+**软硬件耦合点**：热插拔是一条横跨四层的耦合链路：
+
+- **硬件层**：Slot Capability/Control/Status 三个寄存器（§2）是硬件与驱动的契约，任一 Cap 位误配置都会导致行为偏差
+- **固件层**：ACPI `_OSC` 方法（x86 服务器）协商 OS 与固件谁拥有 Native 热插拔控制权；协商结果直接决定 pciehp 还是 acpiphp 接管
+- **内核层**：pciehp 驱动通过 Port Service 框架挂载到 Root Port/Downstream Port，与 PME、AER 共享 MSI 向量
+- **用户态**：`/sys/bus/pci/slots/` 暴露 power/attention/adapter 等接口，udev 据此触发自动化
+- **与 DPC 的交互**：DPC (Downstream Port Containment) 触发后的 Secondary Bus Reset 会产生虚假 DLLSC 事件，pciehp 必须过滤（§8.1）
+
+**跨实现/跨架构对比**：
+
+| 对比维度     | ACPI 模式（x86 服务器）          | Native 模式（嵌入式/ARM/RISC-V）  |
+| -------- | ------------------------- | ---------------------------- |
+| **控制权归属** | 固件通过 `_OSC` 保留，ACPI 事件驱动  | OS 直接操作 Slot 寄存器             |
+| **触发方式** | ACPI Notify → acpiphp     | MSI/MSI-X 中断 → pciehp        |
+| **适用场景** | BIOS 主导的服务器平台             | 固件不参与热插拔的嵌入式平台               |
+| **D3 约束** | OS 不可将热插拔桥置入 D3           | 理论上可 D3，但 2018 年前硬件未验证       |
+
+此外，热插拔机制与 SR-IOV 虚拟化存在关联：VF (Virtual Function) 的添加/移除走与物理热插拔类似的 `pci_scan_slot()` / `pci_stop_and_remove_bus_device()` 路径，但 VF 不涉及 Slot 寄存器与电源控制——这部分将在 [SR-IOV 虚拟化](./sriov-virtualization.md) 中详述。
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "'trebuchet ms', verdana, arial, sans-serif"}}}%%
+flowchart TD
+    subgraph "上层"
+        USER["用户态<br/>sysfs / udev"]
+    end
+    subgraph "本文研究对象"
+        HP["Hot-Plug 机制与 pciehp<br/>§2 Slot寄存器 / §4 驱动 / §5 状态机"]
+    end
+    subgraph "下层"
+        HW["Slot 硬件寄存器<br/>Capability/Control/Status"]
+        ACPI["ACPI _OSC 协商<br/>(x86 服务器)"]
+        DPC["DPC 错误隔离<br/>与热插拔交互"]
+    end
+    USER -->|"power / slot 灯控制"| HP
+    HP -->|"读写 Slot 寄存器"| HW
+    HP -.->|"模式协商"| ACPI
+    HP -.->|"虚假事件过滤"| DPC
+
+    classDef upper fill:#cffafe, stroke:#0891b2, color:#155e75, stroke-width:2px
+    classDef target fill:#dbeafe, stroke:#2563eb, color:#1e40af, stroke-width:2px
+    classDef lower fill:#f1f5f9, stroke:#64748b, color:#334155, stroke-width:2px
+
+    class USER upper
+    class HP target
+    class HW,ACPI,DPC lower
+```
+
+> **如何读这张图**：实线表示主控制流方向（用户态 → 驱动 → 硬件），虚线表示旁路或交互关系。pciehp 是研究主体，向下直接读写 Slot 寄存器；ACPI `_OSC` 仅在初始化时协商一次（决定 Native vs ACPI 模式，见 §3.1）；DPC 在错误恢复时与 pciehp 通过虚假事件过滤机制交互（见 §8.1）。
+
+> **核心要点**：热插拔是横跨"用户态 → 内核 → 固件 → 硬件"四层的耦合机制，单看任一层都无法理解全貌。本文后续章节沿"硬件契约（§2）→ 模式选择（§3）→ 驱动实现（§4-§7）→ 边界场景（§8）→ 用户接口（§9）"逐层展开。
+
+### 1.3 计划性移除 vs 意外拔出
 
 PCIe Spec §6.7 统一使用 **Hot-Plug** 术语，核心区分在于移除是否通知 OS：
 
@@ -53,7 +108,7 @@ PCIe Spec §6.7 统一使用 **Hot-Plug** 术语，核心区分在于移除是�
 
 > **术语说明**：Hot-Swap 常见于 CompactPCI 等规范，PCIe Spec 中不使用此术语。本文统一使用 Hot-Plug，涵盖上述两种场景。
 
-### 1.3 全景视图
+### 1.4 全景视图
 
 ```mermaid
 %%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "'trebuchet ms', verdana, arial, sans-serif"}}}%%
@@ -81,6 +136,8 @@ flowchart TD
 ***
 
 ## 2. 硬件基础：Slot 寄存器
+
+> 上一章概述了 PCIe 热插拔在系统中的位置与全景流程，并区分了计划性移除与意外拔出两种场景。一个自然的问题是：硬件如何把"卡插入/拔出"这件事告诉 OS？OS 又如何控制插槽电源与指示灯？本章用 Slot 寄存器组的三个寄存器来回答这个问题——先讲 Slot Capability 描述硬件能力，再讲 Slot Control 控制行为与中断使能，最后讲 Slot Status 反映事件与状态。
 
 ### 2.1 Slot Capability（偏移 0x14）
 
@@ -166,6 +223,8 @@ Slot Status 反映当前状态和事件，事件位写 1 清除（Write-1-to-Cle
 ***
 
 ## 3. Cap 组合与热插拔模式
+
+> 上一章建立了 Slot 寄存器的三个寄存器语义：Capability 描述硬件能力、Control 控制行为、Status 反映事件。一个自然的问题是：不同的 Cap 位组合（HPC/PCP/ABP/HPS 等）会产生怎样不同的热插拔行为？Native 与 ACPI 两种模式如何选择？本章用模式决策链与五个典型场景来回答这个问题——先讲 Native/ACPI 模式选择与 _OSC 协商，再讲 Cap 位对驱动运行时行为的影响，最后用全功能、无电源控制、无按钮、意外拔出、ACPI 五个场景串联完整流程。
 
 ### 3.1 Native 与 ACPI 模式选择
 
@@ -397,6 +456,8 @@ acpiphp 通过 `hotplug_is_native()` 检查避免与 pciehp 冲突：若桥的 `
 
 ## 4. pciehp 驱动架构
 
+> 上一章展示了 Cap 组合如何决定热插拔模式与典型交互流程，但流程图中的"pciehp 驱动"仍是一个黑盒。一个自然的问题是：在 Native 模式下，内核中是哪个组件来操作这些 Slot 寄存器？它的数据结构如何组织？初始化时做了什么？本章用 pciehp 驱动架构来回答这个问题——先讲 Port Service 模型与驱动注册条件，再讲 controller 结构体的核心字段，最后讲初始化流程与事件使能策略。
+
 ### 4.1 驱动注册与 Port Service 模型
 
 pciehp 是 PCIe Port Bus Driver 的一个 Service，与 PME、AER 等共享同一个 Root Port/Downstream Port：
@@ -480,6 +541,8 @@ flowchart TD
 
 ## 5. 状态机
 
+> 上一章建立了 pciehp 的驱动架构与初始化流程，初始化时根据在位状态将插槽置入 OFF_STATE 或 ON_STATE。一个自然的问题是：从 OFF 到 ON（或反向）的过程中，驱动如何协调按钮确认、链路训练、电源控制这些异步步骤，避免并发操作与误触发？本章用六状态机来回答这个问题——先讲六个状态的定义，再讲状态转换图与触发条件，最后讲注意力按钮的 5 秒延时设计意图。
+
 ### 5.1 六状态定义
 
 ```c
@@ -557,6 +620,8 @@ void pciehp_handle_button_press(struct controller *ctrl)
 ***
 
 ## 6. 中断处理
+
+> 上一章建立了状态机的六个状态与转换规则，状态转换的触发源是硬件事件。一个自然的问题是：硬中断上下文能做什么、不能做什么？事件如何从硬件到达状态机？本章用 pciehp 的两级中断架构来回答这个问题——先讲硬中断 pciehp_isr 的事件筛选与写 1 清除，再讲中断线程 pciehp_ist 的状态机调度与事件优先级，最后讲中断不可用时的轮询模式。
 
 ### 6.1 两级中断架构
 
@@ -672,6 +737,8 @@ static int pciehp_poll(void *data)
 ***
 
 ## 7. 设备添加与移除
+
+> 上一章建立了中断如何将事件传递到状态机并触发 POWERON/POWEROFF 转换。一个自然的问题是：状态机进入 POWERON/POWEROFF 后，驱动如何完成下游设备的枚举与卸载？安全移除与意外拔出在代码路径上有什么差异？本章用卡插入与卡移除两条路径来回答这个问题——先讲卡插入的链路训练、电源上电与设备扫描绑定，再讲安全移除与意外拔出的 unconfigure_device 关键差异。
 
 ### 7.1 卡插入流程
 
@@ -790,6 +857,8 @@ void pciehp_unconfigure_device(struct controller *ctrl, bool presence)
 
 ## 8. 特殊场景
 
+> 上一章建立了卡插入与卡移除的主干路径，覆盖了标准热插拔流程。一个自然的问题是：现实中很多场景并不"标准"——DPC 错误恢复、系统睡眠唤醒、不可靠的硬件信号、有缺陷的控制器——驱动如何应对这些边界情况？本章用四个特殊场景来回答这个问题——先讲 DPC 恢复后的虚假链路变化过滤，再讲系统睡眠期间的设备替换检测，然后讲 In-Band Presence Detect 不可靠的处理，最后讲 Command Completed erratum 的 quirk 修复。
+
 ### 8.1 DPC 恢复后的虚假链路变化
 
 DPC (Downstream Port Containment) 触发后会执行 Secondary Bus Reset 来恢复链路，这会产生 DLLSC 事件。pciehp 必须过滤这些虚假事件，否则会把正在恢复的设备误认为热拔插：
@@ -865,6 +934,8 @@ Thunderbolt 控制器一律假设 NCCS=1（不需要等待命令完成），因�
 
 ## 9. sysfs 接口
 
+> 上一章覆盖了内核侧的特殊场景处理，焦点一直在驱动内部。一个自然的问题是：用户态如何主动触发热插拔操作？运维人员如何观察 slot 状态、如何安全移除设备？本章用 sysfs 接口来回答这个问题——先讲 `/sys/bus/pci/slots/` 的文件布局与各节点语义，再讲典型操作命令。
+
 pciehp 通过 `/sys/bus/pci/slots/` 暴露用户空间接口：
 
 ```
@@ -894,6 +965,8 @@ echo 1 > /sys/bus/pci/slots/5/attention
 ***
 
 ## 10. 调试指南
+
+> 上一章建立了用户态 sysfs 接口，至此热插拔的硬件、驱动、用户接口三层已完整呈现。一个自然的问题是：当热插拔流程出问题时——卡插入后设备不出现、DPC 恢复后设备消失、按钮无反应——如何定位？本章用调试指南来回答这个问题——先讲动态调试启用方法，再讲常见问题排查表，最后讲关键日志消息的含义。
 
 ### 10.1 启用动态调试
 

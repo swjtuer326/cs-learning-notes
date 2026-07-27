@@ -12,6 +12,10 @@
 | ITS | Interrupt Translation Service | ARM GIC中的中断转换服务 |
 | LPI | Locality-specific Peripheral Interrupt | ARM GIC中的局部外设中断 |
 | IRTE | Interrupt Remapping Table Entry | 中断重映射表项，VT-d安全机制 |
+| IMSIC | Incoming MSI Controller | RISC-V AIA 的 MSI 控制器,每 Hart 一个,对应 x86 APIC 与 ARM GIC ITS |
+| AIA | Advanced Interrupt Architecture | RISC-V 高级中断架构,含 IMSIC 与 APLIC |
+| APLIC | Advanced Platform-Level Interrupt Controller | AIA 中的平台中断控制器,连线中断的升级版 |
+| Hart | Hardware Thread | RISC-V 中的硬件线程,对应一个 CPU 核心上下文 |
 
 ---
 
@@ -121,9 +125,165 @@ ITS的核心是三张表：
 
 **LPI分配**：ITS为每个EventID分配一个LPI号（范围8192-2^32-1），LPI号通过Collection Table路由到目标CPU的Redistributor。驱动通过irqdomain API分配LPI，无需手动配置ITS表。
 
+**RISC-V AIA IMSIC 工作流程**：
+
+RISC-V AIA (Advanced Interrupt Architecture) 的 IMSIC (Incoming MSI Controller) 是 RISC-V 平台的 MSI 分发机制,与 x86 APIC 和 ARM GIC ITS 都不同——**每个 Hart(硬件线程)拥有独立的 IMSIC 实例**,设备直接向目标 Hart 的 IMSIC 写入中断号:
+
+```
+x86 MSI路径:
+  设备 → MemWr TLP (Address=APIC地址, Data=向量号) → APIC → CPU中断
+
+ARM ITS MSI路径:
+  设备 → MemWr TLP (Address=ITS地址, Data=EventID) → ITS → 查表转换 → Redistributor → CPU中断
+
+RISC-V IMSIC MSI路径:
+  设备 → MemWr TLP (Address=目标Hart的IMSIC MMIO, Data=中断号i) → IMSIC → CSR写 eidelivery → CPU中断
+  关键区别:无需查表,中断号直接等于 IMSIC 的 interrupt identity
+```
+
+**IMSIC 的核心设计**:
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "'trebuchet ms', verdana, arial, sans-serif"}}}%%
+flowchart LR
+    EP["PCIe 设备"] -->|"MemWr TLP<br/>Addr=IMSIC MMIO + offset"| MMIO["IMSIC MMIO 区域<br/>(每 Hart 独立)"]
+    MMIO -->|"解析中断号"| FILE["Interrupt File<br/>(每 Hart 一组 bit)"]
+    FILE -->|"置位 pending"| CSR["CSR:eidelivery<br/>(RISC-V CSR 寄存器)"]
+    CSR -->|"触发中断"| HART["目标 Hart<br/>(CPU Core)"]
+
+    subgraph "DT 配置"
+        DTPCIE["PCIe 节点<br/>msi-parent = <&imsic_s>"]
+        DTIMSIC["IMSIC 节点<br/>riscv,num-ids = <1023>"]
+        DTPCIE --> DTIMSIC
+    end
+
+    style EP fill:#dbeafe,stroke:#2563eb
+    style MMIO fill:#fef3c7,stroke:#d97706
+    style CSR fill:#e8f5e9,stroke:#059669
+    style HART fill:#d1fae5,stroke:#059669
+```
+
+**IMSIC 与 APIC/ITS 的关键对比**:
+
+| 对比维度 | x86 APIC | ARM GIC ITS | RISC-V IMSIC |
+|----------|---------|-------------|-------------|
+| **MSI 目标地址** | APIC MMIO (0xFEE0_0000) | ITS 寄存器 (GITS_TRANSLATER) | 每 Hart 独立 MMIO 区域 |
+| **Data 字段含义** | 中断向量号 | EventID(需查表转 LPI) | interrupt identity(直接用) |
+| **查表转换** | 无 | 三张表(Device/ITT/Collection) | 无(直接中断号) |
+| **每 CPU 实例** | 每 CPU 一个 Local APIC | 每 CPU 一个 Redistributor | 每 Hart 一个 IMSIC |
+| **中断亲和性** | 改 APIC Destination ID | 改 Collection Table | 改 MSI Address 指向新 Hart |
+| **虚拟化支持** | IRQ remapping (VT-d) | Virtual ITS | Guest interrupt file(每 Guest 独立) |
+| **典型中断号范围** | 0x10-0xFE | LPI: 8192-2^32-1 | 1-num_ids(SG2046: 1-1023) |
+
+**SG2046 IMSIC DTS 配置**:
+
+```dts
+// arch/riscv/boot/dts/sophgo/sg2046-imsics-aplic.dtsi 第 8-86 行
+imsic_s: interrupt-controller@10400000 {
+    compatible = "riscv,imsics";
+    interrupts-extended = <&cpu0_intc 9>, <&cpu1_intc 9>, ...;  // 每 Hart 的 S-mode 中断
+    reg = <0x0 0x10400000 0x0 0x400000>;  // 4MB MMIO 区域,按 Hart 切分
+    interrupt-controller;
+    #interrupt-cells = <0>;
+    msi-controller;                        // 声明为 MSI 控制器
+    #msi-cells = <0>;
+    riscv,guest-index-bits = <3>;          // 8 个 Guest interrupt file(虚拟化)
+    riscv,num-ids = <1023>;                // 每 Hart 最多 1023 个中断号
+};
+
+// PCIe 节点通过 msi-parent 引用 IMSIC
+pcie@200102400000 {
+    compatible = "sophgo,sg2046-pcie";
+    msi-parent = <&imsic_s>;               // 委托 MSI 给 IMSIC supervisor 模式
+    // ...
+};
+```
+
+> **如何读这段 DTS**:`riscv,num-ids = <1023>` 表示每个 Hart 的 IMSIC 可接收 1023 个中断号(1-1023,0 保留)。`riscv,guest-index-bits = <3>` 表示支持 8 个 Guest interrupt file,用于虚拟化场景(每个 VM 拥有独立的 interrupt file)。`reg` 的 4MB MMIO 区域按 Hart 数量切分,每个 Hart 拥有 `4MB / num_harts` 的地址子区域。
+
+**IMSIC 的 MSI 投递地址编码**:
+
+```
+MSI Address (64-bit, SG2046 S-mode IMSIC):
+  [63:X]   = IMSIC group index(可选,0 for SG2046)
+  [X:Y]    = Guest interrupt file index(3 bits → 8 Guests)
+  [Y:Z]    = Hart index(标识目标 CPU)
+  [Z:0]    = IMSIC MMIO 基址 + interrupt identity offset
+
+驱动调用 pci_alloc_irq_vectors() 时:
+  1. PCI core 通过 msi-parent 找到 IMSIC irqdomain
+  2. IMSIC 分配一个空闲的 interrupt identity(1-1023)
+  3. 根据中断亲和性选择目标 Hart
+  4. 编码 MSI Address = IMSIC MMIO + Hart_offset + Guest_offset
+  5. MSI Data = interrupt identity
+  6. 写入设备的 MSI-X Table Entry
+```
+
+> **核心要点**:IMSIC 的设计哲学是"去查表化"——中断号直接作为 interrupt identity,无需 ITS 的三张表转换。代价是每 Hart 的中断号空间有限(1023),且 MSI Address 编码较复杂(需嵌入 Hart/Guest 信息)。对于 PCIe 设备,中断亲和性切换只需重写 MSI Address 指向新 Hart,不需要像 ITS 那样更新 Collection Table。
+
+### 0.5 系统上下文
+
+**项目定位**:MSI/MSI-X 是 PCIe 设备异步通知 CPU 的标准机制,是高性能 I/O 的基础。相比传统 INTx 引脚中断,MSI 将中断投递融入 PCIe 的 Memory Write TLP 数据路径——无需边带信号、无共享冲突、支持数千向量,是 NVMe、网卡、GPU 等高性能设备的中断投递基石。
+
+**软硬件耦合点**:MSI/MSI-X 的完整路径跨越四层,任一环节配置错误都会导致中断丢失:
+
+| 层次 | 组件 | 职责 |
+|------|------|------|
+| 设备侧 | MSI-X Table (MMIO, 位于 BAR 空间) | 每个 Entry 存储 Message Address / Data / Vector Control |
+| 互连层 | Root Complex 路由 | 将 MemWr TLP 按 Address 路由到中断控制器 |
+| 中断控制器 | x86 APIC / ARM ITS / RISC-V IMSIC | 接收 MemWr,转换为 CPU 中断 |
+| 软件层 | Linux irqdomain 框架 + `msi-parent` 委托 | 分配 IRQ 向量、写入 MSI-X Table、屏蔽/亲和性 |
+
+设备 MSI-X Table 写错地址 → TLP 路由到错误目标;`msi-parent` 指向错误 irqdomain → `pci_alloc_irq_vectors()` 失败;中断控制器未注册 MSI parent → 驱动回退到 INTx。
+
+**跨实现/跨架构对比**:
+
+| 对比维度 | x86 Local APIC / x2APIC | ARM GIC ITS | RISC-V AIA IMSIC |
+|----------|------------------------|-------------|------------------|
+| **MSI 目标** | APIC MMIO (`0xFEE0_0000`) | ITS `GITS_TRANSLATER` 寄存器 | 每 Hart 独立 MMIO 区域 |
+| **Data 语义** | 中断向量号(直接用) | EventID(需查表转 LPI) | interrupt identity(直接用) |
+| **查表转换** | 无 | 三张表(Device / ITT / Collection) | 无(去查表化) |
+| **亲和性切换** | 改 Destination ID | 改 Collection Table | 改 MSI Address 指向新 Hart |
+| **虚拟化安全** | VT-d IRQ Remapping (IRTE) | Virtual ITS | Guest interrupt file(每 VM 独立) |
+
+> **核心要点**:三种架构的 MSI 投递哲学不同——x86 APIC 走"地址编码目标 CPU";ARM ITS 走"中央查表转发";RISC-V IMSIC 走"每 Hart 独立地址空间,去查表化"。Linux 通过 `msi-parent` 框架把这三种实现统一抽象为 irqdomain,PCIe 驱动代码无需感知底层差异。
+
+**控制器实现差异**:除了平台中断控制器,PCIe 控制器自身也可能内建 MSI 逻辑。DWC (DesignWare) 控制器提供三种路径——(1) 委托给外部 MSI parent(如 IMSIC / ITS,通过 DT `msi-parent` 声明);(2) 厂商自定义 `msi_init` 回调;(3) DWC 内建 MSI 逻辑(`PCIE_MSI_INTR0_STATUS` 寄存器,单一地址,亲和性受限)。SG2046 选择路径(1)以匹配 RISC-V IMSIC 标准,详见 §3.6。
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
+flowchart TD
+    subgraph "上层 (软件)"
+        DRV["设备驱动<br/>request_irq() / pci_alloc_irq_vectors()"]
+    end
+    subgraph "本文研究对象"
+        MSI["MSI/MSI-X 机制<br/>§1 规范 / §2 内核实现 / §3 亲和性"]
+    end
+    subgraph "下层 (硬件 + 中断控制器)"
+        DEV["PCIe 设备<br/>MSI-X Table (MMIO)"]
+        RC["Root Complex<br/>路由 MemWr TLP"]
+        IC["中断控制器<br/>x86 APIC / ARM ITS / RISC-V IMSIC"]
+    end
+    DRV -->|"申请中断向量"| MSI
+    MSI -->|"写 MSI-X Table"| DEV
+    DEV -->|"MemWr TLP"| RC
+    RC -->|"按 Address 路由"| IC
+    IC -->|"触发中断"| CPU["CPU"]
+
+    style DRV fill:#dbeafe,stroke:#2563eb,color:#1e40af
+    style MSI fill:#fef3c7,stroke:#d97706,color:#92400e
+    style DEV fill:#f1f5f9,stroke:#64748b,color:#334155
+    style IC fill:#cffafe,stroke:#0891b2,color:#155e75
+    style CPU fill:#d1fae5,stroke:#059669,color:#065f46
+```
+
+> **如何读这张图**:从上往下看,驱动通过 `pci_alloc_irq_vectors()` 申请向量(软件层),MSI 机制把 Address/Data 写入设备的 MSI-X Table(规范层),设备发起 MemWr TLP 经 RC 路由到中断控制器(硬件层),最终触发 CPU 中断。本文 §1-§3 围绕"规范与软件"展开,§0.4 已铺垫"硬件层"的跨架构差异。
+
 ---
 
 ## 1. 规范机制
+
+> 上一章建立了 MSI 在系统中的位置与跨架构中断控制器背景(x86 APIC / ARM ITS / RISC-V IMSIC)。一个自然的问题是:MSI 在 PCIe 规范中具体如何定义?设备配置空间如何承载 MSI 信息?本章用 PCIe 规范的视角回答——先讲中断从 INTx 到 MSI-X 的演进,再讲 MSI 本质(MemWr TLP),最后解析 MSI/MSI-X Capability 寄存器与 MSI-X Table 的字段布局。
 
 ### 1.1 中断演进
 
@@ -214,6 +374,8 @@ Pending Bit Array (PBA):
 ---
 
 ## 2. Linux内核实现
+
+> 上一章建立了 PCIe 规范视角的 MSI/MSI-X 机制——Capability 寄存器与 MSI-X Table 布局。一个自然的问题是:Linux 内核如何把这些规范落地为可用的驱动 API?本章用代码走查回答——先讲 `drivers/pci/msi/` 的代码结构与全局开关,再讲驱动 API `pci_alloc_irq_vectors()` 的演进,最后解析消息写入、Mask/Unmask、irqdomain 集成的关键路径。
 
 ### 2.1 代码结构
 
@@ -395,6 +557,8 @@ flowchart TD
 
 ## 3. 中断亲和性与多向量
 
+> 上一章建立了 Linux 内核 MSI 实现的基础——`pci_alloc_irq_vectors()` 与 irqdomain 分配路径。一个自然的问题是:驱动拿到多个向量后如何绑定到特定 CPU?虚拟化场景下 VF 的 MSI 如何安全路由?本章回答这些问题——先讲多向量 MSI 与 MSI-X 选择策略,再讲中断亲和性、中断重映射(VT-d IRTE)、动态分配,最后解析 `msi-parent` 框架如何把 MSI 委托给平台中断控制器。
+
 ### 3.1 多向量MSI
 
 MSI支持1-32个向量（2的幂），通过Multiple Message Enable (MME) 控制：
@@ -506,9 +670,96 @@ if (map.virq > 0)
 pci_msix_free_irq(dev, map);
 ```
 
+### 3.6 `msi-parent` 框架 —— MSI 委托机制
+
+> 上一节讲了动态分配。一个自然的问题是:**PCIe 设备的 MSI 如何对接到不同架构的中断控制器(APIC/ITS/IMSIC)?** 答案是 Linux 的 `msi-parent` 框架——通过 DT `msi-parent` 属性或 ACPI `_STM` 方法,把 MSI 分配委托给平台中断控制器。
+
+**传统模式(legacy)**:x86 通过 `arch_*_msi_irqs()` 回调直接调用 APIC 代码,PCIe 驱动与中断控制器强耦合。
+
+**现代模式(msi-parent)**:中断控制器(IMSIC/GIC ITS/APIC)注册为 MSI parent domain,PCIe 设备通过 `msi-parent` 属性找到 parent,由 parent 的 irqdomain 分配中断向量。PCIe 驱动与中断控制器解耦。
+
+**`msi_parent_ops` 结构**——中断控制器注册 MSI parent 的契约:
+
+```c
+// drivers/irqchip/irq-riscv-imsic-platform.c 第 296-306 行
+static const struct msi_parent_ops imsic_msi_parent_ops = {
+    .supported_flags    = MSI_GENERIC_FLAGS_MASK | MSI_FLAG_PCI_MSIX,
+    .required_flags     = MSI_FLAG_USE_DEF_DOM_OPS |
+                          MSI_FLAG_USE_DEF_CHIP_OPS |
+                          MSI_FLAG_PCI_MSI_MASK_PARENT,
+    .chip_flags         = MSI_CHIP_FLAG_SET_ACK,
+    .bus_select_token   = DOMAIN_BUS_NEXUS,
+    .bus_select_mask    = MATCH_PCI_MSI | MATCH_PLATFORM_MSI,  // 支持的设备类型
+    .init_dev_msi_info  = imsic_init_dev_msi_info,             // per-device 初始化
+};
+
+// DWC 也有自己的 MSI parent(仅在无 msi-parent 时使用)
+// drivers/pci/controller/dwc/pcie-designware-host.c 第 57-63 行
+static const struct msi_parent_ops dw_pcie_msi_parent_ops = {
+    .required_flags     = DW_PCIE_MSI_FLAGS_REQUIRED,
+    .supported_flags    = DW_PCIE_MSI_FLAGS_SUPPORTED,
+    .bus_select_token   = DOMAIN_BUS_PCI_MSI,
+    .prefix             = "DW-",
+    .init_dev_msi_info  = dw_pcie_init_dev_msi_info,
+};
+```
+
+**MSI parent 选择优先级**(DWC 控制器视角):
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "'trebuchet ms', verdana, arial, sans-serif"}}}%%
+flowchart TD
+    START["dw_pcie_host_init()"] --> CHECK{"DT 有 msi-parent<br/>或 msi-map?"}
+    CHECK -->|"是 (SG2046)"| EXT["use_imsi_rx = false<br/>不注册 DWC MSI parent<br/>MSI 分配委托给 IMSIC/ITS"]
+    CHECK -->|"否"| INIT{"ops->msi_init<br/>定义?"}
+    INIT -->|"是"| VENDOR["厂商自定义 MSI 初始化"]
+    INIT -->|"否"| DWC["use_imsi_rx = true<br/>dw_pcie_msi_host_init()<br/>注册 dw_pcie_msi_parent_ops<br/>DWC 内建 MSI 逻辑"]
+
+    style EXT fill:#e8f5e9,stroke:#059669
+    style DWC fill:#dbeafe,stroke:#2563eb
+    style VENDOR fill:#fef3c7,stroke:#d97706
+```
+
+> **如何读这张图**:DWC 控制器有三种 MSI 处理方式,按优先级递减:(1) 外部 MSI parent(SG2046 走此路径,委托 IMSIC);(2) 厂商自定义 `msi_init` 回调;(3) DWC 内建 MSI 逻辑(`PCIE_MSI_INTR0_STATUS` 寄存器)。SG2046 选择路径(1)是因为 RISC-V 平台的 MSI 标准是 IMSIC,DWC 内建 MSI 逻辑不适用。
+
+**关键代码路径**:
+
+```c
+// drivers/pci/controller/dwc/pcie-designware-host.c 第 594-619 行
+if (pci_msi_enabled()) {
+    // 关键判断:有 msi-parent / msi-map / msi_init 则 use_imsi_rx=false
+    pp->use_imsi_rx = !(pp->ops->msi_init ||
+                     of_property_present(np, "msi-parent") ||
+                     of_property_present(np, "msi-map"));
+
+    if (pp->ops->msi_init) {
+        ret = pp->ops->msi_init(pp);          // 路径②:厂商自定义
+    } else if (pp->use_imsi_rx) {
+        ret = dw_pcie_msi_host_init(pp);       // 路径③:DWC 内建
+    }
+    // 路径①:use_imsi_rx=false 且无 msi_init → 什么都不做
+    //        PCI core 通过 msi-parent 自动找到 IMSIC irqdomain
+}
+```
+
+**三种 MSI 路径对比**:
+
+| 对比维度 | 外部 MSI parent (SG2046) | 厂商 msi_init | DWC 内建 (`use_imsi_rx`) |
+|----------|-------------------------|--------------|------------------------|
+| **MSI 地址来源** | IMSIC/GIC ITS 的 MMIO | 厂商定义 | DWC 的 `msi_data` 寄存器 |
+| **中断向量分配** | IMSIC/ITS irqdomain | 厂商 irqdomain | DWC `msi_irq_in_use` bitmap |
+| **DWC MSI 寄存器** | 不使用 | 不使用 | `PCIE_MSI_INTR0_STATUS/MASK` |
+| **DT 属性** | `msi-parent = <&imsic>` | 无 | 无 |
+| **多 CPU 亲和性** | 改 MSI Address 指向新 Hart/CPU | 厂商实现 | 受限(DWC MSI 是单一地址) |
+| **典型平台** | RISC-V (IMSIC), ARM (GIC ITS) | 老 ARM 平台 | 无外部 MSI 控制器的 SoC |
+
+> **核心要点**:`msi-parent` 是 Linux 解耦 PCIe 与中断控制器的关键框架。SG2046 通过 `msi-parent = <&imsic_s>` 让 PCIe MSI 完全绕过 DWC 内建 MSI 逻辑,直接由 IMSIC 处理。调试时要注意:如果 `msi-parent` 配置错误,PCIe 驱动的 `pci_alloc_irq_vectors()` 会失败,但 DWC 的 MSI 状态寄存器(`PCIE_MSI_INTR0_STATUS`)不会有任何变化——因为中断根本没经过 DWC MSI 逻辑。详见 [工程踩坑指南](./pcie-engineering-pitfalls.md) §5.3。
+
 ---
 
 ## 4. MSI-X与SR-IOV
+
+> 上一章建立了 MSI/MSI-X 的多向量分配、亲和性与 `msi-parent` 委托机制。一个自然的问题是:SR-IOV 场景下 VF 如何获得独立的中断向量?本章回答——PF 驱动通过 `sriov_get_vf_total_msix` 和 `sriov_set_msix_vec_count` 回调管理 VF 的 MSI-X 向量配额,并通过 sysfs 暴露给用户态配置。
 
 VF需要独立的MSI-X向量，内核提供了PF驱动的回调接口：
 
@@ -531,6 +782,8 @@ struct pci_driver my_pf_driver = {
 ---
 
 ## 5. 实战调试
+
+> 上一章建立了 SR-IOV 场景下 VF 的 MSI-X 向量分配机制。一个自然的问题是:实际系统中如何观察和排查 MSI/MSI-X 问题?本章从工程视角回答——先讲 `/proc/interrupts`、debugfs、`lspci` 等观察工具,再列出常见问题(`nvec=-ENOSPC`、中断丢失、VF 无 MSI-X 等)的排查路径,最后讲性能优化(irqbalance、手动亲和性)。
 
 ### 5.1 查看中断信息
 
@@ -577,6 +830,8 @@ done
 
 ## 6. 代码阅读路线
 
+> 上一章建立了实战调试的工具箱与问题排查路径。一个自然的问题是:想深入理解 Linux MSI 实现应该按什么顺序读代码?本章给出一张代码阅读路线图——从 `api.c` 驱动入口开始,经 `msi.c` 核心逻辑,到 `irqdomain.c` / `legacy.c` 两条分配路径,最后到 `pci_regs.h` 寄存器定义,并附依赖关系图。
+
 | 顺序 | 文件 | 关注函数 |
 |------|------|----------|
 | 1 | `drivers/pci/msi/api.c` | `pci_enable_msi()`, `pci_enable_msix_range()`, `pci_alloc_irq_vectors()` |
@@ -607,8 +862,13 @@ flowchart TD
 
 - [PCIe Base Specification 6.0](https://pcisig.com/specifications) — §6.1.4 MSI Capability, §6.1.5 MSI-X Capability
 - [Intel VT-d Specification](https://www.intel.com/content/www/us/en/io/virtualization-technology-for-directed-connectivity-vt-d.html) — 中断重映射
-- [ARM GICv3 Architecture Specification](https://developer.arm.com/documentation/) — ITS与LPI机制
-- [Linux Kernel Source](https://git.kernel.org/) — `drivers/pci/msi/`, `kernel/irq/`
+- [ARM GICv3 Architecture Specification](https://developer.arm.com/documentation/) — ITS 与 LPI 机制
+- [RISC-V AIA Specification](https://github.com/riscv/riscv-aia) — IMSIC MSI 控制器规范,Interrupt Identity 与 Guest Interrupt File 设计
+- [Linux Kernel Source](https://git.kernel.org/) — `drivers/pci/msi/`, `kernel/irq/`, `drivers/irqchip/irq-riscv-imsic-*.c`
+- [RISC-V IMSIC 驱动(本地)](file:///home/pbw/sg2046/linux-common/drivers/irqchip/irq-riscv-imsic-platform.c) — `imsic_msi_parent_ops` 注册,`imsic_init_dev_msi_info` per-device 初始化
+- [DWC PCIe Host 驱动(本地)](file:///home/pbw/sg2046/linux-common/drivers/pci/controller/dwc/pcie-designware-host.c) — `use_imsi_rx` 判断逻辑,`dw_pcie_msi_parent_ops` DWC 内建 MSI parent
+- [SG2046 IMSIC DTS(本地)](file:///home/pbw/sg2046/linux-common/arch/riscv/boot/dts/sophgo/sg2046-imsics-aplic.dtsi) — IMSIC 节点配置,`msi-controller`/`riscv,num-ids`
+- [PCIe 工程踩坑指南](./pcie-engineering-pitfalls.md) — §5 中断问题、§5.3 RISC-V AIA IMSIC 的 MSI 路径
 
 ---
 
@@ -616,4 +876,4 @@ flowchart TD
 
 ---
 
-*源码版本：Linux 6.x | 更新：2026-04-21*
+*源码版本：Linux 6.x (SG2046) | 更新：2026-07-27*
