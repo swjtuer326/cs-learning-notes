@@ -18,6 +18,9 @@
 | Legacy Default Stream | — | 遗留默认流，所有线程共享 |
 | Lazy Initialization | — | 延迟初始化，首次使用时才创建资源 |
 | Reference Counting | — | 引用计数，管理资源生命周期 |
+| MIO | Memory IO | GPU 内存 IO 子系统，处理 in-flight 的内存访问请求 |
+| TLB | Translation Lookaside Buffer | 地址翻译后备缓冲器，缓存 VA→PA 映射，context 切换时需 flush |
+| VA | Virtual Address | 虚拟地址，每个 context 有独立的 VA 空间 |
 
 ### 5.1 前置知识
 
@@ -296,6 +299,36 @@ for (int i = 0; i < 100; i++) {
 - 上下文切换开销约 10-100 微秒
 - 频繁切换会导致性能下降
 - 建议：尽量使用单个上下文，必要时批量切换
+
+#### 2.4.1 上下文切换的硬件机制
+
+**本质先行**：上下文切换开销 10-100 μs 不是 API 调用开销，而是 GPU 硬件状态切换的必然——切换 context 需要切换 VA 空间、flush TLB、drain SM 上所有活跃 warp、排空 MIO (Memory IO) pending 请求，每一步都是同步操作。
+
+**4 步硬件切换路径**（基于 GPU 架构公开文档推断，参考 NVIDIA V100 Whitepaper §2.3 "Streaming Multiprocessor" 与 H100 Whitepaper §2.4 "Hopper Streaming Multiprocessor"）：
+
+1. **Drain SM 活跃 warp**：FE 停止向 SM 分发新 warp，等待当前 SM 上所有活跃 warp 完成或被换出（寄存器/共享内存内容保存到 context 私有存储区）
+2. **排空 MIO pending 请求**：等待所有 in-flight 的内存访问完成（global memory load/store、texture fetch、constant cache fill）——未完成的请求不能跨 context
+3. **Flush TLB**：清空 GPU 的 TLB (Translation Lookaside Buffer)，因为新 context 有独立的 VA→PA 映射
+4. **切换 VA 空间**：加载新 context 的页表基址寄存器，后续所有内存访问走新页表
+
+**为什么每一步都必须同步？** 三个层面的约束：
+
+- **数据隔离**：不同 context 的 VA 空间不互通——若不 flush TLB，旧 context 的 TLB 缓存可能让新 context 访问到错误物理页
+- **指令隔离**：不同 context 的 module/Kernel 不互通——SM 上正在执行的 warp 属于旧 context，必须 drain 后才能加载新 context 的 Kernel
+- **资源隔离**：不同 context 的 device memory 分配独立——MIO pending 请求引用的物理页归属旧 context，必须完成或取消
+
+**与 CPU 上下文切换的对比**：
+
+| 对比维度 | CPU 进程切换 | GPU context 切换 |
+|----------|--------------|------------------|
+| **状态保存** | 寄存器 + 页表基址 | 寄存器 + 共享内存 + 页表基址 + TLB |
+| **切换触发** | OS 调度（定时/IO） | 显式 API 调用（`cuCtxSetCurrent`） |
+| **切换开销** | 1-10 μs | 10-100 μs |
+| **并行性** | 单核同时只跑一个进程 | 单 GPU 同时可跑多个 context（时间片轮转） |
+
+> **如何读这张表**：GPU context 切换比 CPU 进程切换慢一个数量级，根本原因是 GPU 状态更复杂——共享内存（每 SM 高达 228 KB）+ 大量寄存器（每 SM 256 KB）+ TLB 都需要保存/恢复。CPU 进程切换只需保存几百字节寄存器，GPU 则要保存 MB 级状态。
+
+> **核心要点**：上下文切换开销 10-100 μs 源自 4 步硬件同步路径——drain SM 活跃 warp + 排空 MIO pending + flush TLB + 切换 VA 空间。每一步都是数据/指令/资源隔离的硬性要求，无法省略。这是 GPU 虚拟化的根本代价。
 
 ### 2.5 多上下文 vs 多进程
 
@@ -655,6 +688,54 @@ kernel3<<<blocks, threads, 0, stream>>>(args3);  // 不等待默认流
 2. `kernel2` 在默认流中启动，**不等待 `stream`**
 3. `kernel3` 在 `stream` 中启动，**不等待默认流**
 
+#### 4.4.1 Legacy 默认流的隐式同步实现
+
+**本质先行**：Legacy 默认流（Stream 0）与所有非默认流的"互锁行为"不是软件调度，而是 Driver 在每次 Kernel launch / Memcpy 提交时插入的隐式 `cudaStreamWaitEvent(0)`——Legacy 默认流等价于一个"全局屏障"，任何 non-blocking stream 的任务在它前后都必须等待。
+
+**隐式同步的等价变换**：Legacy 模式下，以下代码：
+
+```c
+cudaStream_t stream;
+cudaStreamCreate(&stream);  // 默认创建与 Legacy 默认流互锁的 stream
+
+kernel1<<<blocks, threads, 0, stream>>>(args1);    // stream
+kernel2<<<blocks, threads>>>(args2);               // Legacy 默认流
+kernel3<<<blocks, threads, 0, stream>>>(args3);    // stream
+```
+
+等价于 Driver 在内部展开为：
+
+```c
+cudaEvent_t implicit_event;
+cudaEventCreate(&implicit_event);
+
+kernel1<<<blocks, threads, 0, stream>>>(args1);
+
+cudaEventRecord(implicit_event, stream);            // 隐式：stream 提交后插入 event
+cudaStreamWaitEvent(0, implicit_event, 0);          // 隐式：默认流等待 stream event
+
+kernel2<<<blocks, threads>>>(args2);                // 默认流执行
+
+cudaEventRecord(implicit_event, 0);                  // 隐式：默认流提交后插入 event
+cudaStreamWaitEvent(stream, implicit_event, 0);     // 隐式：stream 等待默认流 event
+
+kernel3<<<blocks, threads, 0, stream>>>(args3);
+```
+
+**为什么 `cudaStreamNonBlocking` 能绕过这个互锁？** 关键在 Driver 的 launch descriptor 中有一个 flag 位——`cudaStreamNonBlocking` 创建的 stream 会让 Driver 跳过"在 stream 前后插入 `cudaStreamWaitEvent(0)`"的隐式步骤。这让该 stream 与 Legacy 默认流完全独立，可以真正并发（参考 CUDA C Programming Guide §3.2.6.5 "Stream and Event Management"）。
+
+**源码证据**——`simpleDrvRuntime.cpp` 用 `cudaStreamNonBlocking` 创建非阻塞流以避免 Legacy 默认流互锁：
+
+```c
+/* 摘自 [src/cuda-samples/cpp/0_Introduction/simpleDrvRuntime/simpleDrvRuntime.cpp](./src/cuda-samples/cpp/0_Introduction/simpleDrvRuntime/simpleDrvRuntime.cpp) 第 134-135 行 */
+cudaStream_t stream;
+checkCudaErrors(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
+```
+
+**这段代码体现了什么设计决策？** CUDA 7.0 之前所有 stream 都与 Legacy 默认流互锁，多流并发性能受限。`cudaStreamNonBlocking` 是为多流并发场景设计的"逃生阀"——显式声明该 stream 不参与 Legacy 默认流的隐式同步。CUDA 7.0 引入的 Per-thread Default Stream 是更彻底的解决方案——让默认流本身也变成 per-thread 的非阻塞流。
+
+> **核心要点**：Legacy 默认流的互锁行为是 Driver 在每次 launch 提交时插入隐式 `cudaStreamWaitEvent(0)` 实现的——等价于"全局屏障"。`cudaStreamNonBlocking` 通过 launch descriptor 的 flag 位让 Driver 跳过隐式同步步骤，让该 stream 与 Legacy 默认流独立并发。
+
 **如何选择？**
 
 | 场景 | 推荐模式 |
@@ -966,6 +1047,10 @@ if (driverVersion < CUDART_VERSION) {  /* CUDART_VERSION 是编译时常量 */
 - [CUDA Runtime API Reference](https://docs.nvidia.com/cuda/cuda-runtime-api/) — 参考了上下文管理、模块管理、Stream 语义
 - [CUDA Driver API Reference](https://docs.nvidia.com/cuda/cuda-driver-api/) — 参考了底层 API 的语义
 - [CUDA C Programming Guide §4.3. CUDA Runtime](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#cuda-runtime) — 参考了 Runtime 的设计
+- [CUDA C Programming Guide §3.2.6.5. Stream and Event Management](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#stream-and-event-management) — 参考了 Legacy 默认流隐式同步与 cudaStreamNonBlocking 语义
+- [CUDA C Programming Guide §G.1. CUDA Runtime API Compatibility](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html) — 参考了 Runtime/Driver 互操作模式
+- [NVIDIA V100 Architecture Whitepaper](https://images.nvidia.com/content/volta-architecture/pdf/volta-architecture-whitepaper.pdf) — 参考了 §2.3 Streaming Multiprocessor (上下文切换硬件路径)
+- [NVIDIA H100 Architecture Whitepaper](https://resources.nvidia.com/en-us-hopper-architecture/hopper-architecture-whitepaper-paper) — 参考了 §2.4 Hopper Streaming Multiprocessor (context 切换开销)
 
 ***
 
