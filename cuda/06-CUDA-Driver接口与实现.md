@@ -442,10 +442,7 @@ cuDevicePrimaryCtxRelease(device);
 CUresult cuModuleLoad(CUmodule *module, const char *fname);
 ```
 
-**语义**：
-- 从文件加载模块（cubin/fatbin/PTX）
-- 模块加载到当前上下文
-- 可以多次加载同一个文件（每次创建新的模块对象）
+**语义**：从文件加载模块（cubin/fatbin/PTX）。模块加载到**当前上下文**，context 销毁时 module 自动失效。可以多次加载同一个文件——每次创建新的独立 `CUmodule` 对象（**Driver 不缓存 module**，与 Runtime 自动缓存对比，详见 [05-CUDA-Runtime架构设计 §3.3](./05-CUDA-Runtime架构设计.md)）。
 
 **具体例子**：
 
@@ -464,10 +461,15 @@ if (err != CUDA_SUCCESS) {
 CUresult cuModuleLoadData(CUmodule *module, const void *image);
 ```
 
-**语义**：
-- 从内存加载模块
-- `image` 指向模块数据（cubin/fatbin/PTX 的内存映像）
-- 适合动态生成的代码
+**语义**：从内存加载模块。`image` 指向模块数据，**Driver 通过前 4 字节 magic 自动识别格式**（参考 CUDA Driver API §8.3.4）：
+
+| 前 4 字节 | Magic 值 | 识别为 | 加载路径 |
+|-----------|----------|--------|----------|
+| `\x7FELF` | `0x7F454C46` | cubin | 直接解析 ELF + 重定位 |
+| `0xBA55ED50` | `0xBA55ED50` | fatbin | 扫描子节表，按当前设备选最优 cubin/PTX |
+| 其他 | — | PTX 文本 | JIT 编译为当前架构 cubin |
+
+这让 `cuModuleLoadData` 成为最通用的入口——调用者无需预先知道映像格式。
 
 **具体例子**：
 
@@ -493,10 +495,91 @@ cuModuleLoadData(&module, ptx);
 CUresult cuModuleLoadFatBinary(CUmodule *module, const void *fatCubin);
 ```
 
-**语义**：
-- 从 fatbin 加载模块
-- fatbin 包含多个架构的代码
-- Runtime 自动选择当前设备的架构
+**语义**：从 fatbin 加载模块，专门处理 fatbin 容器（参考 CUDA Binary Utilities Guide §3 "Fat Binary"）。Driver 扫描子节表，按以下优先级选择：
+
+1. **精确匹配 cubin 优先**：如运行在 sm_80，先找 `arch=sm_80` 的 cubin 子节（无需 JIT，最快）
+2. **最接近的 PTX 子节**：若无精确匹配，找 `compute_80` 等 PTX 子节 → JIT 编译为当前架构 cubin
+3. 都没有则返回 `CUDA_ERROR_NO_KERNEL_IMAGE_FOR_DEVICE`
+
+#### 4.1.1 fatbin 容器格式详解
+
+**本质先行**：fatbin 不是一种新的二进制格式，而是一个**容器**——类似 tar/zip 的角色，打包多个架构的 cubin/PTX 子节，让一份部署产物能在不同 GPU 上运行。
+
+**容器结构**（参考 CUDA Binary Utilities Guide §3）：
+
+```
++-------------------------------+
+| Fat Binary Header             |
+|   magic = 0xBA55ED50          |  ← 标识 fatbin 容器
+|   version, 子节数量, 子节表偏移 |
++-------------------------------+
+| 子节表 (array of entry)        |
+|   entry[0]: arch=sm_80, offset, size
+|   entry[1]: arch=sm_86, offset, size
+|   entry[2]: arch=compute_80 (PTX), offset, size
++-------------------------------+
+| cubin for sm_80 (ELF)         |  ← 子节 0：标准 ELF，magic 0x7F454C46
+| cubin for sm_86 (ELF)         |  ← 子节 1：标准 ELF
+| PTX for compute_80 (文本)     |  ← 子节 2：文本格式，以 .version 开头
++-------------------------------+
+```
+
+每个子节有独立的 magic——cubin 子节是标准 ELF（`0x7F454C46`），PTX 子节是文本起始（`.version`）。这让 fatbin 内部仍保持格式独立。
+
+**源码证据**——`vectorAddDrv.cpp` 展示了从 fatbin 文件加载的完整路径：
+
+```c
+/* 摘自 [src/cuda-samples/cpp/0_Introduction/vectorAddDrv/vectorAddDrv.cpp](./src/cuda-samples/cpp/0_Introduction/vectorAddDrv/vectorAddDrv.cpp) 第 99-115 行 */
+string module_path;
+ostringstream fatbin;
+if (!findFatbinPath(FATBIN_FILE, module_path, argv, fatbin)) {
+    exit(EXIT_FAILURE);
+}
+if (!fatbin.str().size()) {
+    printf("fatbin file empty. exiting..\n");
+    exit(EXIT_FAILURE);
+}
+
+/* cuModuleLoadData 自动识别 fatbin magic (0xBA55ED50) → 扫描子节表
+   → 选匹配当前设备的 cubin（或 PTX JIT）→ 构建 CUmodule 对象 */
+checkCudaErrors(cuModuleLoadData(&cuModule, fatbin.str().c_str()));
+```
+
+**这段代码体现了什么设计决策？** `cuModuleLoadData` 的格式自动识别让 Driver 用户无需关心 fatbin 内部结构——把 fatbin 当作不透明 blob 传入即可。如果要细粒度控制（如指定 JIT 选项、强制使用 PTX 而非 cubin），用 `cuModuleLoadDataEx` 传 `CUjit_option` 数组。
+
+#### 4.1.2 加载开销分解与缓存策略
+
+**加载开销构成**（典型值，参考 CUDA Driver API §8.3 与 Binary Utilities Guide §5）：
+
+| 阶段 | 开销 | 说明 |
+|------|------|------|
+| fatbin 解析 | ~10μs | 扫描子节表，选最优子节 |
+| PTX JIT（首次） | ~10-100ms | PTX → SASS 编译，主要开销 |
+| cubin 重定位 | ~100μs | 符号重定位、绝对地址修正 |
+| 符号表构建 | ~10μs | 构建 kernel/device function 查找表 |
+
+**JIT 缓存**：Driver 维护进程级 JIT 缓存（Linux 默认在 `~/.nv/ComputeCache`，参考 CUDA Programming Guide §4.4.4 "JIT Compilation"）。同一 PTX 二次加载直接读 cubin，跳过 JIT 阶段——这就是"第二次加载比第一次快一个数量级"的原因。
+
+**Driver 不缓存 module**：每次 `cuModuleLoadData` 都创建新的 `CUmodule` 对象，**应用层必须自己缓存**。常见的应用层缓存策略：
+
+```c
+/* 应用层 module 缓存（推荐模式）*/
+static std::unordered_map<std::string, CUmodule> module_cache;
+static std::mutex cache_mutex;
+
+CUmodule loadModuleCached(const std::string &fatbin_data, const std::string &key) {
+    std::lock_guard<std::mutex> lock(cache_mutex);
+    auto it = module_cache.find(key);
+    if (it != module_cache.end()) return it->second;
+
+    CUmodule mod;
+    cuModuleLoadData(&mod, fatbin_data.c_str());
+    module_cache[key] = mod;
+    return mod;
+}
+```
+
+> **核心要点**：fatbin 是容器而非格式（magic `0xBA55ED50`），打包多架构 cubin/PTX 子节；`cuModuleLoadData` 通过前 4 字节自动识别 cubin/fatbin/PTX；Driver 不缓存 module，需应用层自管；JIT 结果有进程级缓存（`~/.nv/ComputeCache`），二次加载快一个数量级。
 
 ### 4.2 获取函数
 
@@ -550,14 +633,80 @@ CUresult cuLaunchKernel(CUfunction f,
 
 **参数解析**：
 - `f`：函数句柄
-- `gridDimX/Y/Z`：Grid 维度
-- `blockDimX/Y/Z`：Block 维度
+- `gridDimX/Y/Z`、`blockDimX/Y/Z`：Grid/Block 维度（6 个独立分量，不接受 `dim3`）
 - `sharedMemBytes`：动态共享内存大小
 - `hStream`：Stream 句柄（0 表示默认流）
-- `kernelParams`：Kernel 参数数组
-- `extra`：额外参数（通常为 `NULL`）
+- `kernelParams`、`extra`：**两套独立 ABI**，详见 §4.3.1
 
-**具体例子**：
+#### 4.3.1 两套参数传递 ABI
+
+**本质先行**：`kernelParams` 和 `extra` 不是冗余参数，而是**两套独立的参数传递 ABI** 并存于同一 API——它们对应不同的使用场景与性能特性（参考 CUDA Driver API §6.3 "cuLaunchKernel"）。
+
+**简单 ABI（`kernelParams` 非 NULL）**：
+
+```c
+void *args[] = {&d_A, &d_B, &d_C, &N};  /* 每个元素指向一个参数的存储位置 */
+cuLaunchKernel(kernel, ..., args, NULL);
+```
+
+- 类型：`void **`，是指向参数指针的数组
+- 每个 `args[i]` 指向第 i 个参数的存储位置（如 `&d_A` 指向 `d_A` 这个 `CUdeviceptr` 变量）
+- Driver 内部按 Kernel 函数签名逐个解引用，把参数值拷贝到 GPU 的 constant memory（参数区）
+- 适合：手写代码、参数数量固定
+
+**高级 ABI（`kernelParams` = NULL，`extra` 非 NULL）**：
+
+```c
+void *argBuffer[16];
+int offset = 0;
+*((CUdeviceptr *)&argBuffer[offset]) = d_A;  offset += sizeof(d_A);
+*((CUdeviceptr *)&argBuffer[offset]) = d_B;  offset += sizeof(d_B);
+*((CUdeviceptr *)&argBuffer[offset]) = d_C;  offset += sizeof(d_C);
+*((int *)&argBuffer[offset]) = N;            offset += sizeof(N);
+
+void *extra[] = {
+    CU_LAUNCH_PARAM_BUFFER_POINTER, argBuffer,
+    CU_LAUNCH_PARAM_BUFFER_SIZE,    &offset,
+    CU_LAUNCH_PARAM_END
+};
+cuLaunchKernel(kernel, ..., NULL, extra);
+```
+
+- 类型：`void **`，是 `(token, value)` 对的列表，以 `CU_LAUNCH_PARAM_END` 终止
+- `CU_LAUNCH_PARAM_BUFFER_POINTER` + `argBuffer`：所有参数连续打包在一个 buffer 中，应用层负责布局
+- `CU_LAUNCH_PARAM_BUFFER_SIZE` + `&size`：packed buffer 的字节数
+- 适合：编译器/NVRTC/PyTorch 等动态生成 Kernel 调用——避免指针数组解引用开销
+
+**源码证据**——`vectorAddDrv.cpp` 同时展示两套 ABI，用 `if (1) {...} else {...}` 让开发者切换：
+
+```c
+/* 摘自 [src/cuda-samples/cpp/0_Introduction/vectorAddDrv/vectorAddDrv.cpp](./src/cuda-samples/cpp/0_Introduction/vectorAddDrv/vectorAddDrv.cpp) 第 141-144 行（简单 ABI） */
+void *args[] = {&d_A, &d_B, &d_C, &N};  /* 指针数组，每元素指向参数存储 */
+checkCudaErrors(cuLaunchKernel(vecAdd_kernel, blocksPerGrid, 1, 1,
+                               threadsPerBlock, 1, 1, 0, NULL, args, NULL));
+```
+
+```c
+/* 摘自 [src/cuda-samples/cpp/0_Introduction/vectorAddDrv/vectorAddDrv.cpp](./src/cuda-samples/cpp/0_Introduction/vectorAddDrv/vectorAddDrv.cpp) 第 150-165 行（高级 ABI） */
+int   offset = 0;
+void *argBuffer[16];
+*((CUdeviceptr *)&argBuffer[offset]) = d_A;  offset += sizeof(d_A);
+*((CUdeviceptr *)&argBuffer[offset]) = d_B;  offset += sizeof(d_B);
+*((CUdeviceptr *)&argBuffer[offset]) = d_C;  offset += sizeof(d_C);
+*((int *)&argBuffer[offset]) = N;             offset += sizeof(N);
+
+checkCudaErrors(cuLaunchKernel(vecAdd_kernel, blocksPerGrid, 1, 1,
+                               threadsPerBlock, 1, 1, 0, NULL, NULL, argBuffer));
+```
+
+**这段代码体现了什么设计决策？** 两套 ABI 并存是兼容性与性能的权衡：
+- 简单 ABI 让手写代码简洁直观（编译器/人工都容易写）
+- 高级 ABI 让运行时系统（如 NVRTC 动态编译 + 启动）避免逐参数解引用，单次 memcpy 完成参数传递
+- 若同时传 `kernelParams` 和 `extra`，返回 `CUDA_ERROR_INVALID_VALUE`
+
+**与 Runtime `<<<>>>` 的对应**：Runtime 的 `<<<>>>` 展开后调用 `cudaLaunchKernel`，内部用**简单 ABI** 调用 `cuLaunchKernel`（详见 [05-CUDA-Runtime架构设计 §6.4.1](./05-CUDA-Runtime架构设计.md)）。
+
+**具体例子**（简单 ABI）：
 
 ```c
 // Kernel 定义
@@ -591,9 +740,12 @@ if (err != CUDA_SUCCESS) {
 ```
 
 **语义**：
-- 异步启动 Kernel
+- 异步启动 Kernel（详见 [04-执行模型与同步机制 §1.1](./04-执行模型与同步机制.md)）
 - 立即返回，不等待 Kernel 完成
 - Kernel 在指定的 Stream 中执行
+- 参数传递通过 `kernelParams` 或 `extra` 二选一（不可同时使用）
+
+> **核心要点**：`cuLaunchKernel` 的 `kernelParams` 和 `extra` 是两套独立 ABI——简单 ABI 用指针数组，适合手写代码；高级 ABI 用 packed buffer + token 列表，适合编译器/NVRTC/PyTorch 动态生成。两套 ABI 不可同时使用。
 
 ### 4.4 卸载模块
 
@@ -787,6 +939,141 @@ cuMemHostGetDevicePointer(&d_data, h_data, 0);
 > **常见陷阱**:`cuMemAllocHost` 分配的内存默认**不带 MAPPED 标志**,直接调用 `cuMemHostGetDevicePointer` 会返回 `CUDA_ERROR_INVALID_VALUE`。若坚持用 `cuMemAllocHost`,必须在创建 Context 时传入 `CU_CTX_MAP_HOST` flag。
 
 > **核心要点**：Driver API 的内存管理提供更细粒度的控制，区分拷贝方向，支持对齐分配和零拷贝。固定内存是高性能传输的基础。
+
+***
+
+### 5.5 虚拟内存管理（VMM）与 IPC
+
+> 传统 `cuMemAlloc` 把"分配 VA + 分配物理内存 + 建立 VA→phys 映射"打包成一个调用。本节深入 CUDA 10.0+ 引入的 VMM API，它把这三步解耦，支持跨进程共享——这是高性能多进程 GPU 协作的基础（参考 CUDA Driver API §1.4 "Virtual Memory Management"）。
+
+#### 5.5.1 VMM 三段式 API
+
+**本质先行**：VMM 把 `cuMemAlloc` 的"原子操作"拆分为三个独立步骤，类似 Linux 的 `mmap` + `mmap`/`shmat` 模型——VA 预留与物理分配分离，让应用层精确控制内存布局。
+
+| 步骤 | API | 作用 |
+|------|-----|------|
+| 1. VA 预留 | `cuMemAddressReserve(&ptr, size, align, addr, flags)` | 在 VA 空间预留一段区间（不分配物理） |
+| 2. 物理分配 | `cuMemCreate(&handle, size, &prop, flags)` | 分配物理内存（可指定 device、类型） |
+| 3. 建立映射 | `cuMemMap(ptr, size, 0, handle, flags)` | 把 VA 区间映射到物理 handle |
+
+**释放流程**（与申请对称）：`cuMemUnmap` → `cuMemAddressFree` → `cuMemRelease`（释放 handle）。
+
+**粒度对齐要求**：分配大小必须是 `cuMemGetAllocationGranularity` 返回值的倍数（通常 2MB，参考 CUDA Driver API §1.4）。这是硬件 page size 与 L2 cache line 的约束。
+
+#### 5.5.2 跨进程共享（IPC）
+
+**跨进程共享流程**：
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
+sequenceDiagram
+    participant A as 进程 A（分配者）
+    participant B as 进程 B（接收者）
+    A->>A: cuMemCreate(&handle, size, &prop, 0)
+    A->>A: cuMemExportToShareableHandle(&osHandle, handle, type, 0)
+    A->>B: 通过 IPC（socket/pipe）传递 osHandle
+    B->>B: cuMemImportFromShareableHandle(&handle, osHandle, type)
+    B->>B: cuMemAddressReserve(&ptr, size, ...)
+    B->>B: cuMemMap(ptr, size, 0, handle, 0)
+    B->>B: cuMemSetAccess(ptr, size, &accessDesc, 1)
+```
+
+**OS 句柄类型**（参考 `memMapIpc.cpp` L84-L88）：
+
+```c
+/* 摘自 [src/cuda-samples/cpp/3_CUDA_Features/memMapIPCDrv/memMapIpc.cpp](./src/cuda-samples/cpp/3_CUDA_Features/memMapIPCDrv/memMapIpc.cpp) 第 84-88 行 */
+#if defined(__linux__)
+#define PROCESS_MEM_HANDLE_TYPE CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR
+#elif defined(_WIN32)
+#define PROCESS_MEM_HANDLE_TYPE CU_MEM_HANDLE_TYPE_WIN32
+#endif
+```
+
+**这段代码体现了什么设计决策？** CUDA VMM 把 OS 句柄抽象为 `CUmemAllocationHandleType` 枚举——Linux 用 fd（POSIX）、Windows 用 HANDLE，跨平台代码只需切换枚举值，不必修改逻辑。这让同一份 IPC 代码能在两个平台运行。
+
+#### 5.5.3 完整 VMM IPC 实现示例
+
+**分配者进程**（参考 `memMapIpc.cpp` L156-L195）：
+
+```c
+/* 摘自 [src/cuda-samples/cpp/3_CUDA_Features/memMapIPCDrv/memMapIpc.cpp](./src/cuda-samples/cpp/3_CUDA_Features/memMapIPCDrv/memMapIpc.cpp) 第 156-195 行 */
+CUmemAllocationProp allocProp = {};
+allocProp.type          = CU_MEM_ALLOCATION_TYPE_PINNED;
+allocProp.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+allocProp.location.id   = dev;
+allocProp.requestedHandleTypes = PROCESS_MEM_HANDLE_TYPE;  /* 跨平台句柄类型 */
+
+size_t granularity;
+cuMemGetAllocationGranularity(&granularity, &allocProp, CU_MEM_ALLOC_GRANULARITY_MINIMUM);
+/* 分配大小需向上对齐到 granularity 倍数（通常 2MB）*/
+
+CUmemGenericAllocationHandle handle;
+cuMemCreate(&handle, allocSize, &allocProp, 0);
+
+/* 导出为 OS 句柄（fd 或 HANDLE）*/
+void *osHandle;
+cuMemExportToShareableHandle(&osHandle, handle, PROCESS_MEM_HANDLE_TYPE, 0);
+
+/* 在本地映射 */
+CUdeviceptr d_ptr;
+cuMemAddressReserve(&d_ptr, allocSize, 0, 0, 0);
+cuMemMap(d_ptr, allocSize, 0, handle, 0);
+
+CUmemAccessDesc accessDesc = {};
+accessDesc.location = allocProp.location;
+accessDesc.flags     = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
+cuMemSetAccess(d_ptr, allocSize, &accessDesc, 1);
+```
+
+**接收者进程**（参考 `memMapIpc.cpp` L209-L255）：
+
+```c
+/* 摘自 [src/cuda-samples/cpp/3_CUDA_Features/memMapIPCDrv/memMapIpc.cpp](./src/cuda-samples/cpp/3_CUDA_Features/memMapIPCDrv/memMapIpc.cpp) 第 209-255 行（简化）*/
+CUmemGenericAllocationHandle handle;
+cuMemImportFromShareableHandle(&handle, osHandle, PROCESS_MEM_HANDLE_TYPE);
+
+CUdeviceptr d_ptr;
+cuMemAddressReserve(&d_ptr, allocSize, 0, 0, 0);
+cuMemMap(d_ptr, allocSize, 0, handle, 0);
+
+/* 设置访问权限（让接收进程也能读写）*/
+CUmemAccessDesc accessDesc = {};
+accessDesc.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+accessDesc.location.id   = recvDev;
+accessDesc.flags         = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
+cuMemSetAccess(d_ptr, allocSize, &accessDesc, 1);
+
+cuMemRelease(handle);  /* 释放 handle，但 mapping 保留直到 cuMemUnmap */
+```
+
+**释放流程**（与申请对称，必须按序）：
+1. `cuMemUnmap(d_ptr, allocSize)` — 解除 VA 映射
+2. `cuMemAddressFree(d_ptr, allocSize)` — 释放 VA 预留
+3. `cuMemRelease(handle)` — 释放物理内存引用（最后一个引用释放时物理内存回收）
+
+#### 5.5.4 设计动机与适用场景
+
+**为什么需要 VMM？**
+
+1. **非连续物理 → 连续 VA**：传统 `cuMemAlloc` 要求物理连续，大块分配易失败；VMM 可拼凑多个小物理段映射到连续 VA
+2. **跨进程共享**：OS 句柄可通过 socket/pipe 传递，比旧 `cudaIpcGetMemHandle` 更灵活
+3. **多 GPU 显式控制**：可指定物理内存在哪个 device 分配，VA 在哪个 device 可见
+
+**适用场景**：
+- 多进程协作的 AI 推理服务（如 Triton Inference Server 用 VMM 在 worker 进程间共享模型权重）
+- 需要共享 GPU 显存的 IPC 应用（替代传统的 `cudaIpcGetMemHandle`）
+- 需要精细控制内存位置的场景（如 NUMA-aware GPU 计算）
+
+**与旧 IPC API 对比**：
+
+| 对比维度 | `cudaIpcGetMemHandle`（旧） | VMM API（新） |
+|----------|--------------------------|----------------|
+| 共享粒度 | cudaMalloc 分配的整块 | 任意大小（粒度对齐） |
+| 跨进程 | 同一 CUDA context | 不同 process（通过 OS 句柄） |
+| VA 控制 | 固定（cudaMalloc 决定） | 可自定义 VA 区间 |
+| 物理位置 | 当前 device | 可指定任意 device |
+
+> **核心要点**：VMM 把 `cuMemAlloc` 的"VA + 物理 + 映射"三步解耦——`cuMemAddressReserve` + `cuMemCreate` + `cuMemMap`，支持跨进程共享（OS 句柄 fd/HANDLE 抽象）。分配粒度需对齐到 `cuMemGetAllocationGranularity`（通常 2MB）。`memMapIpc.cpp` 是完整 VMM IPC 实现的参考样本。
 
 ***
 
