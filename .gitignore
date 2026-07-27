@@ -31,6 +31,7 @@ __pycache__/
 edk2/edk2-src/
 trusted-firmware/src/
 nccl/src/nccl-src/
+cuda/src/
 
 # HTML 构建缓存(build_html.py 前端库)
 .html-build/

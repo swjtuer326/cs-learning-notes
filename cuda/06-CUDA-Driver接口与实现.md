@@ -902,7 +902,7 @@ void thread_cleanup() {
 下面摘录 CUDA Samples 中 [vectorAddDrv.cpp](./src/cuda-samples/cpp/0_Introduction/vectorAddDrv/vectorAddDrv.cpp) 的关键片段，体现 Driver API 与 Runtime API 的设计差异：
 
 ```c
-/* 摘自 [src/cuda-samples/cpp/0_Introduction/vectorAddDrv/vectorAddDrv.cpp](./src/cuda-samples/cpp/0_Introduction/vectorAddDrv/vectorAddDrv.cpp) 第 82-110 行 */
+/* 摘自 [src/cuda-samples/cpp/0_Introduction/vectorAddDrv/vectorAddDrv.cpp](./src/cuda-samples/cpp/0_Introduction/vectorAddDrv/vectorAddDrv.cpp) 第 83-110 行 */
 // 1. 显式初始化 Driver（Runtime 没有此步骤）
 checkCudaErrors(cuInit(0));
 
@@ -928,7 +928,7 @@ checkCudaErrors(cuModuleGetFunction(&vecAdd_kernel, cuModule, "VecAdd_kernel"));
 下面是同一个 vectorAdd 在 Driver API 下启动 Kernel 的代码：
 
 ```c
-/* 摘自 [src/cuda-samples/cpp/0_Introduction/vectorAddDrv/vectorAddDrv.cpp](./src/cuda-samples/cpp/0_Introduction/vectorAddDrv/vectorAddDrv.cpp) 第 138-144 行 */
+/* 摘自 [src/cuda-samples/cpp/0_Introduction/vectorAddDrv/vectorAddDrv.cpp](./src/cuda-samples/cpp/0_Introduction/vectorAddDrv/vectorAddDrv.cpp) 第 141-144 行 */
 int threadsPerBlock = 256;
 int blocksPerGrid   = (N + threadsPerBlock - 1) / threadsPerBlock;
 
@@ -943,7 +943,7 @@ checkCudaErrors(cuLaunchKernel(vecAdd_kernel,
                                args, NULL));           // kernelParams, extra
 ```
 
-对比 Runtime 的 `vectorAdd<<<blocks, threads>>>(d_A, d_B, d_C, numElements);`——Driver API 把所有启动配置显式作为参数传入，而 Runtime 通过 `<<<>>>` 语法糖在编译期展开。两者最终都调用同一个 `cuLaunchKernel`，但 Driver API 允许在运行时动态决定 Grid/Block 维度和参数列表。
+对比 Runtime 的 `vectorAdd<<<blocks, threads>>>(d_A, d_B, d_C, numElements);`——Driver API 把所有启动配置显式作为参数传入，而 Runtime 通过 `<<<>>>` 语法糖在编译期展开。两者最终都调用 `cuLaunchKernel`，但中间路径不同：Runtime 的 `<<<>>>` 首先展开为 `cudaConfigureCall` + `cudaSetupArgument`（老 ABI）或 `cudaLaunchKernel`（CUDA 4.0+ 新 ABI），内部通过 `__cudaPushCallConfiguration`/`__cudaPopCallConfiguration` 维护一个配置栈来暂存 grid/block/shmem/stream 参数，最终才下发到 `cuLaunchKernel`。Driver API 省去了配置栈这一层，允许在运行时动态决定 Grid/Block 维度和参数列表（详见 §4.3）。
 
 ***
 
