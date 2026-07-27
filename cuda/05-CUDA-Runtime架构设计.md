@@ -220,6 +220,50 @@ cuDevicePrimaryCtxReset(device);
 - 引用计数管理（`cuDevicePrimaryCtxRetain` 增加计数）
 - 进程退出时自动释放
 
+#### 2.3.1 为什么需要 Primary Context 这种抽象
+
+**本质先行**：Primary Context 不是"另一个 context"，而是"Runtime 与 Driver 共享的 context"——它存在的唯一目的是让 Runtime 用户与 Driver 用户能在同一 GPU 上协作而不互相破坏。
+
+**没有 Primary Context 会怎样？** 假设 Runtime 内部每次都通过 `cuCtxCreate` 创建一个普通 context，那么：
+
+1. Runtime 用户调用 `cudaMalloc` → Runtime 创建普通 context A → 在 A 中分配内存
+2. Driver 用户在同一进程内 `cuCtxCreate` 创建 context B → 在 B 中加载 module、启动 Kernel
+3. **问题**：A 和 B 是两个独立的地址空间——Driver 加载的 module 中 Kernel 函数无法访问 Runtime 分配的 device 内存（VA 不互通）
+
+**Primary Context 如何解决？** Primary Context 是"每设备唯一"的 context——`cuDevicePrimaryCtxRetain(device)` 在任意调用者（Runtime 或 Driver）返回的是**同一物理对象**，引用计数共享。因此：
+
+- Runtime 调用 `cudaMalloc` → 内部 retain primary context → 在 primary 中分配内存
+- Driver 用户 `cuDevicePrimaryCtxRetain(device)` → 拿到同一 primary context → 加载的 module 中 Kernel 能访问 Runtime 分配的内存
+
+**状态机**：Primary Context 有三个状态——`未创建` → `已创建但未激活` → `已激活`。引用计数为 0 时 primary **仍保留创建状态**（与普通 `cuCtxCreate` 不同，普通 context 引用计数为 0 即销毁），只有调用 `cuDevicePrimaryCtxReset` 才真正销毁，这让"释放后又 retain"能快速恢复。
+
+**生命周期与 `cudaDeviceReset`**：调用 `cudaDeviceReset` → 内部走 `cuDevicePrimaryCtxReset` → 强制销毁所有 Stream/Event/Memory/Module，即使有未完成的引用。这是清理"卡死状态"的最后手段，但会让所有 handle 失效。
+
+**三种 Runtime/Driver 互操作模式**（参考 CUDA C Programming Guide §G.1 "CUDA Runtime API Compatibility"）：
+
+| 模式 | 描述 | 示例 |
+|------|------|------|
+| **A. 纯 Runtime** | Runtime 自动管理 primary context | 普通应用 |
+| **B. Driver 先 → Runtime** | Driver `cuCtxCreate` 普通 context 后，Runtime 检测 `cuCtxGetCurrent()` 非空 → 用此 context 而非 primary | `simpleDrvRuntime.cpp` L92-L152 |
+| **C. Runtime 先 → Driver** | Runtime 已激活 primary context，Driver API 调用走同一 primary | `ptxjit.cpp` L183-L218 |
+
+模式 B 的源码证据（Driver/Runtime 混用，见 `simpleDrvRuntime.cpp` L94-L122）：
+
+```c
+/* 摘自 [src/cuda-samples/cpp/0_Introduction/simpleDrvRuntime/simpleDrvRuntime.cpp](./src/cuda-samples/cpp/0_Introduction/simpleDrvRuntime/simpleDrvRuntime.cpp) 第 94-122 行 */
+checkCudaDrvErrors(cuCtxCreate(&cuContext, &ctxCreateParams, 0, cuDevice));  // Driver 显式创建普通 context
+/* ... 省略 fatbin 加载与 cuModuleGetFunction ... */
+checkCudaErrors(cudaMallocHost(&h_A, size));    // Runtime 调用：检测到 current context 非空，沿用 Driver context 而非创建 primary
+checkCudaErrors(cudaMalloc((void **)(&d_A), size));  // 同上，分配在 Driver context 中
+cudaStream_t stream;
+checkCudaErrors(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));  // Runtime 创建 stream，挂在 Driver context 上
+checkCudaErrors(cudaMemcpyAsync(d_A, h_A, size, cudaMemcpyHostToDevice, stream));  // Runtime 异步拷贝，走 Driver context
+```
+
+**这段代码体现了什么设计决策？** Runtime 不强制覆盖当前 context——它在每次 API 调用前检查 `cuCtxGetCurrent()`，若非空就沿用，否则才 retain primary context。这让 Driver 用户能完全控制 context 生命周期，同时仍能用 Runtime 的便利 API（如 `cudaMalloc`、`cudaMemcpyAsync`）。
+
+> **核心要点**：Primary Context 是"Runtime 与 Driver 共享的 context"——它通过 per-device 唯一性 + 引用计数共享，让两种 API 用户能在同一地址空间协作。Runtime 在每次调用前检测 `cuCtxGetCurrent()`，沿用 Driver 显式创建的 context，而非盲目创建 primary——这是"延迟初始化 + 检测"双策略的设计。
+
 ### 2.4 上下文切换的开销
 
 **问题**：上下文切换需要保存/恢复 GPU 状态，开销较大。
@@ -285,25 +329,51 @@ for (int i = 0; i < 100; i++) {
 - 纹理引用
 
 **编译产物**：
-- **PTX**：虚拟指令集，文本格式，可移植
-- **cubin**：二进制格式，特定架构
-- **fatbin**：包含多个 cubin/PTX，支持多架构
+- **PTX**（Parallel Thread Execution）：虚拟指令集，文本格式，可移植。PTX 是中间表示而非最终形态——加载时由 Driver JIT 编译为当前 GPU 的 SASS（Streaming Assembler）指令
+- **cubin**：二进制格式，特定架构（如 sm_80 的 cubin 不能在 sm_70 上运行）。cubin 是 ELF 文件，magic `0x7F454C46`（`\x7FELF`）
+- **fatbin**：**容器**而非新格式，包含多个 cubin/PTX 子节，支持多架构部署。fatbin header magic = `0xBA55ED50`，后续每个子节有自己的 magic 与 architecture 字段（参考 CUDA Binary Utilities Guide §3 "Fat Binary"）
+
+#### 3.1.1 fatbin 容器格式
+
+```
++-------------------------------+
+| Fat Binary Header             |
+|   magic = 0xBA55ED50          |
+|   version, 子节数量, 子节表偏移 |
++-------------------------------+
+| 子节表 (array of entry)        |
+|   entry[0]: arch=sm_80, offset, size
+|   entry[1]: arch=sm_86, offset, size
+|   entry[2]: arch=compute_80 (PTX), offset, size
++-------------------------------+
+| cubin for sm_80 (ELF)         |
+| cubin for sm_86 (ELF)         |
+| PTX for compute_80 (文本)     |
++-------------------------------+
+```
+
+**架构选择策略**（参考 CUDA Driver API §8.3 "Module Management"）：
+1. 精确匹配 cubin 优先（如运行在 sm_80，先找 `arch=sm_80` 的 cubin）
+2. 若无精确匹配，找最接近的 PTX 子节（如 `compute_80`）→ JIT 编译为当前架构 cubin
+3. 都没有则报错 `CUDA_ERROR_NO_KERNEL_IMAGE_FOR_DEVICE`
 
 ### 3.2 Driver API 的模块管理
 
 **加载模块**：
 
 ```c
-// 从文件加载
+// 从文件加载（等价于 read + cuModuleLoadData）
 CUmodule module;
 cuModuleLoad(&module, "kernel.cubin");
 
-// 从内存加载
+// 从内存加载（自动识别 cubin/PTX/fatbin 格式）
 cuModuleLoadData(&module, kernel_data);
 
-// 从 fatbin 加载
+// 从 fatbin 加载（专门处理 fatbin 容器）
 cuModuleLoadFatBinary(&module, fatbin_data);
 ```
+
+**`cuModuleLoadData` 的格式自动识别**：Driver 读取前 4 字节判断格式——`0x7F454C46` 走 cubin 路径，`0xBA55ED50` 走 fatbin 路径，否则按 PTX 文本处理。这让 API 不要求调用者预先知道格式。
 
 **获取函数**：
 
@@ -317,6 +387,8 @@ cuModuleGetFunction(&kernel, module, "myKernel");
 ```c
 cuModuleUnload(module);
 ```
+
+> **缓存策略对比**：Driver **不缓存** module——每次 `cuModuleLoadData` 都重新解析 fatbin、（必要时）JIT PTX、构建符号表。同一 fatbin 加载两次得到两个独立的 `CUmodule` 句柄。Runtime 则自动缓存（见 §3.3）。JIT 结果本身有进程级缓存（Linux 通常在 `~/.nv/ComputeCache`，参考 CUDA Programming Guide §4.4.4 "JIT Compilation"）。
 
 ### 3.3 Runtime API 的自动管理
 
@@ -332,41 +404,83 @@ Runtime 在程序启动时自动加载模块（由 nvcc 嵌入的 fatbin）。
 myKernel<<<blocks, threads>>>(args);  // Runtime 自动解析 myKernel
 ```
 
-**具体流程**：
+**具体流程**（参考 CUDA Binary Utilities Guide §3 与 nvcc 文档）：
 
-1. **编译时**：nvcc 将 Kernel 编译为 fatbin，嵌入可执行文件的 `.nvFatBinSegment` 段
-2. **启动时**：Runtime 的初始化代码扫描 `.nvFatBinSegment`，注册所有模块
-3. **首次调用**：Runtime 加载模块到当前上下文，解析函数符号
+1. **编译时**：nvcc 将每个 `.cu` 文件编译为 fatbin，嵌入可执行文件的 `.nv_fatbin` ELF section
+2. **链接时**：nvcc 在 `.init_array` section 注册 `__cudaRegisterFatBinary` 回调（C runtime 在 `main` 前调用，**不是** `__attribute__((constructor))`）
+3. **启动时**：cudart 的 `.init_array` 回调扫描 `.nv_fatbin`，把每个 fatbin 注册到进程级 fatbin 列表（不立即加载到 GPU）
+4. **首次调用**：`myKernel<<<...>>>` 触发 `__cudaRegisterFunction` → 在当前 context 加载 module → 解析符号 → 缓存
 
-**源码示例**（简化的 Runtime 初始化流程）：
+**Runtime 初始化与符号解析流程**（基于公开 ABI 行为推断）：
 
 ```c
-// 摘自 CUDA Runtime 的初始化代码（伪代码）
-__attribute__((constructor))
-void __cuda_runtime_init(void) {
-    // 1. 初始化 Driver
-    cuInit(0);
-    
-    // 2. 扫描 .nvFatBinSegment 段
-    for (each fatbin in .nvFatBinSegment) {
-        // 3. 注册模块
-        __cudaRegisterFatBinary(fatbin);
-    }
+/* 简化的 Runtime 注册流程（基于 cudart 公开符号与 .init_array 机制推断） */
+/* 注意：__cudaRegisterFatBinary 与 __cudaRegisterFunction 是 nvcc 生成的静态
+   初始化代码调用的内部 API，非用户接口。其精确行为未在官方文档完整描述，
+   以下为基于 observable behavior 的推断。 */
+
+void __cudaRegisterFatBinary(void *fatbin) {
+    /* 1. 把 fatbin 加入进程级 fatbin 列表（持锁，防止并发注册） */
+    fatbin_list_lock();
+    fatbin_list_append(fatbin);
+    fatbin_list_unlock();
+    /* 注意：此处不调用 cuModuleLoadFatBinary，不分配 GPU 资源 */
 }
 
-// 首次调用 Kernel 时
-void __cudaRegisterFunction(void *fatbin, const char *name, ...) {
-    // 1. 加载模块到当前上下文
-    CUmodule module = cuModuleLoadFatBinary(fatbin);
-    
-    // 2. 获取函数
-    CUfunction func;
+void __cudaRegisterFunction(void *fatbin, const char *name,
+                            const char *device_fun, ...) {
+    /* 1. 查找 (context, fatbin, name) 三元组缓存 */
+    CUcontext ctx = get_current_context();  /* 可能触发 primary context retain */
+    CUfunction func = function_cache[ctx][fatbin][name];
+    if (func) return func;
+
+    /* 2. 缓存未命中：加载 module 到当前 context（持锁防止并发重复加载） */
+    function_cache_lock(ctx, fatbin);
+    /* 双重检查，避免锁等待期间其他线程已加载 */
+    if (function_cache[ctx][fatbin][name]) {
+        function_cache_unlock(ctx, fatbin);
+        return function_cache[ctx][fatbin][name];
+    }
+
+    CUmodule module;
+    cuModuleLoadData(&module, fatbin);  /* 触发 JIT（首次）或读 JIT 缓存 */
     cuModuleGetFunction(&func, module, name);
-    
-    // 3. 缓存函数指针
-    function_cache[name] = func;
+
+    /* 3. 写入缓存，键为 (context, fatbin, name) 三元组 */
+    function_cache[ctx][fatbin][name] = func;
+    function_cache_unlock(ctx, fatbin);
+    return func;
 }
 ```
+
+**缓存键为何是三元组？** 切换 context 后即使同一 fatbin 也需要重新加载——因为 module 句柄关联到具体 context，context 销毁时 module 自动失效。这就是为什么"切换 context 后首次调用 Kernel 会有明显延迟"。
+
+**源码证据**——`ptxjit.cpp` 展示了"Runtime 隐式创建 primary context + Driver API 走同一 context"的完整链路：
+
+```c
+/* 摘自 [src/cuda-samples/cpp/3_CUDA_Features/ptxjit/ptxjit.cpp](./src/cuda-samples/cpp/3_CUDA_Features/ptxjit/ptxjit.cpp) 第 183-218 行 */
+int deviceCount = 0;
+cudaGetDeviceCount(&deviceCount);  /* Runtime 调用：可能触发 primary context 创建 */
+
+int driverVersion = 0, runtimeVersion = 0;
+cudaDriverGetVersion(&driverVersion);     /* 版本独立性检查 */
+cudaRuntimeGetVersion(&runtimeVersion);
+if (driverVersion < CUDART_VERSION) { /* ... 报错 ... */ }
+
+cudaSetDevice(dev);  /* 选择 device */
+
+/* The runtime API will create the GPU Context implicitly here */
+checkCudaErrors(cudaMalloc((void **)&d_A, size));  /* 触发 primary context retain + 激活 */
+
+/* ... PTX JIT via cuLinkCreate / cuLinkAddData / cuLinkComplete ... */
+checkCudaErrors(cuModuleLoadData(&mod, cuOut));  /* Driver API：走 Runtime 已激活的 primary context */
+checkCudaErrors(cuModuleGetFunction(&kernel, mod, "_Z9simpleKernelPfi")));
+
+void *args[] = {&d_A, &N};
+checkCudaErrors(cuLaunchKernel(kernel, 1, 1, 1, 1, 1, 1, 0, NULL, args, NULL));
+```
+
+**这段代码体现了什么设计决策？** L196 注释明确说明"runtime API will create the GPU Context implicitly here"，随后 L202 `cudaMalloc` 创建并激活 primary context，后续 Driver API（`cuModuleLoadData`、`cuLaunchKernel`）自动走这个 primary context。这就是 §2.3.1 表中模式 C 的实现基础。
 
 ### 3.4 函数调用的内部流程
 
@@ -758,14 +872,92 @@ cudaMalloc((void **)&d_data2, size);  // 耗时 < 1ms
 
 **设计动机**：
 - **职责分离**：Runtime 负责易用性，Driver 负责灵活性
-- **版本独立**：Runtime 可以独立于 Driver 升级
+- **版本独立**：Runtime 可以独立于 Driver 升级（见下方"版本独立性"详述）
 - **多语言支持**：Runtime 提供 C/C++ API，Driver 提供更底层的接口
 
 **权衡**：
 - **优点**：应用开发者使用 Runtime，系统软件工程师使用 Driver
 - **缺点**：两层 API 增加学习成本，部分功能重复
 
-> **核心要点**：Runtime 的设计决策体现了"易用性优先"的原则。延迟初始化、主上下文、默认流同步等设计，都是为了简化编程。但这些设计也有代价（如首次调用延迟、同步开销），系统软件工程师需要理解这些权衡，在必要时使用 Driver API。
+#### 6.4.1 Runtime 不是 Driver 的"薄封装"
+
+**本质先行**：很多文档把 Runtime 描述为"Driver 的薄封装"——这是简化说法。Runtime 在每次 API 调用前做了大量状态检查和配置栈管理，并非简单透传。
+
+**`<<<>>>` 的真实展开路径**（参考 CUDA C Programming Guide §4.3.2 "Kernel Execution Syntax"）：
+
+```c
+/* 用户代码 */
+myKernel<<<gridDim, blockDim, sharedMem, stream>>>(arg1, arg2);
+
+/* 编译期展开为（CUDA 4.0+ 新 ABI）*/
+__cudaPushCallConfiguration(gridDim, blockDim, sharedMem, stream);  /* 压入配置栈 */
+myKernel(arg1, arg2);  /* 调用 device 函数 stub，不实际执行 */
+__cudaPopCallConfiguration(&gridDim, &blockDim, &sharedMem, &stream);  /* 弹出 */
+cudaLaunchKernel((char *)&__device_stub__myKernel,
+                 gridDim, blockDim, args, sharedMem, stream);  /* 内部 API */
+/* cudaLaunchKernel 内部：检查 primary context → 调用 cuLaunchKernel */
+```
+
+**配置栈 `__cudaPushCallConfiguration`/`__cudaPopCallConfiguration` 的设计目的**：让 `<<<>>>` 语法糖在 C++ 编译期展开为标准函数调用（避免在编译器层面修改语法树），同时把 grid/block/shmem/stream 暂存到栈帧中。这是"语法糖 + ABI 兼容"的工程权衡。
+
+**`cudaMalloc` vs `cuMemAlloc` 内部路径**：
+
+```c
+/* Runtime: cudaMalloc */
+cudaError_t cudaMalloc(void **devPtr, size_t size) {
+    /* 1. 检查 primary context 是否激活（每调用一次都检查） */
+    CUcontext ctx;
+    cuCtxGetCurrent(&ctx);
+    if (ctx == NULL) {
+        cuDevicePrimaryCtxRetain(&ctx, device);  /* 隐式 retain */
+        cuCtxSetCurrent(ctx);
+    }
+    /* 2. 调用 Driver API */
+    CUdeviceptr ptr;
+    CUresult err = cuMemAlloc(&ptr, size);
+    /* 3. 包装返回值（CUdeviceptr → void*）*/
+    *devPtr = (void *)ptr;
+    return cudaError_from_CUresult(err);
+}
+
+/* Driver: cuMemAlloc（无前置检查，要求调用者已设置 current context）*/
+CUresult cuMemAlloc(CUdeviceptr *dptr, size_t bytesize) {
+    /* 直接调用 KMD ioctl 分配 */
+}
+```
+
+**性能开销**：`cudaMalloc` 比 `cuMemAlloc` 多一次 `cuCtxGetCurrent` 检查（约 50-100ns），对单次分配可忽略，对高频分配（如循环内分配）会累积。这就是性能敏感场景推荐 Driver API 的原因之一。
+
+#### 6.4.2 版本独立性的实现
+
+**版本独立性**是 Runtime/Driver 分层最重要的工程价值——应用编译时绑定的 Runtime 版本（`CUDART_VERSION`）与运行时 Driver 版本（`cudaDriverGetVersion()`）可以不同。
+
+**源码证据**——`ptxjit.cpp` L185-L192 的版本检查（参考 CUDA Driver API §1.3 "API Compatibility"）：
+
+```c
+/* 摘自 [src/cuda-samples/cpp/3_CUDA_Features/ptxjit/ptxjit.cpp](./src/cuda-samples/cpp/3_CUDA_Features/ptxjit/ptxjit.cpp) 第 185-192 行 */
+int driverVersion = 0, runtimeVersion = 0;
+cudaDriverGetVersion(&driverVersion);     /* 运行时 Driver 版本（来自 KMD）*/
+cudaRuntimeGetVersion(&runtimeVersion);  /* 编译时 Runtime 版本（来自 cudart 头文件）*/
+
+if (driverVersion < CUDART_VERSION) {  /* CUDART_VERSION 是编译时常量 */
+    printf("Error: Driver version %d < Runtime version %d\n",
+           driverVersion, CUDART_VERSION);
+    exit(EXIT_FAILURE);
+}
+```
+
+**兼容性规则**：
+- **旧 Driver + 新 Runtime**：报错（如上代码检查）——新 Runtime 可能调用 Driver 不存在的新 API
+- **新 Driver + 旧 Runtime**：兼容——Driver 向后兼容旧 Runtime 调用的所有 API
+- **Enhanced Compatibility**（CUDA 11.0+）：允许新 Toolkit 在略旧的 Driver 上运行（同一大版本内），但部分新特性可能不可用
+
+**为什么不直接把 Runtime 编译进 Driver？** 分离后：
+- 应用可以静态链接 cudart（不依赖系统 cudart 版本）
+- Driver 升级（如 nvidia.ko 更新）不需要重新编译应用
+- 不同语言绑定（Python ctypes、Rust binding）可以独立演进
+
+> **核心要点**：Runtime 的设计决策体现了"易用性优先"的原则。延迟初始化、主上下文、默认流同步等设计，都是为了简化编程。但这些设计也有代价（如首次调用延迟、同步开销），系统软件工程师需要理解这些权衡，在必要时使用 Driver API。Runtime 不是 Driver 的"薄封装"——每次调用都有配置栈、context 检查等额外路径，理解这些路径有助于在性能敏感场景做出正确的 API 选择。
 
 ***
 
