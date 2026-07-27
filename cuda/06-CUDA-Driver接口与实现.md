@@ -1075,6 +1075,58 @@ cuMemRelease(handle);  /* 释放 handle，但 mapping 保留直到 cuMemUnmap */
 
 > **核心要点**：VMM 把 `cuMemAlloc` 的"VA + 物理 + 映射"三步解耦——`cuMemAddressReserve` + `cuMemCreate` + `cuMemMap`，支持跨进程共享（OS 句柄 fd/HANDLE 抽象）。分配粒度需对齐到 `cuMemGetAllocationGranularity`（通常 2MB）。`memMapIpc.cpp` 是完整 VMM IPC 实现的参考样本。
 
+### 5.6 Runtime/Driver 互操作规则
+
+**本质先行**：Runtime API 和 Driver API 可以在同一进程中混合使用——Runtime 在每次 API 调用前检测 `cuCtxGetCurrent()`，若非空就沿用当前 context，否则才 retain primary context。这让三种互操作模式成为可能，每种模式对应不同的 context 所有权。
+
+**三种互操作模式**（参考 CUDA C Programming Guide §G.1 "CUDA Runtime API Compatibility"）：
+
+| 模式 | 描述 | 谁拥有 context | 典型场景 |
+|------|------|----------------|----------|
+| **A. 纯 Runtime** | 仅用 `cudaMalloc`/`cudaMemcpy`/`<<<>>>` | Runtime 自动管理 primary context | 普通应用 |
+| **B. Driver 先 → Runtime** | Driver `cuCtxCreate` 普通 context 后调用 Runtime API | Driver 显式创建的 context | 系统软件需精确控制 context |
+| **C. Runtime 先 → Driver** | Runtime 已激活 primary context 后调用 Driver API | Runtime 的 primary context | 应用需 Driver 高级特性（如 VMM IPC） |
+
+> **如何读这张表**：模式 B 和 C 的关键差异是"谁先创建 context"——B 模式 Driver 先创建普通 context，Runtime 检测到 current context 非空后沿用；C 模式 Runtime 先创建 primary context，Driver API 直接走该 primary。两种模式都能让 Runtime 和 Driver 共享同一 context，但所有权不同。
+
+**模式 B 源码证据**——`simpleDrvRuntime.cpp` 展示了 Driver 先创建 context、Runtime 沿用的混合模式：
+
+```c
+/* 摘自 [src/cuda-samples/cpp/0_Introduction/simpleDrvRuntime/simpleDrvRuntime.cpp](./src/cuda-samples/cpp/0_Introduction/simpleDrvRuntime/simpleDrvRuntime.cpp) 第 95-122 行 */
+checkCudaDrvErrors(cuInit(0));
+checkCudaDrvErrors(cuCtxCreate(&cuContext, &ctxCreateParams, 0, cuDevice));  // Driver 显式创建普通 context
+
+/* ... 省略 cuModuleLoadData + cuModuleGetFunction ... */
+
+checkCudaErrors(cudaMallocHost(&h_A, size));    // Runtime 沿用 Driver context（不创建 primary）
+checkCudaErrors(cudaMalloc((void **)(&d_A), size));  // 同上，分配在 Driver context 中
+cudaStream_t stream;
+checkCudaErrors(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));  // Runtime 创建 stream，挂在 Driver context 上
+```
+
+**模式 C 源码证据**——`ptxjit.cpp` 展示了 Runtime 先分配内存、Driver 走同一 primary context 的混合模式：
+
+```c
+/* 摘自 [src/cuda-samples/cpp/3_CUDA_Features/ptxjit/ptxjit.cpp](./src/cuda-samples/cpp/3_CUDA_Features/ptxjit/ptxjit.cpp) 第 195-215 行 */
+/* Runtime API 隐式创建 primary context */
+checkCudaErrors(cudaMalloc(&d_data, memSize));   // ← 触发 Runtime 延迟初始化，创建 primary context
+
+/* Driver API 走同一 primary context */
+ptxJIT(argc, argv, &hModule, &hKernel, &lState);  // cuModuleLoadData 加载到 primary context
+checkCudaErrors(cuLaunchKernel(hKernel, grid.x, grid.y, grid.z, block.x, block.y, block.z, 0, NULL, args, NULL));  // 在 primary context 中启动
+checkCudaErrors(cudaMemcpy(h_data, d_data, memSize, cudaMemcpyDeviceToHost));  // Runtime 仍能访问 d_data
+```
+
+**这段代码体现了什么设计决策？** Runtime 不强制覆盖当前 context——它在每次 API 调用前检查 `cuCtxGetCurrent()`，若非空就沿用，否则才 retain primary context。这让 Driver 用户能完全控制 context 生命周期，同时仍能用 Runtime 的便利 API（如 `cudaMalloc`、`cudaMemcpyAsync`）。这是"延迟初始化 + 检测"双策略的设计。
+
+**互操作的关键约束**：
+
+1. **模式 B 中 Runtime 不能销毁 Driver 创建的 context**——`cudaDeviceReset` 只销毁 primary context，不影响 Driver 显式创建的普通 context
+2. **模式 C 中 Driver 不能 retain 新的 primary context**——Runtime 已经 retain 了 primary context，Driver 再 retain 只会增加引用计数，不会创建新 context
+3. **跨 context 内存访问无效**——若 Runtime 在 primary context 中分配内存，Driver 在另一个普通 context 中无法访问该内存（VA 空间不互通）
+
+> **核心要点**：Runtime 和 Driver 可通过三种模式互操作——纯 Runtime / Driver 先创建普通 context / Runtime 先激活 primary context。关键机制是 Runtime 在每次 API 调用前检测 `cuCtxGetCurrent()`，沿用非空 context 而非盲目创建 primary。这让两种 API 用户能在同一地址空间协作，但 context 所有权和销毁责任需明确。
+
 ***
 
 ## 6. 线程安全性
@@ -1329,6 +1381,9 @@ gcc program.c -lcuda -o program
 
 - [CUDA Driver API Reference](https://docs.nvidia.com/cuda/cuda-driver-api/) — 参考了所有 Driver API 的语义
 - [CUDA C Programming Guide §4.4. CUDA Driver API](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#cuda-driver-api) — 参考了 Driver API 的设计
+- [CUDA C Programming Guide §G.1. CUDA Runtime API Compatibility](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html) — 参考了 Runtime/Driver 三种互操作模式与 context 共享机制
+- [CUDA Binary Utilities Guide §3. Fat Binary](https://docs.nvidia.com/cuda/cuda-binary-utilities/index.html) — 参考了 fatbin 容器格式与 magic 0xBA55ED50
+- [NVIDIA H100 Architecture Whitepaper](https://resources.nvidia.com/en-us-hopper-architecture/hopper-architecture-whitepaper-paper) — 参考了 §2.4 VMM 与 cuMemMap IPC 实现的硬件基础
 
 ***
 
