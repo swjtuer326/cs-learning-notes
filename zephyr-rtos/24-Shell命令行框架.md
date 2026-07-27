@@ -96,7 +96,7 @@ SHELL_CMD_REGISTER(uptime, NULL,
 
 烧录后串口里就能：
 
-```
+```text
 uart:~$ uptime
 ticks=123456  uptime_ms=1234560
 ```
@@ -524,7 +524,7 @@ flowchart LR
 
 例如用户输入 `kernel t<TAB>`，shell 找到 `thread` 与 `ticks` 两个候选，会先打印：
 
-```
+```text
 thread  ticks
 ```
 
@@ -747,7 +747,7 @@ flowchart TD
 
 `backends` 内置命令（[subsys/shell/shell_cmds.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/shell/shell_cmds.c#L222)）用 `STRUCT_SECTION_FOREACH(shell, obj)` 遍历所有 shell 实例，列出当前活跃的后端：
 
-```
+```text
 uart:~$ shell backends
 Active shell backends:
    0. :uart:~$  (shell_uart)
@@ -783,7 +783,7 @@ SHELL_CMD_ARG_REGISTER(hello, NULL,
 
 烧录后：
 
-```
+```text
 uart:~$ hello
 Hello, world!
 uart:~$ hello Zephyr
@@ -936,7 +936,7 @@ MSH_CMD_EXPORT(uptime, show system uptime);
 
 ## 参考资料
 
-- [Shell 官方文档](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/doc/services/shell/index.rst) — Zephyr shell 子系统官方说明
+- [Shell 官方文档](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/doc/services/shell/index.rst) — 参考了 §"Overview"、§"Backends"、§"Commands"、§"Tab Feature"、§"History Feature"、§"Wildcards Feature"、§"Shell Logger Backend Feature"
 - 源码 [subsys/shell/shell.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/shell/shell.c) — Shell 核心：状态机、命令执行、Tab 补全、行编辑
 - 源码 [subsys/shell/shell_cmds.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/shell/shell_cmds.c) — 内置命令：clear/history/resize/shell/retval
 - 源码 [subsys/shell/shell_history.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/shell/shell_history.c) — 命令历史：k_heap + sys_dlist 实现

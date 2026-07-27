@@ -1,0 +1,123 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 480" style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,PingFang SC,Microsoft YaHei,sans-serif;font-size:13px;">
+  <defs>
+    <marker id="arr44" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#636c76"/>
+    </marker>
+    <linearGradient id="gIOVA" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#ddf4ff"/>
+      <stop offset="100%" stop-color="#f6f8fa"/>
+    </linearGradient>
+    <linearGradient id="gGPA" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#fff8c5"/>
+      <stop offset="100%" stop-color="#f6f8fa"/>
+    </linearGradient>
+    <linearGradient id="gSPA" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#dafbe1"/>
+      <stop offset="100%" stop-color="#f6f8fa"/>
+    </linearGradient>
+  </defs>
+  <rect width="900" height="480" fill="#ffffff"/>
+
+  <!-- Title -->
+  <text x="450" y="25" text-anchor="middle" font-size="15" font-weight="700" fill="#1f2328">网卡收包嵌套翻译完整时序</text>
+
+  <!-- Lane labels (left side) -->
+  <text x="15" y="90" fill="#0969da" font-size="11" font-weight="700" transform="rotate(-90,15,90)">网卡</text>
+  <text x="15" y="230" fill="#8250df" font-size="11" font-weight="700" transform="rotate(-90,15,230)">IOMMU</text>
+  <text x="15" y="370" fill="#1a7f37" font-size="11" font-weight="700" transform="rotate(-90,15,370)">内存</text>
+
+  <!-- Lane backgrounds -->
+  <rect x="30" y="55" width="850" height="70" fill="#0969da08" rx="4"/>
+  <rect x="30" y="135" width="850" height="180" fill="#8250df08" rx="4"/>
+  <rect x="30" y="325" width="850" height="70" fill="#1a7f3708" rx="4"/>
+
+  <!-- Step 1: NIC sends DMA (网卡 lane) -->
+  <rect x="55" y="68" width="130" height="44" rx="6" fill="#0969da1a" stroke="#0969da" stroke-width="1.5"/>
+  <text x="120" y="88" text-anchor="middle" fill="#1f2328" font-size="12" font-weight="600">网卡发起 DMA</text>
+  <text x="120" y="104" text-anchor="middle" fill="#57606a" font-size="10">GVA=0x80000000</text>
+
+  <!-- Arrow from NIC to IOMMU lane -->
+  <line x1="120" y1="112" x2="120" y2="155" stroke="#636c76" stroke-width="1.5" marker-end="url(#arr44)"/>
+
+  <!-- Step 2: DDT lookup (IOMMU lane, row 1) -->
+  <rect x="55" y="155" width="120" height="44" rx="6" fill="#8250df1a" stroke="#8250df" stroke-width="1.5"/>
+  <text x="115" y="175" text-anchor="middle" fill="#1f2328" font-size="12" font-weight="600">查 DDT</text>
+  <text x="115" y="191" text-anchor="middle" fill="#57606a" font-size="10">DID=0x6 → DC</text>
+
+  <line x1="175" y1="177" x2="215" y2="177" stroke="#636c76" stroke-width="1.5" marker-end="url(#arr44)"/>
+
+  <!-- Step 3: IOTLB check (IOMMU lane, row 1) -->
+  <polygon points="275,155 335,177 275,199 215,177" fill="#fff8c5" stroke="#d29922" stroke-width="1.5"/>
+  <text x="275" y="174" text-anchor="middle" fill="#1f2328" font-size="11" font-weight="600">IOTLB</text>
+  <text x="275" y="188" text-anchor="middle" fill="#57606a" font-size="9">命中?</text>
+
+  <!-- Miss arrow down to PTW row -->
+  <line x1="275" y1="199" x2="275" y2="230" stroke="#bf3989" stroke-width="1.5" marker-end="url(#arr44)"/>
+  <text x="290" y="218" fill="#bf3989" font-size="10" font-weight="600">未命中</text>
+
+  <!-- Hit arrow: IOTLB hit → directly to write memory (bypass PTW) -->
+  <path d="M 335,177 L 470,177 L 470,340" stroke="#1a7f37" stroke-width="1.5" fill="none" marker-end="url(#arr44)" stroke-dasharray="5,3"/>
+  <text x="420" y="170" text-anchor="middle" fill="#1a7f37" font-size="10" font-weight="600">命中 → 直接输出 SPA</text>
+
+  <!-- Step 4: First-stage walk (IOMMU lane, row 2) -->
+  <rect x="200" y="230" width="120" height="44" rx="6" fill="url(#gIOVA)" stroke="#0969da" stroke-width="1.5"/>
+  <text x="260" y="250" text-anchor="middle" fill="#1f2328" font-size="12" font-weight="600">First-stage walk</text>
+  <text x="260" y="266" text-anchor="middle" fill="#0969da" font-size="10">GVA → GPA</text>
+
+  <line x1="320" y1="252" x2="360" y2="252" stroke="#636c76" stroke-width="1.5" marker-end="url(#arr44)"/>
+
+  <!-- Step 5: G-stage walk (IOMMU lane, row 2) -->
+  <rect x="360" y="230" width="120" height="44" rx="6" fill="url(#gGPA)" stroke="#d29922" stroke-width="1.5"/>
+  <text x="420" y="250" text-anchor="middle" fill="#1f2328" font-size="12" font-weight="600">G-stage walk</text>
+  <text x="420" y="266" text-anchor="middle" fill="#d29922" font-size="10">GPA → SPA</text>
+
+  <line x1="480" y1="252" x2="520" y2="252" stroke="#636c76" stroke-width="1.5" marker-end="url(#arr44)"/>
+
+  <!-- Step 6: Update IOTLB (IOMMU lane, row 2) -->
+  <rect x="520" y="230" width="120" height="44" rx="6" fill="#1a7f371a" stroke="#1a7f37" stroke-width="1.5"/>
+  <text x="580" y="250" text-anchor="middle" fill="#1a7f37" font-size="12" font-weight="600">更新 IOTLB</text>
+  <text x="580" y="266" text-anchor="middle" fill="#57606a" font-size="10">缓存翻译结果</text>
+
+  <!-- Arrow from IOMMU to memory lane -->
+  <line x1="580" y1="274" x2="580" y2="340" stroke="#636c76" stroke-width="1.5" marker-end="url(#arr44)"/>
+
+  <!-- Step 7: Write to memory (内存 lane) -->
+  <rect x="500" y="340" width="160" height="44" rx="6" fill="url(#gSPA)" stroke="#1a7f37" stroke-width="1.5"/>
+  <text x="580" y="360" text-anchor="middle" fill="#1f2328" font-size="12" font-weight="600">写物理内存</text>
+  <text x="580" y="376" text-anchor="middle" fill="#1a7f37" font-size="10">SPA=0x640000000</text>
+
+  <!-- Address value flow (bottom section, separate area) -->
+  <rect x="30" y="410" width="850" height="55" rx="6" fill="#f6f8fa" stroke="#d0d7de"/>
+  <text x="50" y="430" fill="#57606a" font-size="11" font-weight="600">地址变换：</text>
+
+  <rect x="130" y="420" width="100" height="30" rx="4" fill="#0969da1a" stroke="#0969da" stroke-width="1"/>
+  <text x="180" y="439" text-anchor="middle" fill="#0969da" font-size="11" font-family="monospace">0x80000000</text>
+
+  <text x="245" y="439" text-anchor="middle" fill="#57606a" font-size="14">→</text>
+
+  <rect x="265" y="420" width="100" height="30" rx="4" fill="#fff8c5" stroke="#d29922" stroke-width="1"/>
+  <text x="315" y="439" text-anchor="middle" fill="#d29922" font-size="11" font-family="monospace">0x120000000</text>
+
+  <text x="380" y="439" text-anchor="middle" fill="#57606a" font-size="14">→</text>
+
+  <rect x="400" y="420" width="100" height="30" rx="4" fill="#dafbe1" stroke="#1a7f37" stroke-width="1"/>
+  <text x="450" y="439" text-anchor="middle" fill="#1a7f37" font-size="11" font-family="monospace">0x640000000</text>
+
+  <text x="520" y="439" fill="#57606a" font-size="11">GVA → GPA → SPA</text>
+
+  <!-- Step number badges -->
+  <circle cx="55" cy="68" r="12" fill="#0969da"/>
+  <text x="55" y="72" text-anchor="middle" fill="#fff" font-size="10" font-weight="700">1</text>
+  <circle cx="55" cy="155" r="12" fill="#8250df"/>
+  <text x="55" y="159" text-anchor="middle" fill="#fff" font-size="10" font-weight="700">2</text>
+  <circle cx="215" cy="155" r="12" fill="#d29922"/>
+  <text x="215" y="159" text-anchor="middle" fill="#fff" font-size="10" font-weight="700">3</text>
+  <circle cx="200" cy="230" r="12" fill="#0969da"/>
+  <text x="200" y="234" text-anchor="middle" fill="#fff" font-size="10" font-weight="700">4</text>
+  <circle cx="360" cy="230" r="12" fill="#d29922"/>
+  <text x="360" y="234" text-anchor="middle" fill="#fff" font-size="10" font-weight="700">5</text>
+  <circle cx="520" cy="230" r="12" fill="#1a7f37"/>
+  <text x="520" y="234" text-anchor="middle" fill="#fff" font-size="10" font-weight="700">6</text>
+  <circle cx="500" cy="340" r="12" fill="#1a7f37"/>
+  <text x="500" y="344" text-anchor="middle" fill="#fff" font-size="10" font-weight="700">7</text>
+</svg>

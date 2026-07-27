@@ -390,7 +390,7 @@ zephyr_linker_sources(SECTIONS iterables.ld)
 
 运行时 `main.c` 会输出：
 
-```
+```text
 bar = 2
 foo = 1
 ```
@@ -942,7 +942,7 @@ int main(void)
 
 运行输出：
 
-```
+```text
 Registered commands:
   echo
   reboot

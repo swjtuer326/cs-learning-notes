@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 560" style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,PingFang SC,Microsoft YaHei,sans-serif;font-size:13px;">
+  <defs>
+    <marker id="arr" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#57606a"/>
+    </marker>
+  </defs>
+  <rect width="760" height="560" fill="#ffffff"/>
+  <text x="380" y="28" text-anchor="middle" font-size="16" font-weight="700" fill="#1f2328">Linux RISC-V IOMMU 驱动初始化调用链</text>
+
+  <!-- left branch: platform -->
+  <rect x="20" y="60" width="200" height="40" rx="6" fill="#0969da" fill-opacity="0.1" stroke="#0969da" stroke-width="1.5"/>
+  <text x="120" y="85" text-anchor="middle" fill="#0969da" font-weight="600">iommu-platform.c</text>
+  <rect x="20" y="120" width="200" height="50" rx="6" fill="#f6f8fa" stroke="#d0d7de"/>
+  <text x="120" y="142" text-anchor="middle" fill="#1f2328" font-size="12">platform_get_resource</text>
+  <text x="120" y="160" text-anchor="middle" fill="#57606a" font-size="11">MMIO + IRQ/MSI</text>
+
+  <!-- right branch: pci -->
+  <rect x="540" y="60" width="200" height="40" rx="6" fill="#0969da" fill-opacity="0.1" stroke="#0969da" stroke-width="1.5"/>
+  <text x="640" y="85" text-anchor="middle" fill="#0969da" font-weight="600">iommu-pci.c</text>
+  <rect x="540" y="120" width="200" height="50" rx="6" fill="#f6f8fa" stroke="#d0d7de"/>
+  <text x="640" y="142" text-anchor="middle" fill="#1f2328" font-size="12">pci_alloc_irq_vectors</text>
+  <text x="640" y="160" text-anchor="middle" fill="#57606a" font-size="11">MSI/MSI-X only</text>
+
+  <!-- merge -->
+  <line x1="120" y1="170" x2="380" y2="240" stroke="#57606a" stroke-width="1.5" marker-end="url(#arr)"/>
+  <line x1="640" y1="170" x2="380" y2="240" stroke="#57606a" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <rect x="240" y="240" width="280" height="44" rx="6" fill="#1a7f37" fill-opacity="0.12" stroke="#1a7f37" stroke-width="1.5"/>
+  <text x="380" y="268" text-anchor="middle" fill="#1a7f37" font-weight="700">riscv_iommu_init()</text>
+
+  <!-- steps -->
+  <line x1="380" y1="284" x2="380" y2="320" stroke="#57606a" stroke-width="1.5" marker-end="url(#arr)"/>
+  <rect x="260" y="320" width="240" height="36" rx="6" fill="#f6f8fa" stroke="#d0d7de"/>
+  <text x="380" y="343" text-anchor="middle" fill="#1f2328" font-size="12">① init_check: 读 CAP, 写 ICVEC</text>
+
+  <line x1="380" y1="356" x2="380" y2="380" stroke="#57606a" stroke-width="1.5" marker-end="url(#arr)"/>
+  <rect x="260" y="380" width="240" height="36" rx="6" fill="#f6f8fa" stroke="#d0d7de"/>
+  <text x="380" y="403" text-anchor="middle" fill="#1f2328" font-size="12">② iodir_alloc: 分配 DDT</text>
+
+  <line x1="380" y1="416" x2="380" y2="440" stroke="#57606a" stroke-width="1.5" marker-end="url(#arr)"/>
+  <rect x="260" y="440" width="240" height="36" rx="6" fill="#f6f8fa" stroke="#d0d7de"/>
+  <text x="380" y="463" text-anchor="middle" fill="#1f2328" font-size="12">③ queue_alloc: CQ + FQ (+PQ 可选)</text>
+
+  <line x1="380" y1="476" x2="380" y2="500" stroke="#57606a" stroke-width="1.5" marker-end="url(#arr)"/>
+  <rect x="260" y="500" width="240" height="36" rx="6" fill="#bf3989" fill-opacity="0.12" stroke="#bf3989" stroke-width="1.5"/>
+  <text x="380" y="523" text-anchor="middle" fill="#bf3989" font-weight="700">④ DDTP.MODE = 2LVL</text>
+</svg>

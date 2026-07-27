@@ -1,0 +1,76 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 820 580" style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,PingFang SC,Microsoft YaHei,sans-serif;font-size:13px;">
+  <defs>
+    <marker id="arr2" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#636c76"/>
+    </marker>
+    <marker id="arrY" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#1a7f37"/>
+    </marker>
+    <marker id="arrN" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#bf3989"/>
+    </marker>
+  </defs>
+  <rect width="820" height="580" fill="#ffffff"/>
+
+  <!-- Root decision -->
+  <polygon points="410,30 530,70 410,110 290,70" fill="#0969da1a" stroke="#0969da" stroke-width="1.5"/>
+  <text x="410" y="75" text-anchor="middle" fill="#0969da" font-weight="600">需要 IOMMU？</text>
+
+  <!-- No branch -->
+  <line x1="290" y1="70" x2="160" y2="70" stroke="#bf3989" stroke-width="1.5" marker-end="url(#arrN)"/>
+  <text x="225" y="60" text-anchor="middle" fill="#bf3989" font-size="12" font-weight="600">否</text>
+  <rect x="20" y="48" width="130" height="44" rx="6" fill="#f6f8fa" stroke="#bf3989" stroke-width="1.5"/>
+  <text x="85" y="68" text-anchor="middle" fill="#1f2328" font-size="12">DDTP.MODE=BARE</text>
+  <text x="85" y="84" text-anchor="middle" fill="#57606a" font-size="11">或 OFF (0)</text>
+
+  <!-- Yes branch -->
+  <line x1="410" y1="110" x2="410" y2="150" stroke="#1a7f37" stroke-width="1.5" marker-end="url(#arrY)"/>
+  <text x="425" y="135" fill="#1a7f37" font-size="12" font-weight="600">是</text>
+
+  <!-- Decision 2 -->
+  <polygon points="410,150 540,195 410,240 280,195" fill="#0969da1a" stroke="#0969da" stroke-width="1.5"/>
+  <text x="410" y="192" text-anchor="middle" fill="#0969da" font-weight="600">设备直通给 VM？</text>
+
+  <!-- No branch from D2 -->
+  <line x1="280" y1="195" x2="150" y2="195" stroke="#bf3989" stroke-width="1.5" marker-end="url(#arrN)"/>
+  <text x="215" y="185" text-anchor="middle" fill="#bf3989" font-size="12" font-weight="600">否</text>
+  <rect x="10" y="173" width="135" height="44" rx="6" fill="#1a7f371a" stroke="#1a7f37" stroke-width="1.5"/>
+  <text x="78" y="193" text-anchor="middle" fill="#1a7f37" font-weight="600" font-size="12">First-stage only</text>
+  <text x="78" y="209" text-anchor="middle" fill="#57606a" font-size="11">iohgatp=BARE</text>
+
+  <!-- Yes branch from D2 -->
+  <line x1="410" y1="240" x2="410" y2="280" stroke="#1a7f37" stroke-width="1.5" marker-end="url(#arrY)"/>
+  <text x="425" y="265" fill="#1a7f37" font-size="12" font-weight="600">是</text>
+
+  <!-- Decision 3 -->
+  <polygon points="410,280 545,325 410,370 275,325" fill="#0969da1a" stroke="#0969da" stroke-width="1.5"/>
+  <text x="410" y="322" text-anchor="middle" fill="#0969da" font-weight="600">设备用 PASID/SVA？</text>
+
+  <!-- No branch from D3 -->
+  <line x1="275" y1="325" x2="150" y2="325" stroke="#bf3989" stroke-width="1.5" marker-end="url(#arrN)"/>
+  <text x="210" y="315" text-anchor="middle" fill="#bf3989" font-size="12" font-weight="600">否</text>
+  <rect x="10" y="303" width="135" height="44" rx="6" fill="#d299221a" stroke="#d29922" stroke-width="1.5"/>
+  <text x="78" y="323" text-anchor="middle" fill="#d29922" font-weight="600" font-size="12">G-stage only</text>
+  <text x="78" y="339" text-anchor="middle" fill="#57606a" font-size="11">fsc=BARE</text>
+
+  <!-- Yes branch from D3 -->
+  <line x1="410" y1="370" x2="410" y2="420" stroke="#1a7f37" stroke-width="1.5" marker-end="url(#arrY)"/>
+  <text x="425" y="400" fill="#1a7f37" font-size="12" font-weight="600">是</text>
+
+  <!-- Nested result -->
+  <rect x="290" y="420" width="240" height="50" rx="8" fill="#1a7f371a" stroke="#1a7f37" stroke-width="2"/>
+  <text x="410" y="443" text-anchor="middle" fill="#1a7f37" font-weight="700" font-size="14">Nested 翻译</text>
+  <text x="410" y="460" text-anchor="middle" fill="#1a7f37" font-size="11">iohgatp + fsc 都使能</text>
+
+  <!-- Legend -->
+  <rect x="20" y="510" width="780" height="50" rx="6" fill="#f6f8fa" stroke="#d0d7de"/>
+  <text x="35" y="530" fill="#57606a" font-size="11" font-weight="600">图例：</text>
+  <polygon points="95,525 115,535 95,545 75,535" fill="#0969da1a" stroke="#0969da" stroke-width="1"/>
+  <text x="125" y="539" fill="#57606a" font-size="11">决策节点</text>
+  <rect x="200" y="525" width="20" height="20" rx="4" fill="#f6f8fa" stroke="#bf3989" stroke-width="1.5"/>
+  <text x="230" y="539" fill="#57606a" font-size="11">bypass / disabled</text>
+  <rect x="350" y="525" width="20" height="20" rx="4" fill="#1a7f371a" stroke="#1a7f37" stroke-width="1.5"/>
+  <text x="380" y="539" fill="#57606a" font-size="11">First-stage / Nested</text>
+  <rect x="530" y="525" width="20" height="20" rx="4" fill="#d299221a" stroke="#d29922" stroke-width="1.5"/>
+  <text x="560" y="539" fill="#57606a" font-size="11">G-stage only</text>
+</svg>

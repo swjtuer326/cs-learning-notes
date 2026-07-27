@@ -1,0 +1,2377 @@
+<!DOCTYPE html>
+<html lang='zh-CN'>
+<head>
+  <meta charset='UTF-8'>
+  <meta name='viewport' content='width=device-width, initial-scale=1.0'>
+  <title>SG2046 EDK2 全景图 — 源码级深度版</title>
+  <style>
+    :root {
+      --bg: #ffffff;
+      --card: #f6f8fa;
+      --card-2: #f3f4f6;
+      --text: #1f2328;
+      --muted: #656d76;
+      --accent: #0969da;
+      --accent-2: #1a7f37;
+      --accent-3: #bc4c00;
+      --accent-4: #8250df;
+      --accent-5: #bf398f;
+      --border: #d0d7de;
+      --code-bg: #f6f8fa;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.75;
+    }
+
+    /* 左侧目录侧边栏 */
+    #toc-sidebar {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 300px;
+      height: 100vh;
+      background: var(--card);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      z-index: 200;
+      transition: transform 0.3s ease;
+    }
+    #toc-sidebar.collapsed {
+      transform: translateX(-100%);
+    }
+    .toc-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--border);
+      position: sticky;
+      top: 0;
+      background: var(--card);
+      z-index: 10;
+    }
+    .toc-title {
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--text);
+    }
+    #toc-toggle {
+      display: none;
+      background: var(--card-2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 4px 10px;
+      cursor: pointer;
+      font-size: 16px;
+      color: var(--text);
+    }
+    #toc-nav {
+      flex: 1;
+      overflow-y: auto;
+      padding: 12px 0;
+      font-size: 13px;
+    }
+    #toc-nav ul {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+    }
+    #toc-nav li {
+      margin: 0;
+    }
+    #toc-nav li > a {
+      display: block;
+      padding: 6px 20px;
+      color: var(--muted);
+      text-decoration: none;
+      border-left: 3px solid transparent;
+      transition: color 0.15s, background 0.15s, border-color 0.15s;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    #toc-nav li > a:hover {
+      color: var(--text);
+      background: rgba(9,105,218,0.06);
+    }
+    #toc-nav li > a.active {
+      color: var(--accent);
+      background: rgba(9,105,218,0.1);
+      border-left-color: var(--accent);
+      font-weight: 600;
+    }
+    #toc-nav li[data-level='3'] > a {
+      padding-left: 34px;
+      font-size: 12px;
+    }
+    #toc-nav li[data-level='4'] > a {
+      padding-left: 48px;
+      font-size: 12px;
+    }
+    #toc-nav li li {
+      border-left: 1px solid var(--border);
+      margin-left: 20px;
+    }
+    #toc-nav li[data-level='3'] li,
+    #toc-nav li[data-level='4'] li {
+      margin-left: 0;
+    }
+
+    /* 主内容区为目录让出左侧空间，自动填满剩余宽度 */
+    header, main, footer {
+      margin-left: 300px;
+    }
+    header {
+      padding: 60px clamp(20px, 4vw, 60px);
+    }
+    main {
+      padding: 40px clamp(20px, 4vw, 60px);
+    }
+    footer {
+      padding: 40px clamp(20px, 4vw, 60px);
+    }
+
+    /* 移动端：目录可折叠 */
+    @media (max-width: 1024px) {
+      #toc-sidebar {
+        transform: translateX(-100%);
+        box-shadow: 2px 0 12px rgba(0,0,0,0.12);
+      }
+      #toc-sidebar.collapsed {
+        transform: translateX(-100%);
+      }
+      #toc-sidebar:not(.collapsed) {
+        transform: translateX(0);
+      }
+      #toc-toggle {
+        display: block;
+      }
+      header, main, footer {
+        margin-left: 0;
+      }
+      header {
+        padding: 40px 20px;
+      }
+      main {
+        padding: 30px 20px;
+      }
+    }
+
+    header {
+      background: linear-gradient(135deg, #e3f2fd, #f3e5f5, #fff3e0);
+      text-align: center;
+      border-bottom: 1px solid var(--border);
+    }
+    header h1 { margin: 0 0 16px; font-size: 42px; letter-spacing: -1px; }
+    header p { margin: 0; color: var(--muted); font-size: 18px; max-width: 800px; margin-inline: auto; }
+    /* 旧顶部导航已替换为左侧目录侧边栏 */
+    section { margin-bottom: 60px; }
+    h2 { font-size: 28px; margin-bottom: 20px; padding-bottom: 12px; border-bottom: 2px solid var(--accent); display: inline-block; }
+    h3 { color: var(--accent-2); margin-top: 36px; font-size: 22px; }
+    h4 { color: var(--accent-3); margin-top: 28px; font-size: 18px; }
+    p { margin: 12px 0; }
+    .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: clamp(16px, 2.5vw, 24px); margin: 20px 0; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }
+    .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
+    .tag { display: inline-block; padding: 3px 10px; border-radius: 20px; font-size: 12px; font-weight: 600; margin-right: 6px; margin-bottom: 4px; }
+    .tag-blue { background: rgba(88,166,255,0.15); color: var(--accent); }
+    .tag-green { background: rgba(63,185,80,0.15); color: var(--accent-2); }
+    .tag-orange { background: rgba(240,136,62,0.15); color: var(--accent-3); }
+    .tag-purple { background: rgba(163,113,247,0.15); color: var(--accent-4); }
+    .tag-pink { background: rgba(247,120,186,0.15); color: var(--accent-5); }
+    .file-link { color: var(--accent); text-decoration: none; font-family: 'SFMono-Regular', Consolas, Monaco, monospace; font-size: 13px; }
+    .file-link:hover { text-decoration: underline; }
+    code, pre { font-family: 'SFMono-Regular', Consolas, Monaco, monospace; font-size: 13px; background: var(--code-bg); border-radius: 6px; }
+    code { padding: 2px 6px; color: var(--accent-5); }
+    pre { padding: 16px; overflow-x: auto; border: 1px solid var(--border); line-height: 1.5; }
+    pre .comment { color: #57606a; }
+    pre .keyword { color: #cf222e; }
+    pre .string { color: #0a3069; }
+    pre .number { color: #0550ae; }
+    pre .directive { color: #6639ba; }
+    table { width: 100%; border-collapse: collapse; margin: 16px 0; }
+    th, td { padding: 12px; text-align: left; border: 1px solid var(--border); }
+    th { background: var(--card-2); color: var(--accent); }
+    tr:nth-child(even) { background: rgba(175,184,193,0.12); }
+    .flow { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px; margin: 24px 0; }
+    .flow-box { padding: 16px 20px; border-radius: 10px; font-weight: 600; min-width: 100px; text-align: center; border: 1px solid var(--border); }
+    .flow-arrow { color: var(--muted); font-size: 20px; }
+    .sec { background: rgba(88,166,255,0.12); color: var(--accent); }
+    .pei { background: rgba(63,185,80,0.12); color: var(--accent-2); }
+    .dxe { background: rgba(240,136,62,0.12); color: var(--accent-3); }
+    .bds { background: rgba(163,113,247,0.12); color: var(--accent-4); }
+    .mem-row { display: flex; height: 50px; border-radius: 8px; overflow: hidden; border: 1px solid var(--border); margin: 12px 0; }
+    .mem-seg { display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; border-right: 1px solid var(--border); }
+    .mem-seg:last-child { border-right: 0; }
+    .tree { margin: 16px 0; padding-left: 20px; border-left: 2px solid var(--border); }
+    .tree details { margin: 8px 0; }
+    .tree summary { cursor: pointer; color: var(--accent); font-weight: 600; }
+    .tree details > div { padding-left: 24px; color: var(--muted); }
+    .note { border-left: 4px solid var(--accent); padding: 12px 16px; background: rgba(9,105,218,0.08); border-radius: 0 8px 8px 0; margin: 16px 0; }
+    .warning { border-left-color: var(--accent-3); background: rgba(188,76,0,0.08); }
+    .good { border-left-color: var(--accent-2); background: rgba(26,127,55,0.08); }
+    footer { text-align: center; padding: 40px; color: var(--muted); border-top: 1px solid var(--border); font-size: 14px; }
+    .step { display: flex; gap: 16px; margin: 16px 0; align-items: flex-start; }
+    .step-num { flex-shrink: 0; width: 32px; height: 32px; border-radius: 50%; background: var(--accent); color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 14px; }
+    .step-body { flex: 1; }
+    .step-body h4 { margin: 0 0 6px; color: var(--text); }
+    .diagram { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin: 20px 0; }
+    .diagram-title { color: var(--accent); font-weight: 600; margin-bottom: 12px; }
+    .diagram-row { display: flex; align-items: center; margin: 8px 0; }
+    .diagram-box { padding: 10px 14px; border-radius: 8px; border: 1px solid var(--border); font-size: 13px; min-width: 120px; text-align: center; }
+    .diagram-arrow { margin: 0 10px; color: var(--muted); }
+    .diagram-label { font-size: 12px; color: var(--muted); margin-left: 12px; }
+    .code-title { color: var(--accent-3); font-size: 13px; font-weight: 600; margin: 16px 0 6px; }
+    .timeline { position: relative; margin: 20px 0; padding-left: 24px; border-left: 2px solid var(--border); }
+    .timeline-item { position: relative; margin: 20px 0; }
+    .timeline-item::before { content: ''; position: absolute; left: -31px; top: 4px; width: 12px; height: 12px; border-radius: 50%; background: var(--accent); border: 2px solid var(--bg); }
+    .timeline-item.pei::before { background: var(--accent-2); }
+    .timeline-item.dxe::before { background: var(--accent-3); }
+    .timeline-item.bds::before { background: var(--accent-4); }
+    .callout { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin: 16px 0; }
+    .callout-title { color: var(--accent); font-weight: 600; margin-bottom: 8px; }
+    .toc { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin: 20px 0; }
+    .toc ul { margin: 0; padding-left: 20px; }
+    .toc li { margin: 6px 0; }
+    .toc a { color: var(--accent); text-decoration: none; }
+    .toc a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+<header>
+  <h1>SOPHGO SG2046 EDK2 全景图</h1>
+  <p>面向 EDK2 新手：从 UEFI/PI 规范、EDK2 核心概念与数据结构，到 SG2046 平台具体实现、源码级解读、依赖关系与设计决策</p>
+</header>
+
+<div class='page-container'>
+  <aside id='toc-sidebar'>
+    <div class='toc-header'>
+      <span class='toc-title'>目录</span>
+      <button id='toc-toggle' aria-label='切换目录'>☰</button>
+    </div>
+    <nav id='toc-nav'>
+      <!-- 目录由 JS 根据页面标题自动生成 -->
+    </nav>
+  </aside>
+
+  <main>
+
+<section id='what'>
+  <h2>1. EDK2 是什么？</h2>
+  <div class='card'>
+    <p><strong>EDK II</strong>（EFI Development Kit II）是 UEFI（Unified Extensible Firmware Interface）规范与 PI（Platform Initialization）规范的开源参考实现。简单来说：</p>
+    <ul>
+      <li><strong>BIOS/UEFI 固件</strong>就是计算机启动时最先运行的软件，负责初始化硬件、加载操作系统。</li>
+      <li><strong>EDK2</strong>就是用来编写这种固件的"SDK + 代码库"。</li>
+      <li>你看到的 <code>sophgo-edk2</code> 就是基于 EDK2，为 SOPHGO 的 SG2046 RISC-V 芯片写的一套 UEFI 固件。</li>
+    </ul>
+    <p>操作系统启动时一般经历：</p>
+    <div class='flow'>
+      <div class='flow-box sec'>上电</div>
+      <div class='flow-arrow'>&#8594;</div>
+      <div class='flow-box sec'>芯片 ROM</div>
+      <div class='flow-arrow'>&#8594;</div>
+      <div class='flow-box pei'>Bootloader</div>
+      <div class='flow-arrow'>&#8594;</div>
+      <div class='flow-box dxe'>UEFI 固件</div>
+      <div class='flow-arrow'>&#8594;</div>
+      <div class='flow-box bds'>OS Loader<br>(GRUB2)</div>
+      <div class='flow-arrow'>&#8594;</div>
+      <div class='flow-box bds'>操作系统</div>
+    </div>
+  </div>
+</section>
+
+<section id='specs'>
+  <h2>2. UEFI/PI 规范背景与 EDK2 的对应关系</h2>
+  <p>EDK2 不是随意设计的，它实现了两套紧密相关的规范：<strong>UEFI 规范</strong>定义了 OS 与固件之间的接口，<strong>PI 规范</strong>定义了固件内部的启动阶段与模块交互机制。</p>
+
+  <h3>2.1 UEFI 规范：操作系统看到的接口</h3>
+  <p>UEFI 规范（目前常见 2.8/2.9/2.10）主要规定：</p>
+  <ul>
+    <li><strong>System Table</strong>：OS Loader 进入时收到的第一个数据结构，包含指向 Boot Services、Runtime Services、Configuration Tables 的指针。</li>
+    <li><strong>Boot Services</strong>：内存分配、Handle/Protocol、加载镜像、启动设备枚举等。</li>
+    <li><strong>Runtime Services</strong>：变量读写、复位、时间、虚拟地址映射等。</li>
+    <li><strong>Protocols</strong>：设备驱动化的接口标准，如 Block I/O、Simple File System、Graphics Output。</li>
+  </ul>
+  <p>在 EDK2 中，这些定义主要位于 <code>MdePkg/Include/Uefi/</code> 与 <code>MdePkg/Include/Protocol/</code>。</p>
+
+  <h3>2.2 PI 规范：固件内部怎么启动</h3>
+  <p><strong>PI（Platform Initialization）</strong>规范是 UEFI 联盟发布的另一套规范，它不关心操作系统看到什么，只关心<strong>固件内部如何从零开始把硬件初始化到可以加载 OS 的状态</strong>。PI 规范把启动过程抽象为 SEC、PEI、DXE、BDS 等阶段，并定义了阶段之间传递数据、调用服务的机制。</p>
+  <p>PI 规范目前分为 5 卷，每一卷解决一个独立的问题域。下面逐卷说明它们的目的、包含的核心内容、与 EDK2 源码的对应关系，以及在 SG2046 平台上的具体体现。</p>
+
+  <h4>Volume 1：Pre-EFI Initialization Core Interface（PEI 核心接口）</h4>
+  <div class='card'>
+    <p><strong>解决什么问题：</strong>系统上电后，DRAM 往往还没初始化，C 语言运行环境也不完整。Volume 1 定义了在这个"资源极度匮乏"的早期阶段，固件如何完成最基本初始化并把控制权交给下一阶段。</p>
+    <p><strong>核心内容：</strong></p>
+    <ul>
+      <li><strong>PEI 阶段划分</strong>：SEC 之后、DXE 之前的阶段称为 PEI。Volume 1 规定了 PEI Core 的入口、PEIM（PEI Module）的加载与调度方式。</li>
+      <li><strong>SEC Handoff</strong>：定义 <code>EFI_SEC_PEI_HAND_OFF</code> 结构，SEC 把临时内存、栈、Boot Firmware Volume（BFV）信息传给 PEI Core。这是 SEC→PEI 切换的核心数据结构，定义在 Volume 1 第 5 章（PEI Foundation）。</li>
+      <li><strong>临时内存支持 PPI</strong>：定义 <code>EFI_TEMPORARY_RAM_SUPPORT_PPI</code>，PEI Core 在发现永久内存后调用它完成栈和 HOB 从临时内存到永久内存的迁移。</li>
+      <li><strong>PPI（PEIM-to-PEIM Interface）</strong>：PEI 阶段模块之间的接口契约。一个 PEIM 通过 <code>PeiServicesInstallPpi</code> 注册 PPI，其他 PEIM 通过 <code>PeiServicesLocatePpi</code> 查找并使用。</li>
+      <li><strong>HOB（Hand-Off Block）</strong>：PEI 向 DXE 传递信息的唯一标准化机制。Volume 1 定义了 HOB 通用头、PHIT HOB、Memory Allocation HOB、Resource Descriptor HOB、GUID Extension HOB 等。</li>
+      <li><strong>PEI Services</strong>：PEIM 可调用的系统服务表，包括 PPI 管理、HOB 分配、内存分配（永久内存发现前/后）、FV 遍历、启动模式查询、状态码报告等。</li>
+      <li><strong>Boot Mode</strong>：定义了 NORMAL_BOOT、BOOT_ON_FLASH_UPDATE、BOOT_IN_RECOVERY_MODE 等启动模式，平台 PEIM 根据 BootMode 决定初始化路径。</li>
+      <li><strong>SEC 阶段信息</strong>：Volume 1 第 13 章（Security (SEC) Phase Information）定义 SEC 阶段的职责和 SEC→PEI 切换约定。</li>
+    </ul>
+    <p><strong>对应 EDK2 源码：</strong></p>
+    <ul>
+      <li>接口定义：<code>MdePkg/Include/Pi/PiPeiCis.h</code>（PEI Services）、<code>MdePkg/Include/Pi/PiHob.h</code>（HOB）、<code>MdePkg/Include/Ppi/*.h</code>（PPI）。</li>
+      <li>PEI Core 实现：<code>edk2/MdeModulePkg/Core/Pei/</code>，负责调度 PEIM、维护 PPI 数据库、HOB 列表。</li>
+      <li>SG2046 平台 PEIM：<code>Silicon/Sophgo/Modules/CpuPei/CpuPei.c</code>、<code>MemoryInitPei/MemoryInitPei.c</code>、<code>PlatformPei/PlatformInitPei.c</code>、<code>FvParserPei/FvParserPei.c</code>。</li>
+    </ul>
+    <p><strong>SG2046 实例：</strong><a class='file-link' href='file:///home/pbw/sg2046/sophgo-edk2/edk2-platforms/Silicon/Sophgo/Modules/MemoryInitPei/MemoryInitPei.c'>MemoryInitPei.c</a> 在 DRAM 初始化完成后，调用 <code>BuildResourceDescriptorHob</code> 把系统 RAM 注册到 HOB 列表；<a class='file-link' href='file:///home/pbw/sg2046/sophgo-edk2/edk2-platforms/Silicon/Sophgo/Modules/FvParserPei/FvParserPei.c'>FvParserPei.c</a> 安装 <code>gEfiFirmwareVolumeInfoPpiGuid</code>，让 PEI Core 能遍历压缩后的 DXE FV。</p>
+  </div>
+
+  <h4>Volume 2：Driver Execution Environment Core Interface（DXE 核心接口）</h4>
+  <div class='card'>
+    <p><strong>解决什么问题：</strong>PEI 阶段结束后，DRAM 已经可用，但操作系统还需要大量标准服务（内存分配、设备枚举、变量存储、启动管理）。Volume 2 定义了如何在一个"服务丰富"的环境中加载驱动、建立协议、最终把系统交给 OS Loader。</p>
+    <p><strong>核心内容：</strong></p>
+    <ul>
+      <li><strong>DXE 阶段划分</strong>：DXE 又分为 DXE Foundation、DXE Dispatcher、BDS 等子阶段。Volume 2 重点描述 DXE Foundation 和 Dispatcher。</li>
+      <li><strong>Protocol 与 Handle</strong>：DXE 阶段模块之间的接口称为 Protocol。Protocol 通过 GUID 标识，挂到 Handle 上。DXE Core 维护 Handle 数据库，提供 <code>InstallProtocolInterface</code>、<code>LocateHandleBuffer</code>、<code>OpenProtocol</code> 等 Boot Services。</li>
+      <li><strong>Boot Services</strong>：内存分配（AllocatePages/AllocatePool）、事件（Events/Timers）、镜像加载（LoadImage/StartImage）、设备连接（ConnectController）等。</li>
+      <li><strong>Runtime Services</strong>：变量读写（GetVariable/SetVariable）、时间、复位、Capsule、虚拟地址映射等，这些服务在 OS 运行后仍然可用。</li>
+      <li><strong>DXE Dispatcher 与 DEPEX</strong>：DXE Driver 通过依赖表达式（DEPEX）声明自己需要哪些 Protocol。Dispatcher 根据 Protocol 安装情况决定加载顺序。</li>
+    </ul>
+    <p><strong>对应 EDK2 源码：</strong></p>
+    <ul>
+      <li>接口定义：<code>MdePkg/Include/Uefi/UefiSpec.h</code>（System Table、Boot/Runtime Services）、<code>MdePkg/Include/Protocol/*.h</code>（Protocol）。</li>
+      <li>DXE Core 实现：<code>edk2/MdeModulePkg/Core/Dxe/</code>，负责 Handle/Protocol 数据库、Dispatcher、Boot Services 表。</li>
+      <li>SG2046 平台 DXE Driver：<code>UefiCpuPkg/CpuDxeRiscV64/CpuDxe.c</code>、<code>EmbeddedPkg/Drivers/FdtClientDxe/FdtClientDxe.c</code>、<code>Silicon/Sophgo/SG2046Pkg/Drivers/AcpiPlatformDxe/AcpiPlatformDxe.c</code>。</li>
+    </ul>
+    <p><strong>SG2046 实例：</strong><a class='file-link' href='file:///home/pbw/sg2046/sophgo-edk2/edk2/UefiCpuPkg/CpuDxeRiscV64/CpuDxe.c'>CpuDxe.c</a> 安装 <code>gEfiCpuArchProtocolGuid</code>，这是 DXE 中大量驱动 DEPEX 依赖的"关键 Protocol"；<a class='file-link' href='file:///home/pbw/sg2046/sophgo-edk2/edk2/EmbeddedPkg/Drivers/FdtClientDxe/FdtClientDxe.c'>FdtClientDxe.c</a> 从 HOB 中读取 FDT 并注册 <code>gFdtClientProtocolGuid</code>，供其他驱动查询设备树。</p>
+  </div>
+
+  <h4>Volume 3：Shared Architectural Elements（共享架构元素）</h4>
+  <div class='card'>
+    <p><strong>解决什么问题：</strong>有些机制既不在 PEI 也不在 DXE 独占，而是跨阶段共享（例如 SMBIOS、ACPI、变量、固件卷格式）。Volume 3 把这些"公共基础设施"标准化，避免各卷重复定义。</p>
+    <p><strong>核心内容：</strong></p>
+    <ul>
+      <li><strong>Firmware Volume（FV）格式</strong>：定义 FV 头、文件头、节（Section）格式、GUID 命名、属性标志。EDK2 的 <code>GenFds</code> 工具按此格式生成固件。</li>
+      <li><strong>SMBIOS / ACPI</strong>：定义系统信息表（SMBIOS）和高级配置电源接口（ACPI）如何在 PI 架构中生成、安装、暴露给 OS。</li>
+      <li><strong>变量（Variables）</strong>：定义非易失变量（Non-Volatile Variables）和易失变量的存储模型、属性、接口，Runtime Services 中的 <code>GetVariable</code>/<code>SetVariable</code> 最终依赖此模型。</li>
+      <li><strong>Status Code / Report Status Code</strong>：跨阶段的状态码报告机制，PEI 和 DXE 都通过 ReportStatusCode 输出调试/错误信息。</li>
+    </ul>
+    <div class='note'>
+      <strong>关于 FDT（Flattened Device Tree）：</strong>FDT <strong>不是</strong> PI 规范定义的内容，它由独立的 <a href='https://devicetree-specification.readthedocs.io/'>Devicetree Specification</a> 维护。EDK2 中通过 HOB 传递 FDT 的做法是 EDK2 的实现约定，而非 PI 规范要求。SG2046 在 SEC 阶段将 OpenSBI 传入的 FDT 复制到 HOB 中，DXE 阶段由 FdtClientDxe 解析。
+    </div>
+    <p><strong>对应 EDK2 源码：</strong></p>
+    <ul>
+      <li>FV 定义：<code>MdePkg/Include/Pi/PiFirmwareVolume.h</code>、<code>MdePkg/Include/Pi/PiFirmwareFile.h</code>。</li>
+      <li>变量实现：<code>MdeModulePkg/Universal/Variable/RuntimeDxe/VariableRuntimeDxe.inf</code>。</li>
+      <li>SMBIOS/ACPI 实现：<code>MdeModulePkg/Universal/SmbiosDxe/SmbiosDxe.inf</code>、<code>MdeModulePkg/Universal/Acpi/AcpiTableDxe/AcpiTableDxe.inf</code>。</li>
+      <li>SG2046 平台 ACPI：<code>Silicon/Sophgo/SG2046Pkg/AcpiTables/SG2046-FPGA/SG2046-FPGA-AcpiTables.inf</code>。</li>
+    </ul>
+    <p><strong>SG2046 实例：</strong>SG2046 的 FDF 文件（<a class='file-link' href='file:///home/pbw/sg2046/sophgo-edk2/edk2-platforms/Platform/Sophgo/SG2046Pkg/SG2046-FPGA/SG2046-FPGA.fdf'>SG2046-FPGA.fdf</a>）定义了 <code>[FD.SG2046-FPGA]</code>、<code>[FV.DXEFV]</code>、<code>[FV.FVMAIN_COMPACT]</code>，这些 FV 的布局严格遵循 Volume 3 的 FV 格式。</p>
+  </div>
+
+  <h4>Volume 4：Management Mode Core Interface（管理模式核心接口，MM/SMM）</h4>
+  <div class='card'>
+    <p><strong>解决什么问题：</strong>定义一种高特权级、对 OS 透明的执行环境（Management Mode，MM），用于处理平台特定事件（如电源管理、安全监控、硬件纠错）。在 x86 上对应 SMM 模式；在 ARM 上对应 TrustZone。PI 1.7 起将标题从 "System Management Mode" 改为 "Management Mode Core Interface"，以涵盖更广义的管理模式抽象。</p>
+    <p><strong>在 SG2046 / RISC-V 上的情况：</strong>RISC-V 架构目前没有与 x86 SMM 完全对等的机制，因此 SG2046 EDK2 不实现 Volume 4 的内容。RISC-V 的 M-mode（由 OpenSBI 占用）承担了一部分底层平台管理职责，但它对 S-mode 的 EDK2/OS 不是"透明"的，而是通过 SBI 调用显式服务。</p>
+    <p><strong>对应 EDK2 源码：</strong>对 SG2046 不适用，x86 平台可参考 <code>MdeModulePkg/Core/PiSmmCore/</code>、<code>UefiCpuPkg/PiSmmCpuDxeSmm/</code>。</p>
+  </div>
+
+  <h4>Volume 5：Standards（平台总线协议标准）</h4>
+  <div class='card'>
+    <p><strong>解决什么问题：</strong>定义 PI 架构中平台级总线/主机控制器协议的标准接口，使不同厂商的硬件可以遵循统一的驱动模型。</p>
+    <p><strong>核心内容（PI 1.9）：</strong></p>
+    <ul>
+      <li><strong>Super I/O Protocol</strong>：标准化的超级 I/O 芯片接口。</li>
+      <li><strong>Super I/O 与 ISA Host Controller 交互</strong>：定义 Super I/O 与 ISA 总线主控的交互方式。</li>
+      <li><strong>CPU I/O Protocol</strong>：提供 CPU 级别的 I/O 端口访问抽象。</li>
+      <li><strong>Legacy Region Protocol</strong>：管理传统 x86 兼容内存区域（如 0xA0000–0xFFFFF）。</li>
+      <li><strong>I2C Protocol Stack</strong>：I2C 总线协议栈。</li>
+      <li><strong>SPI Protocol Stack</strong>：SPI 总线协议栈。</li>
+      <li><strong>Appendix: Error Codes</strong>：错误码附录。</li>
+    </ul>
+    <div class='note'>
+      <strong>重要澄清：</strong>Volume 5 <strong>不包含</strong> SEC Handoff、临时内存迁移或信任链内容。这些内容属于 <strong>Volume 1（Pre-EFI Initialization Core Interface）</strong>：
+      <ul>
+        <li><code>EFI_SEC_PEI_HAND_OFF</code> 结构定义在 Volume 1 第 5 章（PEI Foundation），对应源码 <code>MdePkg/Include/Pi/PiPeiCis.h</code>。</li>
+        <li><code>EFI_TEMPORARY_RAM_SUPPORT_PPI</code> 同样定义在 Volume 1，对应源码 <code>MdePkg/Include/Ppi/TemporaryRamSupport.h</code>。</li>
+        <li>SEC 阶段信息和 SEC→PEI 切换约定在 Volume 1 第 13 章（Security (SEC) Phase Information）。</li>
+      </ul>
+    </div>
+    <p><strong>对应 EDK2 源码：</strong>Volume 5 的协议主要对应 <code>MdeModulePkg/Universal/</code> 下的各总线驱动。对 SG2046 RISC-V 平台，大部分 Legacy/ISA 相关内容不适用，I2C/SPI 协议栈在需要时才引入。</p>
+    <p><strong>SG2046 实例：</strong>SG2046 的 SEC→PEI 切换在 <a class='file-link' href='file:///home/pbw/sg2046/sophgo-edk2/edk2-platforms/Silicon/Sophgo/Core/Sec/PeilessSec.c'>PeilessSec.c</a> 中实现：填充 <code>EFI_SEC_PEI_HAND_OFF</code>，设置临时内存基址 <code>0x81000000</code>（PcdEfiMemoryBottom）、栈基址 <code>0x84FF0000</code>（PcdTemporaryRamBase = EFI_STACK_BASE）、BFV 指向 <code>0x80200000</code>（PcdRiscVPeiFvBase = FW_BASE_ADDRESS），然后跳转到 PeiCore。这些地址值来源于 <a class='file-link' href='file:///home/pbw/sg2046/sophgo-edk2/edk2-platforms/Platform/Sophgo/SG2046Pkg/SG2046.fdf.inc'>SG2046.fdf.inc</a>。</p>
+  </div>
+
+  <h4>五卷总览表</h4>
+  <table>
+    <tr><th>PI 卷</th><th>关注的问题</th><th>对应 EDK2 阶段</th><th>关键抽象</th></tr>
+    <tr><td>Volume 1: Pre-EFI Initialization Core Interface</td><td>资源匮乏的早期初始化、SEC→PEI 切换</td><td>SEC / PEI</td><td>HOB、PPI、PEIM、PEI Services、Boot Mode、SEC Handoff、临时内存迁移</td></tr>
+    <tr><td>Volume 2: Driver Execution Environment Core Interface</td><td>服务丰富的驱动执行环境</td><td>DXE / BDS</td><td>Protocol、Handle、Boot/Runtime Services、DEPEX</td></tr>
+    <tr><td>Volume 3: Shared Architectural Elements</td><td>跨阶段共享基础设施</td><td>跨阶段</td><td>FV、SMBIOS、ACPI、变量、Status Code</td></tr>
+    <tr><td>Volume 4: Management Mode Core Interface</td><td>高特权管理模式（SMM/MM）</td><td>MM/SMM（RISC-V 无）</td><td>MM Core、MM Driver（不适用）</td></tr>
+    <tr><td>Volume 5: Standards</td><td>平台总线协议标准</td><td>DXE 驱动</td><td>Super I/O、CPU I/O、Legacy Region、I2C、SPI</td></tr>
+  </table>
+
+  <h3>2.3 为什么 PI 规范要分成五卷？</h3>
+  <div class='card'>
+    <p>PI 规范的分卷不是随意为之，而是按照<strong>问题域隔离</strong>和<strong>实现可替换性</strong>设计的：</p>
+    <ul>
+      <li><strong>Volume 1 与 Volume 2 分别对应"早期初始化"和"服务环境"</strong>：PEI 阶段内存受限、没有完整服务；DXE 阶段内存充裕、服务完整。两者需要的抽象截然不同，所以分别成卷。SEC Handoff、临时内存迁移等 SEC→PEI 切换机制也在 Volume 1 中定义。</li>
+      <li><strong>Volume 3 提取公共机制</strong>：FV 格式、ACPI/SMBIOS、变量等既被 PEI 使用也被 DXE 使用，单独成卷避免重复定义。</li>
+      <li><strong>Volume 4 针对管理模式</strong>：SMM/MM 是 x86/特定架构的概念，RISC-V 不需要实现，因此可以整卷忽略。PI 1.7 起将名称从 "System Management Mode" 改为 "Management Mode Core Interface"。</li>
+      <li><strong>Volume 5 统一总线协议</strong>：将平台级总线（Super I/O、I2C、SPI 等）的驱动接口标准化，便于跨厂商复用。</li>
+    </ul>
+    <p>对 SG2046 这样的 RISC-V 平台来说，重点关注 Volume 1（PEI + SEC Handoff）、Volume 2（DXE）、Volume 3（FV/ACPI/SMBIOS/变量），Volume 4 和 Volume 5 大部分内容可跳过。</p>
+  </div>
+
+  <h3>2.4 规范与源码的对应</h3>
+  <div class='diagram'>
+    <div class='diagram-title'>UEFI/PI 规范到 EDK2 源码的映射</div>
+    <div class='diagram-row'>
+      <div class='diagram-box'>UEFI Spec<br>System Table</div>
+      <div class='diagram-arrow'>&#8594;</div>
+      <div class='diagram-box'>MdePkg/Include/Uefi/UefiSpec.h<br>EFI_SYSTEM_TABLE</div>
+    </div>
+    <div class='diagram-row'>
+      <div class='diagram-box'>PI Spec<br>HOB</div>
+      <div class='diagram-arrow'>&#8594;</div>
+      <div class='diagram-box'>MdePkg/Include/Pi/PiHob.h<br>EFI_HOB_GENERIC_HEADER</div>
+    </div>
+    <div class='diagram-row'>
+      <div class='diagram-box'>PI Spec<br>PPI</div>
+      <div class='diagram-arrow'>&#8594;</div>
+      <div class='diagram-box'>MdePkg/Include/Pi/PiPeiCis.h<br>EFI_PEI_PPI_DESCRIPTOR</div>
+    </div>
+    <div class='diagram-row'>
+      <div class='diagram-box'>UEFI Spec<br>Protocol</div>
+      <div class='diagram-arrow'>&#8594;</div>
+      <div class='diagram-box'>MdePkg/Include/Protocol/*.h</div>
+    </div>
+  </div>
+  <p>SG2046 平台代码严格遵循这些接口。例如 <a class='file-link' href='file:///home/pbw/sg2046/sophgo-edk2/edk2-platforms/Silicon/Sophgo/Core/Sec/PeilessSec.c'>PeilessSec.c</a> 构建的 HOB 列表、<a class='file-link' href='file:///home/pbw/sg2046/sophgo-edk2/edk2/MdeModulePkg/Core/DxeIplPeim/DxeHandoff.c'>DxeHandoff.c</a> 切换栈并进入 DXE，都符合 PI 规范对阶段切换的要求。</p>
+</section>
+
+<section id='concepts'>
+  <h2>3. EDK2 核心概念（新手必读）</h2>
+
+  <h3>3.1 UEFI 启动的 7 个阶段</h3>
+  <p>UEFI 把启动过程标准化为 7 个阶段，每个阶段有明确职责：</p>
+  <table>
+    <tr><th>阶段</th><th>英文</th><th>职责</th><th>类比</th></tr>
+    <tr><td>SEC</td><td>Security</td><td>最早运行，建立临时栈，传递启动参数</td><td>工地搭临时棚</td></tr>
+    <tr><td>PEI</td><td>Pre-EFI Initialization</td><td>初始化内存、CPU、芯片组，构建 HOB</td><td>打地基、铺水电</td></tr>
+    <tr><td>DXE</td><td>Driver Execution Environment</td><td>加载所有驱动，建立 UEFI 服务</td><td>装修、安装设备</td></tr>
+    <tr><td>BDS</td><td>Boot Device Selection</td><td>选择启动设备，启动 OS Loader</td><td>开门迎客</td></tr>
+    <tr><td>TSL</td><td>Transient System Load</td><td>临时系统加载（如 Shell）</td><td>临时接待区</td></tr>
+    <tr><td>RT</td><td>Runtime</td><td>OS 运行期间固件仍提供服务</td><td>物业值班</td></tr>
+    <tr><td>AL</td><td>After Life</td><td>关机/重启前清理</td><td>关门</td></tr>
+  </table>
+
+  <h3>3.2 三个最重要的抽象</h3>
+  <div class='grid'>
+    <div class='card'>
+      <span class='tag tag-blue'>HOB</span>
+      <h4>Hand-Off Block（传递块）</h4>
+      <p>PEI 阶段产生的各种信息（内存大小、CPU 信息、FDT 地址等）通过 HOB 列表传递给 DXE 阶段。可以把它理解为<strong>阶段之间的快递单</strong>。</p>
+    </div>
+    <div class='card'>
+      <span class='tag tag-green'>PPI / Protocol</span>
+      <h4>接口契约</h4>
+      <p><strong>PPI</strong> 是 PEI 阶段模块之间的接口；<strong>Protocol</strong> 是 DXE 阶段驱动之间的接口。它们都是"我提供什么服务"的声明。</p>
+    </div>
+    <div class='card'>
+      <span class='tag tag-orange'>PCD</span>
+      <h4>Platform Configuration Database</h4>
+      <p>平台配置数据库。把硬件相关的常量（内存基址、CPU 数量、串口地址等）从代码中抽离出来，方便不同平台复用同一份代码。</p>
+    </div>
+  </div>
+
+  <h3>3.3 EDK2 项目中的关键文件类型</h3>
+  <table>
+    <tr><th>文件后缀</th><th>含义</th><th>作用</th></tr>
+    <tr><td><code>.dsc</code></td><td>Description File</td><td>平台构建描述文件，决定编译哪些模块、使用哪些库、PCD 值</td></tr>
+    <tr><td><code>.fdf</code></td><td>Flash Description File</td><td>Flash 布局描述，决定最终固件二进制里各 FV 怎么放</td></tr>
+    <tr><td><code>.dec</code></td><td>Package Declaration File</td><td>包声明文件，定义 Guids、Protocols、PCD 命名空间</td></tr>
+    <tr><td><code>.inf</code></td><td>Module Information File</td><td>单个模块的构建配置，相当于模块的 Makefile</td></tr>
+    <tr><td><code>.c / .S</code></td><td>C / 汇编源码</td><td>具体实现</td></tr>
+  </table>
+
+  <h3>3.4 FV（Firmware Volume）</h3>
+  <p>FV 是 EDK2 固件的基本容器，可以理解为一个"文件系统"，里面放了很多 EFI 模块。一个固件通常包含多个 FV：</p>
+  <ul>
+    <li><strong>FVMAIN_COMPACT</strong>：主 FV，通常包含 SEC、PEI Core、压缩后的 DXE FV</li>
+    <li><strong>DXEFV</strong>：DXE 阶段所有驱动的集合</li>
+  </ul>
+
+  <h3>3.5 PEIM / DXE Driver / UEFI Application</h3>
+  <table>
+    <tr><th>类型</th><th>运行阶段</th><th>例子</th></tr>
+    <tr><td>PEIM</td><td>PEI 阶段</td><td>CpuPei、MemoryInitPei</td></tr>
+    <tr><td>DXE Driver</td><td>DXE 阶段</td><td>CpuDxeRiscV64、MmcDxe</td></tr>
+    <tr><td>UEFI Application</td><td>BDS/TSL 阶段</td><td>Shell、UiApp</td></tr>
+  </table>
+
+  <h3>3.6 RISC-V 特权模式与 EDK2 的关系</h3>
+  <p>SG2046 基于 RISC-V，EDK2 运行在 <strong>S-mode（Supervisor mode）</strong>，依赖 OpenSBI 提供 M-mode 服务：</p>
+  <table>
+    <tr><th>模式</th><th>名称</th><th>EDK2 中的角色</th></tr>
+    <tr><td>M-mode</td><td>Machine mode</td><td>OpenSBI 运行，处理底层硬件、PLIC/CLINT、ECALL</td></tr>
+    <tr><td>S-mode</td><td>Supervisor mode</td><td>EDK2、GRUB2、OS 内核运行</td></tr>
+    <tr><td>U-mode</td><td>User mode</td><td>用户态应用，固件阶段基本不涉及</td></tr>
+  </table>
+  <div class='note'>
+    EDK2 通过 <code>SBI ecall</code> 使用 OpenSBI 提供的 M-mode 服务，例如串口输出（<code>sbi_console_putchar</code>）、系统复位（<code>sbi_system_reset</code>）等。
+  </div>
+
+  <h3>3.7 为什么 EDK2 要分阶段？</h3>
+  <div class='card'>
+    <p>UEFI 分阶段的核心目的是<strong>在系统内存和服务尚未完全就绪时，仍能逐步完成硬件初始化</strong>：</p>
+    <ol>
+      <li><strong>SEC 使用临时内存</strong>：此时没有 DRAM 或 DRAM 未初始化，只能用 SRAM/预分配的小块内存。</li>
+      <li><strong>PEI 初始化永久内存</strong>：DRAM 就绪后，HOB/栈迁移到永久内存，后续阶段才能大规模分配内存。</li>
+      <li><strong>DXE 建立完整服务</strong>：内存、中断、MMU 就绪后，才能加载大量驱动和协议栈。</li>
+      <li><strong>BDS 才与用户交互</strong>：只有控制台、存储、显示都就绪后，才能选择启动设备。</li>
+    </ol>
+    <p>这种分层让固件代码可以按依赖顺序组织，也便于不同平台复用通用模块。</p>
+  </div>
+
+  <h3>3.8 PEI Services / Boot Services / Runtime Services</h3>
+  <p>EDK2 在不同阶段提供不同的"服务表"，驱动/PEIM 通过它们访问系统能力：</p>
+  <table>
+    <tr><th>服务表</th><th>可用阶段</th><th>核心能力</th></tr>
+    <tr><td><code>EFI_PEI_SERVICES **PeiServices</code></td><td>PEI</td><td>PPI 安装/查找、内存分配（HOB/页）、状态码、FV 遍历、启动模式</td></tr>
+    <tr><td><code>EFI_BOOT_SERVICES *gBS</code></td><td>DXE / BDS / TSL</td><td>内存分配、Handle/Protocol、事件、加载镜像、连接控制器</td></tr>
+    <tr><td><code>EFI_RUNTIME_SERVICES *gRT</code></td><td>DXE / BDS / TSL / RT</td><td>变量读写、时间、复位、Capsule、虚拟地址映射</td></tr>
+  </table>
+  <p>这些服务表由对应阶段的 Core（PeiCore、DxeCore）初始化并填充函数指针。例如 <code>PeiServicesInstallPpi</code> 最终调用 <code>PeiServices->InstallPpi()</code>；<code>gBS->InstallProtocolInterface</code> 由 DxeCore 实现。</p>
+
+  <h3>3.9 DEPEX：模块依赖表达式</h3>
+  <p>每个 PEIM / DXE Driver 都可以声明依赖（Dependency Expression）。构建工具 <code>GenDepex</code> 把它编译成一段字节码，PEI/DXE Core 在调度前解析：</p>
+  <pre><span class='comment'># 典型的 DXE DEPEX：必须等 CPU Arch Protocol 安装后才能加载</span>
+[Depex]
+  gEfiCpuArchProtocolGuid AND gEfiPciIoProtocolGuid</pre>
+  <p>DEPEX 语法支持 <code>AND</code>、<code>OR</code>、<code>NOT</code>、<code>TRUE</code>、<code>FALSE</code>。如果没有 <code>[Depex]</code> 段，构建工具会根据 <code>[Protocols]</code> 段自动生成。APRIORI 列表中的模块优先加载，不受 DEPEX 限制。</p>
+  <div class='note'>
+    DEPEX 本质上是 Guid 的布尔表达式。DXE Core 维护一张"已安装 Protocol 的 Guid 表"，每安装一个新 Protocol 就重新评估所有未调度驱动的 DEPEX，满足条件立即加载。
+  </div>
+
+  <h3>3.10 Library Class / Library Instance：复用的关键</h3>
+  <p>EDK2 用"库类 + 库实例"分离接口与实现：</p>
+  <ul>
+    <li><strong>Library Class</strong>：头文件 + API 契约，如 <code>SerialPortLib</code>、<code>DebugLib</code>、<code>HobLib</code></li>
+    <li><strong>Library Instance</strong>：具体实现，如 <code>BaseSerialPortLibRiscVSbiLib</code>（通过 SBI 输出串口）、<code>BaseDebugLibSerialPort</code></li>
+  </ul>
+  <p>同一 Library Class 在不同阶段可以绑定不同 Instance。例如 <code>TimerLib</code> 在 SEC/PEI 使用 <code>BaseRiscV64CpuTimerSecLib</code>，在 DXE 使用 <code>BaseRiscV64CpuTimerLib</code>；<code>MemoryAllocationLib</code> 在 PEI 使用 <code>PeiMemoryAllocationLib</code>，在 DXE 使用 <code>UefiMemoryAllocationLib</code>。</p>
+</section>
+
+<section id='data-structures'>
+  <h2>4. 关键数据结构详解</h2>
+  <p>理解 EDK2 必须理解几个核心数据结构：HOB、PPI/Protocol 描述符、PCD、SEC Handoff。它们是整个启动流程的"骨架"。</p>
+  <div class='note'>
+    <strong>与 PI 规范的对应：</strong>本章节的 HOB、PPI、SEC Handoff 由 <strong>PI 规范 Volume 1</strong> 定义；Protocol、Handle、System Table 由 <strong>PI 规范 Volume 2</strong> 定义。建议先阅读 <a href='#specs'>第 2 节规范背景</a> 建立整体概念。
+  </div>
+
+  <h3>4.1 HOB 通用头与 HOB 列表</h3>
+  <p>所有 HOB 都以 <code>EFI_HOB_GENERIC_HEADER</code> 开头，通过 <code>HobLength</code> 字段链接成单向链表：</p>
+<pre><span class='keyword'>typedef</span> <span class='keyword'>struct</span> {
+  UINT16    HobType;      <span class='comment'>// HOB 类型，如 HANDOFF/MEMORY_ALLOCATION/RESOURCE_DESCRIPTOR</span>
+  UINT16    HobLength;    <span class='comment'>// 本 HOB 总长度（含头部），按 8 字节对齐</span>
+  UINT32    Reserved;     <span class='comment'>// 保留，必须为 0</span>
+} EFI_HOB_GENERIC_HEADER;</pre>
+  <p>HOB 列表以 <strong>PHIT HOB</strong>（EFI_HOB_TYPE_HANDOFF）开头，其中记录了列表的头部、尾部、自由内存底部/顶部：</p>
+<pre><span class='keyword'>typedef</span> <span class='keyword'>struct</span> {
+  EFI_HOB_GENERIC_HEADER  Header;
+  UINT32                  Version;
+  EFI_BOOT_MODE           BootMode;
+  EFI_PHYSICAL_ADDRESS    EfiMemoryTop;
+  EFI_PHYSICAL_ADDRESS    EfiMemoryBottom;
+  EFI_PHYSICAL_ADDRESS    EfiFreeMemoryTop;
+  EFI_PHYSICAL_ADDRESS    EfiFreeMemoryBottom;
+  UINT64                  EfiEndOfHobList;
+} EFI_HOB_HANDOFF_INFO_TABLE;</pre>
+  <div class='note'>
+    <strong>新手提示：</strong>HOB 列表只能增长不能删除。PEI 阶段从 <code>EfiFreeMemoryBottom</code> 开始分配新 HOB，并更新 <code>EfiEndOfHobList</code>。
+  </div>
+
+  <h3>4.2 HOB 列表在内存中的形态</h3>
+  <div class='diagram'>
+    <div class='diagram-title'>SEC 建立的初始 HOB 列表示例</div>
+    <div class='diagram-row'>
+      <div class='diagram-box sec'>PHIT HOB<br><small>HandoffInfoTable</small></div>
+      <div class='diagram-arrow'>&#8594;</div>
+      <div class='diagram-box pei'>CPU HOB</div>
+      <div class='diagram-arrow'>&#8594;</div>
+      <div class='diagram-box pei'>FV HOB</div>
+      <div class='diagram-arrow'>&#8594;</div>
+      <div class='diagram-box pei'>FDT GUID HOB</div>
+      <div class='diagram-arrow'>&#8594;</div>
+      <div class='diagram-box pei'>SEC Handoff HOB</div>
+      <div class='diagram-arrow'>&#8594;</div>
+      <div class='diagram-box pei'>Stack HOB</div>
+      <div class='diagram-arrow'>&#8594;</div>
+      <div class='diagram-box dxe'>... 更多 HOB</div>
+    </div>
+  </div>
+  <p>遍历 HOB 时，从 PHIT HOB 开始，反复执行 <code>Hob.Raw += Hob.Header->HobLength</code>，直到 <code>HobType == EFI_HOB_TYPE_END_OF_HOB_LIST</code>。所有 HOB 8 字节对齐，因此这种遍历是安全的。</p>
+
+  <h3>4.3 常见 HOB 类型与结构</h3>
+  <table>
+    <tr><th>宏</th><th>值</th><th>作用</th><th>构建函数</th></tr>
+    <tr><td>EFI_HOB_TYPE_HANDOFF</td><td>0x0001</td><td>PHIT HOB，列表头</td><td>HobConstructor</td></tr>
+    <tr><td>EFI_HOB_TYPE_MEMORY_ALLOCATION</td><td>0x0002</td><td>已分配的内存区域</td><td>BuildMemoryAllocationHob</td></tr>
+    <tr><td>EFI_HOB_TYPE_RESOURCE_DESCRIPTOR</td><td>0x0003</td><td>系统资源（RAM/MMIO/Reserved）</td><td>BuildResourceDescriptorHob</td></tr>
+    <tr><td>EFI_HOB_TYPE_GUID_EXTENSION</td><td>0x0004</td><td>GUID 扩展 HOB</td><td>BuildGuidDataHob / BuildGuidHob</td></tr>
+    <tr><td>EFI_HOB_TYPE_FV</td><td>0x0005</td><td>FV 位置</td><td>BuildFvHob</td></tr>
+    <tr><td>EFI_HOB_TYPE_CPU</td><td>0x0006</td><td>CPU 信息</td><td>BuildCpuHob</td></tr>
+    <tr><td>EFI_HOB_TYPE_MEMORY_POOL</td><td>0x0007</td><td>内存池</td><td>BuildMemoryPoolHob</td></tr>
+    <tr><td>EFI_HOB_TYPE_UEFI_CAPSULE</td><td>0x0009</td><td>capsule 更新</td><td>-</td></tr>
+    <tr><td>EFI_HOB_TYPE_FV2</td><td>0x000A</td><td>FV2 位置</td><td>BuildFv2Hob</td></tr>
+    <tr><td>EFI_HOB_TYPE_LOAD_PEIM</td><td>0x000B</td><td>PEIM 加载信息</td><td>-</td></tr>
+    <tr><td>EFI_HOB_TYPE_UEFI_CAPSULE_V3</td><td>0x000C</td><td>Capsule V3</td><td>-</td></tr>
+  </table>
+
+  <h4>资源描述符 HOB</h4>
+<pre><span class='keyword'>typedef</span> <span class='keyword'>struct</span> {
+  EFI_HOB_GENERIC_HEADER      Header;
+  EFI_GUID                    Owner;          <span class='comment'>// 保留</span>
+  EFI_RESOURCE_TYPE           ResourceType;   <span class='comment'>// SYSTEM_MEMORY / MEMORY_MAPPED_IO / IO</span>
+  EFI_RESOURCE_ATTRIBUTE_TYPE ResourceAttribute;
+  EFI_PHYSICAL_ADDRESS        PhysicalStart;
+  UINT64                      ResourceLength;
+} EFI_HOB_RESOURCE_DESCRIPTOR;</pre>
+  <p>ResourceAttribute 决定这段内存的缓存、测试、初始化等属性。SG2046 在 <a class='file-link' href='file:///home/pbw/sg2046/sophgo-edk2/edk2-platforms/Silicon/Sophgo/Modules/MemoryInitPei/MemoryInitPei.c'>MemoryInitPei.c</a> 中为系统 RAM 设置 <code>PRESENT | INITIALIZED | UNCACHEABLE | WRITE_COMBINEABLE | WRITE_THROUGH_CACHEABLE | WRITE_BACK_CACHEABLE | TESTED</code>，为 SD MMIO 设置 <code>PRESENT | INITIALIZED | UNCACHEABLE | TESTED</code>。</p>
+
+  <h4>GUID 扩展 HOB</h4>
+<pre><span class='keyword'>typedef</span> <span class='keyword'>struct</span> {
+  EFI_HOB_GENERIC_HEADER  Header;
+  EFI_GUID                Name;      <span class='comment'>// GUID，用于区分不同用途</span>
+  <span class='comment'>// 紧跟着 Name 的是用户数据</span>
+} EFI_HOB_GUID_TYPE;</pre>
+  <p>SG2046 用 <code>gFdtHobGuid</code> 保存 FDT 地址，用 <code>RISCV_SEC_HANDOFF_HOB_GUID</code> 保存 BootHartId。查找时调用 <code>GetFirstGuidHob(&amp;Guid)</code>，返回指向 <code>EFI_HOB_GUID_TYPE</code> 的指针，再用 <code>GET_GUID_HOB_DATA()</code> 拿到数据体。</p>
+
+  <h3>4.4 SEC Handoff 数据结构</h3>
+  <p>SEC 通过 <code>EFI_SEC_PEI_HAND_OFF</code> 把临时内存、栈、BFV 信息传给 PEI Core：</p>
+<pre><span class='keyword'>typedef</span> <span class='keyword'>struct</span> {
+  UINT16  DataSize;                <span class='comment'>// 本结构大小</span>
+  VOID    *BootFirmwareVolumeBase; <span class='comment'>// PEI FV 基址</span>
+  UINTN   BootFirmwareVolumeSize;  <span class='comment'>// PEI FV 大小</span>
+  VOID    *TemporaryRamBase;       <span class='comment'>// 临时内存基址</span>
+  UINTN   TemporaryRamSize;        <span class='comment'>// 临时内存总大小（含栈）</span>
+  VOID    *PeiTemporaryRamBase;    <span class='comment'>// 给 PEI Core 用的临时内存底</span>
+  UINTN   PeiTemporaryRamSize;     <span class='comment'>// 给 PEI Core 用的临时内存大小</span>
+  VOID    *StackBase;              <span class='comment'>// 栈底</span>
+  UINTN   StackSize;               <span class='comment'>// 栈大小</span>
+} EFI_SEC_PEI_HAND_OFF;</pre>
+  <p>SG2046 在 <a class='file-link' href='file:///home/pbw/sg2046/sophgo-edk2/edk2-platforms/Silicon/Sophgo/Core/Sec/PeilessSec.c'>PeilessSec.c</a> 中填充如下：</p>
+<pre>SecCoreData.StackBase = (VOID *)StackBase;                         <span class='comment'>// 0x84FF0000</span>
+SecCoreData.StackSize = StackSize;                                 <span class='comment'>// 0x10000</span>
+SecCoreData.TemporaryRamBase = (VOID *)UefiMemoryBase;             <span class='comment'>// 0x81000000</span>
+SecCoreData.TemporaryRamSize = (StackBase + StackSize - UefiMemoryBase); <span class='comment'>// 0x4000000 (64MB)</span>
+SecCoreData.PeiTemporaryRamBase = SecCoreData.TemporaryRamBase;
+SecCoreData.PeiTemporaryRamSize = SecCoreData.TemporaryRamSize - StackSize;</pre>
+  <div class='note'>
+    注意 <code>StackBase</code> 是栈底（低地址），栈向低地址生长；实际栈顶是 <code>StackBase + StackSize</code>。SEC 汇编已经把 <code>sp</code> 指向栈顶。
+  </div>
+
+  <h3>4.5 PPI 描述符与 PPI 数据库</h3>
+  <p>PEI 阶段模块通过 PPI 暴露/消费接口。PPI 描述符把 GUID 和接口指针绑定：</p>
+<pre><span class='keyword'>typedef</span> <span class='keyword'>struct</span> {
+  UINTN     Flags;   <span class='comment'>// EFI_PEI_PPI_DESCRIPTOR_PPI / NOTIFY_DISPATCH / TERMINATE_LIST</span>
+  EFI_GUID  *Guid;
+  VOID      *Ppi;    <span class='comment'>// 指向 PPI 接口结构体的指针</span>
+} EFI_PEI_PPI_DESCRIPTOR;
+
+<span class='comment'>// SG2046 示例：SEC 注册的两个 PPI</span>
+EFI_PEI_PPI_DESCRIPTOR mPrivateDispatchTable[] = {
+  { EFI_PEI_PPI_DESCRIPTOR_PPI, &amp;gEfiSecHobDataPpiGuid, &amp;mSecHobDataPpi },
+  { EFI_PEI_PPI_DESCRIPTOR_PPI | EFI_PEI_PPI_DESCRIPTOR_TERMINATE_LIST,
+    &amp;gEfiTemporaryRamSupportPpiGuid, &amp;mTemporaryRamSupportPpi }
+};</pre>
+  <p>PEI Core 维护一个 PPI 数据库。模块通过 <code>PeiServicesInstallPpi</code> 注册，通过 <code>PeiServicesLocatePpi</code> 查找。PPI 数据库通常是一个数组，每个条目包含 Flags、Guid、Ppi 指针。</p>
+
+  <h3>4.6 Protocol 与 Handle 数据库</h3>
+  <p>DXE 阶段通过 <strong>Handle</strong>（句柄）和 <strong>Protocol</strong>（协议）组织对象：</p>
+  <ul>
+    <li><strong>Handle</strong>：一个抽象对象，可以是一个驱动、一个控制器、一个设备</li>
+    <li><strong>Protocol</strong>：挂到 Handle 上的一组接口函数和数据</li>
+    <li>一个 Handle 可以安装多个 Protocol；多个 Handle 可以安装同一种 Protocol</li>
+  </ul>
+<pre><span class='comment'>// 安装 Protocol：把 Protocol 挂到自己的 ImageHandle 上</span>
+gBS->InstallProtocolInterface (
+       &amp;ImageHandle,
+       &amp;gEfiCpuArchProtocolGuid,
+       EFI_NATIVE_INTERFACE,
+       &amp;gCpu
+       );
+
+<span class='comment'>// 消费 Protocol：按 GUID 查找系统里的某个 Protocol 实例</span>
+gBS->LocateProtocol (
+       &amp;gEfiAcpiTableProtocolGuid,
+       NULL,
+       (VOID **)&amp;AcpiTable
+       );</pre>
+  <p>DXE Core 内部维护 Handle 数据库：每个 Handle 对应一个 Protocol 链表。查找 Protocol 时先搜索 Guid 索引，再返回对应 Protocol 实例。这种设计让驱动可以松散耦合。</p>
+
+  <h4>Protocol 接口结构示例：EFI_CPU_ARCH_PROTOCOL</h4>
+<pre><span class='keyword'>struct</span> _EFI_CPU_ARCH_PROTOCOL {
+  EFI_CPU_FLUSH_DATA_CACHE          FlushDataCache;
+  EFI_CPU_ENABLE_INTERRUPT          EnableInterrupt;
+  EFI_CPU_DISABLE_INTERRUPT         DisableInterrupt;
+  EFI_CPU_GET_INTERRUPT_STATE       GetInterruptState;
+  EFI_CPU_INIT                      Init;
+  EFI_CPU_REGISTER_INTERRUPT_HANDLER RegisterInterruptHandler;
+  EFI_CPU_GET_TIMER_VALUE           GetTimerValue;
+  EFI_CPU_SET_MEMORY_ATTRIBUTES     SetMemoryAttributes;
+  UINT32                            NumberOfTimers;
+  UINT32                            DmaBufferAlignment;
+};</pre>
+  <p>在 <a class='file-link' href='file:///home/pbw/sg2046/sophgo-edk2/edk2/UefiCpuPkg/CpuDxeRiscV64/CpuDxe.c'>CpuDxe.c</a> 中，全局变量 <code>gCpu</code> 的每个字段都指向 RISC-V 实现，安装后其他驱动就能通过 <code>gEfiCpuArchProtocolGuid</code> 调用这些服务。</p>
+
+  <h3>4.7 PCD 的五种类型与内部实现</h3>
+  <p>PCD 不仅用于"配置参数"，还决定了参数在什么时候、以什么方式被解析和使用：</p>
+  <table>
+    <tr><th>类型</th><th>INF 段</th><th>取值时机</th><th>是否可修改</th><th>典型用途</th></tr>
+    <tr><td>FixedPcd</td><td>[FixedPcd]</td><td>编译期</td><td>不可变</td><td>内存基址、FV 基址、硬件常量</td></tr>
+    <tr><td>FeaturePcd</td><td>[FeaturePcd]</td><td>编译期</td><td>不可变</td><td>布尔功能开关</td></tr>
+    <tr><td>PatchablePcd</td><td>[PatchablePcd]</td><td>构建后/运行前补丁</td><td>可 patch</td><td>需要二进制定制的常量</td></tr>
+    <tr><td>Pcd（Dynamic）</td><td>[Pcd]</td><td>运行期</td><td>运行期可读写</td><td>启动模式、动态配置</td></tr>
+    <tr><td>PcdsDynamicDefault / DynamicEx</td><td>[Pcd]</td><td>运行期，带默认值</td><td>运行期可读写</td><td>变量类配置，可跨模块共享</td></tr>
+  </table>
+
+  <h4>PCD 在构建时如何变成代码？</h4>
+  <p>EDK2 构建工具为每个模块生成 <code>AutoGen.h</code> 和 <code>AutoGen.c</code>：</p>
+  <ul>
+    <li><strong>FixedPcd</strong>：直接内联成宏或常量，访问最快，SEC/PEI 都能用</li>
+    <li><strong>DynamicPcd</strong>：生成 token 编号，运行时通过 <code>PcdGet32/PcdSet32</code> 访问 PCD 数据库</li>
+  </ul>
+  <p>每个 PCD 由 <code>&lt;TokenSpaceGuid&gt;.&lt;TokenName&gt;</code> 唯一标识。DEC 文件中声明时分配一个 token 编号（如 <code>0x00003001</code>），构建工具据此生成访问代码。例如 <a class='file-link' href='file:///home/pbw/sg2046/sophgo-edk2/edk2-platforms/Silicon/Sophgo/Sophgo.dec'>Sophgo.dec</a> 把 PCD 按逻辑分组（Platform、Cpu、Memory、SDIO 等）编号，便于维护。</p>
+  <div class='note'>
+    在 SEC/PEI 阶段通常只能用 <code>FixedPcd</code> 和 <code>PcdGet32/PcdGet64</code>；DXE 阶段可以使用动态 PCD。SG2046-FPGA.dsc 里大量使用了 FixedPcd 来固化硬件地址。
+  </div>
+
+  <h3>4.8 DEPEX 字节码与调度原理</h3>
+  <p><code>[Depex]</code> 段经 <code>GenDepex</code> 编译后生成 <code>.depex</code> 文件，最终嵌入 EFI 文件的 SECTION 中。其字节码是基于栈的虚拟机指令：</p>
+  <table>
+    <tr><th>操作码</th><th>含义</th></tr>
+    <tr><td>0x00</td><td>PUSH guid（后跟 16 字节 GUID）</td></tr>
+    <tr><td>0x01</td><td>AND</td></tr>
+    <tr><td>0x02</td><td>OR</td></tr>
+    <tr><td>0x03</td><td>NOT</td></tr>
+    <tr><td>0x04</td><td>TRUE</td></tr>
+    <tr><td>0x05</td><td>FALSE</td></tr>
+    <tr><td>0x06</td><td>END</td></tr>
+  </table>
+  <p>DXE Core 在调度驱动时，先读取其 DEPEX SECTION，逐条解释执行；若最终栈顶为 TRUE，且所有依赖的 Protocol GUID 都已在 Handle 数据库中，则调用驱动的入口函数。</p>
+</section>
+
+<section id='platform-dev'>
+  <h2>5. 为 SG2046 这样的平台开发 EDK2 固件要做什么？</h2>
+  <p>对于一个新的 RISC-V 芯片/板子，EDK2 平台开发的核心任务是：<strong>告诉 EDK2 你的硬件长什么样，让它能正确初始化硬件并启动 OS</strong>。</p>
+
+  <h3>5.1 需要回答的硬件问题</h3>
+  <table>
+    <tr><th>问题</th><th>对应 EDK2 工作</th></tr>
+    <tr><td>CPU 怎么启动？从哪个地址开始执行？</td><td>配置 SEC 入口、FW_BASE_ADDRESS</td></tr>
+    <tr><td>启动前谁已经初始化了什么？</td><td>决定 SEC 需要做什么（ZSBL/FSBL/OpenSBI 已完成的工作）</td></tr>
+    <tr><td>临时内存（栈）放哪里？</td><td>配置 PcdTemporaryRamBase/Size</td></tr>
+    <tr><td>系统内存多大？起始地址？</td><td>配置 PcdMemoryBaseAddress/Size，PEI 发布内存</td></tr>
+    <tr><td>串口 MMIO 地址是多少？</td><td>选择 SerialPortLib</td></tr>
+    <tr><td>从哪里启动 OS？SD 卡？网络？硬盘？</td><td>添加 MmcDxe/SdHostDxe 或网络驱动</td></tr>
+    <tr><td>是否需要 ACPI？</td><td>添加 AcpiPlatformDxe</td></tr>
+    <tr><td>是否需要持久化 UEFI 变量？</td><td>添加 NorFlashDxe/FlashFvbDxe</td></tr>
+  </table>
+
+  <h3>5.2 平台开发者的典型工作清单</h3>
+  <div class='card'>
+    <ol>
+      <li><strong>创建 Platform Package</strong>：如 <code>Platform/Sophgo/SG2046Pkg/</code>，写 <code>.dsc</code> 和 <code>.fdf</code></li>
+      <li><strong>创建 Silicon Package</strong>：如 <code>Silicon/Sophgo/</code>，放跨平台复用的 SoC 代码</li>
+      <li><strong>实现 SEC 入口</strong>：汇编初始化栈，C 代码构建 HOB</li>
+      <li><strong>实现 PEI 模块</strong>：CPU、内存、FV 解压、平台初始化</li>
+      <li><strong>选择/移植 DXE 驱动</strong>：CPU、串口、SD 卡、变量存储等</li>
+      <li><strong>定制 BDS</strong>：决定启动策略（从 SD 卡启动 GRUB2）</li>
+      <li><strong>配置 PCD</strong>：把所有硬件常量参数化</li>
+      <li><strong>调试</strong>：串口打印、QEMU 仿真、真实硬件验证</li>
+    </ol>
+  </div>
+
+  <h3>5.3 Platform Package 与 Silicon Package 的分工</h3>
+  <table>
+    <tr><th>Package</th><th>位置</th><th>职责</th></tr>
+    <tr><td>Platform Package</td><td><code>Platform/Sophgo/SG2046Pkg/</code></td><td>特定板子的 DSC/FDF、ACPI/SMBIOS 表、BDS 策略</td></tr>
+    <tr><td>Silicon Package</td><td><code>Silicon/Sophgo/</code></td><td>跨板子复用的 SoC 驱动（SEC、SD、Flash、GPIO 等）</td></tr>
+    <tr><td>通用 Package</td><td><code>MdePkg/</code>、<code>MdeModulePkg/</code></td><td>UEFI/PI 规范定义、通用驱动和库</td></tr>
+  </table>
+  <p>这种分层让同一 SoC 的不同板子可以复用 Silicon 代码，只替换 Platform 层的配置和表。</p>
+</section>
+
+<section id='bootchain'>
+  <h2>6. SG2046 系统级启动链路</h2>
+  <div class='note'>
+    <strong>PI 规范定位：</strong>本章从芯片 ROM 讲到 OS。其中 EDK2 负责的部分（SEC、PEI、DXE、BDS）由 <strong>PI 规范 Volume 1（SEC/PEI）和 Volume 2（DXE/BDS）</strong> 定义；OpenSBI、ZSBL、FSBL 属于芯片/板级 Bootloader，不在 PI 规范范围内。
+  </div>
+  <p>SG2046 不是 EDK2 直接上电运行，前面有芯片 ROM 和 OpenSBI：</p>
+  <div class='flow'>
+    <div class='flow-box sec'>ZSBL<br><small>芯片 ROM</small></div>
+    <div class='flow-arrow'>&#8594;</div>
+    <div class='flow-box sec'>FSBL<br><small>SPL</small></div>
+    <div class='flow-arrow'>&#8594;</div>
+    <div class='flow-box pei'>OpenSBI<br><small>M-mode</small></div>
+    <div class='flow-arrow'>&#8594;</div>
+    <div class='flow-box dxe'>EDK2<br><small>S-mode</small></div>
+    <div class='flow-arrow'>&#8594;</div>
+    <div class='flow-box bds'>GRUB2<br><small>SD 卡</small></div>
+    <div class='flow-arrow'>&#8594;</div>
+    <div class='flow-box bds'>OS</div>
+  </div>
+
+  <table>
+    <tr><th>阶段</th><th>位置</th><th>运行模式</th><th>核心职责</th></tr>
+    <tr><td>ZSBL</td><td>芯片内部 ROM</td><td>M-mode</td><td>初始化 DDR 控制器</td></tr>
+    <tr><td>FSBL</td><td>SPI / SD</td><td>M-mode</td><td>初始化串口、建立内存映射、CPU 基础功能</td></tr>
+    <tr><td>OpenSBI</td><td>FW_PAYLOAD 形式</td><td>M-mode</td><td>SBI 服务、PLIC/CLINT 初始化、切到 S-mode</td></tr>
+    <tr><td>EDK2</td><td>DRAM 0x80200000</td><td>S-mode</td><td>完整 UEFI 启动流程</td></tr>
+    <tr><td>GRUB2</td><td>SD 卡</td><td>S-mode</td><td>多分区 OS 加载</td></tr>
+  </table>
+
+  <h3>6.1 OpenSBI &#8594; EDK2 的约定</h3>
+  <div class='card'>
+    <p>OpenSBI 以 <strong>FW_PAYLOAD</strong> 形式打包 EDK2 固件，跳转时：</p>
+    <ul>
+      <li><strong>a0</strong>：Boot Hart ID（启动核编号）</li>
+      <li><strong>a1</strong>：Flattened Device Tree 地址（FDT）</li>
+      <li><strong>PC</strong>：跳转至 <code>0x80200000</code>（<code>FW_BASE_ADDRESS</code>）</li>
+    </ul>
+    <p>EDK2 SEC 入口汇编从 <code>a0/a1</code> 接收参数，调用 C 函数 <code>SecStartup(BootHartId, DeviceTreeAddress)</code>。</p>
+  </div>
+
+  <h3>6.2 为什么 SG2046 要前面有 OpenSBI？</h3>
+  <div class='note'>
+    RISC-V 把 CPU 初始化、PLIC/CLINT、SBI 规范实现放在 M-mode 的 OpenSBI 里。EDK2 作为 UEFI 固件运行在 S-mode，不需要也不应该直接操作 M-mode 寄存器。这样分层后，EDK2 可以专注于 UEFI 规范实现，OpenSBI 负责 RISC-V 特权层基础设施。
+  </div>
+</section>
+
+<section id='memory'>
+  <h2>7. SG2046 内存布局</h2>
+  <p>内存布局完全由 <a class='file-link' href='file:///home/pbw/sg2046/sophgo-edk2/edk2-platforms/Platform/Sophgo/SG2046Pkg/SG2046.fdf.inc'>SG2046.fdf.inc</a> 定义：</p>
+
+<pre><span class='comment'># SG2046.fdf.inc</span>
+DEFINE BLOCK_SIZE        = 0x1000          <span class='comment'>; 4KB</span>
+DEFINE FW_BASE_ADDRESS   = 0x80200000      <span class='comment'>; OpenSBI 跳转地址 / 固件起始</span>
+DEFINE FW_SIZE           = 0x00e00000      <span class='comment'>; 14MB</span>
+DEFINE FW_BLOCKS         = 0xe00
+
+DEFINE EFI_MEMORY_SIZE    = 64 * 1024 * 1024  <span class='comment'>; 64MB</span>
+DEFINE EFI_STACK_SIZE     = 64 * 1024          <span class='comment'>; 64KB</span>
+DEFINE EFI_MEMORY_BOTTOM  = $(FW_BASE_ADDRESS) + $(FW_SIZE)   <span class='comment'>; 0x81000000</span>
+DEFINE EFI_MEMORY_TOP     = $(EFI_MEMORY_BOTTOM) + $(EFI_MEMORY_SIZE)  <span class='comment'>; 0x85000000</span>
+DEFINE EFI_STACK_BASE     = $(EFI_MEMORY_TOP) - $(EFI_STACK_SIZE)      <span class='comment'>; 0x84FF0000</span></pre>
+
+  <h3>7.1 物理内存分布</h3>
+  <div class='card'>
+    <div style='display:flex;justify-content:space-between;color:var(--muted);font-size:12px;'>
+      <span>0x80200000</span><span>0x81000000</span><span>0x84FF0000</span><span>0x85000000</span>
+    </div>
+    <div class='mem-row'>
+      <div class='mem-seg' style='width:14%;background:rgba(88,166,255,0.2);'>FW<br>14MB</div>
+      <div class='mem-seg' style='width:81%;background:rgba(63,185,80,0.15);'>UEFI Memory Heap<br>~63MB</div>
+      <div class='mem-seg' style='width:5%;background:rgba(240,136,62,0.25);'>Stack<br>64KB</div>
+    </div>
+  </div>
+
+  <h3>7.2 PCD 映射</h3>
+  <table>
+    <tr><th>FDF 常量</th><th>计算值</th><th>映射到 PCD</th><th>用途</th></tr>
+    <tr><td>FW_BASE_ADDRESS</td><td><code>0x80200000</code></td><td><code>PcdRiscVPeiFvBase</code></td><td>PEI FV 基址 / SEC 入口</td></tr>
+    <tr><td>EFI_MEMORY_BOTTOM</td><td><code>0x81000000</code></td><td><code>PcdEfiMemoryBottom</code></td><td>UEFI 可用内存起始</td></tr>
+    <tr><td>EFI_STACK_BASE</td><td><code>0x84FF0000</code></td><td><code>PcdTemporaryRamBase</code></td><td>临时栈基址</td></tr>
+    <tr><td>EFI_STACK_SIZE</td><td><code>0x10000</code></td><td><code>PcdTemporaryRamSize</code></td><td>临时栈大小</td></tr>
+    <tr><td>EFI_MEMORY_TOP</td><td><code>0x85000000</code></td><td><code>PcdPeiPermanentMemBase</code></td><td>PEI 永久内存基址</td></tr>
+    <tr><td>EFI_MEMORY_SIZE</td><td><code>0x4000000</code></td><td><code>PcdPeiPermanentMemSize</code></td><td>PEI 永久内存大小</td></tr>
+  </table>
+
+  <h3>7.3 临时内存 vs 永久内存</h3>
+  <table>
+    <tr><th>属性</th><th>临时内存（Temporary RAM）</th><th>永久内存（System RAM）</th></tr>
+    <tr><td>来源</td><td>FDF 预分配的 UEFI 专用区</td><td>DDR 系统内存</td></tr>
+    <tr><td>地址范围</td><td>0x81000000 ~ 0x85000000</td><td>0x80000000 起（8GB）</td></tr>
+    <tr><td>MMU</td><td>通常未启用</td><td>DXE 启用页表</td></tr>
+    <tr><td>生命周期</td><td>PEI 阶段迁移后弃用</td><td>全程使用，OS 可见</td></tr>
+    <tr><td>用途</td><td>早期栈、HOB 堆</td><td>HOB/栈、DXE 堆、驱动内存</td></tr>
+  </table>
+
+  <h3>7.4 变量存储区布局（FLASH_ENABLE=TRUE 时）</h3>
+  <p>当开启 Flash 变量时，<a class='file-link' href='file:///home/pbw/sg2046/sophgo-edk2/edk2-platforms/Platform/Sophgo/SG2046Pkg/VarStore.fdf.inc'>VarStore.fdf.inc</a> 在固件镜像末尾预留三段：</p>
+  <table>
+    <tr><th>区域</th><th>偏移</th><th>大小</th><th>作用</th></tr>
+    <tr><td>Variable Store</td><td>0x00800000</td><td>64 KiB</td><td>UEFI 变量实际存储</td></tr>
+    <tr><td>FTW Working</td><td>0x00810000</td><td>64 KiB</td><td>Fault Tolerant Write 工作块</td></tr>
+    <tr><td>FTW Spare</td><td>0x00820000</td><td>64 KiB</td><td>FTW 备用块</td></tr>
+  </table>
+  <div class='note'>
+    FTW（Fault Tolerant Write）保证变量更新时掉电不损坏。写入时先把新数据写到 Spare，再原子切换 Working 块指针。FPGA 阶段通常关闭 Flash，使用内存模拟变量（EmuVariable），掉电丢失。
+  </div>
+</section>
+
+<section id='memory-detail'>
+  <h2>8. EDK2 内存管理专题</h2>
+  <div class='note'>
+    <strong>PI 规范定位：</strong>临时内存、永久内存迁移、HOB 内存分配由 <strong>PI 规范 Volume 1</strong> 定义；DXE 阶段的页式内存分配（AllocatePages/AllocatePool）由 <strong>PI 规范 Volume 2</strong> 定义。本章把这两条线索在 SG2046 上的实现串起来。
+  </div>
+  <p>内存管理是 EDK2 平台移植中最容易出错的部分之一。SG2046 采用"临时内存 &#8594; 永久内存 &#8594; DXE 页表"三步走的策略。</p>
+
+  <h3>8.1 为什么需要临时内存？</h3>
+  <div class='card'>
+    <p>SEC 阶段刚进入 EDK2 时，系统内存尚未被 EDK2 接管。此时需要一段<strong>已经可用</strong>的内存作为栈和堆，让 C 代码能够运行。这段内存称为<strong>临时内存（Temporary RAM / CAR）</strong>。</p>
+    <p>在 SG2046 中，临时内存来自 FDF 预先分配的 <code>0x81000000 ~ 0x85000000</code> 区域，其中栈顶为 <code>0x85000000</code>。</p>
+  </div>
+
+  <h3>8.2 SEC 阶段的内存初始化</h3>
+  <p>文件：<a class='file-link' href='file:///home/pbw/sg2046/sophgo-edk2/edk2-platforms/Silicon/Sophgo/Core/Sec/PeilessSec.c'>PeilessSec.c</a></p>
+<pre>HobList = <span class='keyword'>HobConstructor</span> (
+            (VOID *)UefiMemoryBase + SEC_MEMORY_OFFSET,  <span class='comment'>// 堆起始</span>
+            StackBase - UefiMemoryBase - SEC_MEMORY_OFFSET,  <span class='comment'>// 堆大小</span>
+            (VOID *)UefiMemoryBase + SEC_MEMORY_OFFSET,  <span class='comment'>// 可用内存底</span>
+            (VOID *)StackBase                             <span class='comment'>// 栈底（临时栈底）</span>
+            );
+<span class='keyword'>PrePeiSetHobList</span> (HobList);</pre>
+  <div class='note'>
+    <strong>新手提示：</strong><code>HobConstructor</code> 在临时内存区划出一块作为 HOB 堆。后续所有 HOB、FDT 复制、栈 HOB 都从这个堆里分配。它本身不启用页表，只是裸物理内存管理。
+  </div>
+
+  <h3>8.3 SEC_MEMORY_OFFSET 的作用</h3>
+  <p>在 <a class='file-link' href='file:///home/pbw/sg2046/sophgo-edk2/edk2-platforms/Silicon/Sophgo/Core/Sec/PeilessSec.h'>PeilessSec.h</a> 中定义：</p>
+<pre><span class='directive'>#define</span> SEC_MEMORY_OFFSET 0x1000</pre>
+  <p>这 4KB 的偏移用于：</p>
+  <ul>
+    <li>保留 SEC 自身运行所需的数据/栈保护页</li>
+    <li>避免 HOB 堆与 UEFI 内存底部完全重叠，防止对齐问题</li>
+    <li>给后续 PEI Core 放置临时数据留出安全边界</li>
+  </ul>
+
+  <h3>8.4 PEI 永久内存发布</h3>
+  <p>文件：<a class='file-link' href='file:///home/pbw/sg2046/sophgo-edk2/edk2-platforms/Silicon/Sophgo/Modules/PlatformPei/PlatformInitPei.c'>PlatformInitPei.c</a></p>
+<pre>MemoryBase = <span class='keyword'>PcdGet64</span> (PcdPeiPermanentMemBase);   <span class='comment'>// 0x85000000</span>
+MemorySize = <span class='keyword'>PcdGet64</span> (PcdPeiPermanentMemSize);   <span class='comment'>// 0x4000000</span>
+DEBUG ((DEBUG_INFO, <span class='string'>"%a: PEI MemoryBase is 0x%x and MemorySize is 0x%x\n"</span>, __func__, MemoryBase, MemorySize));
+
+Status = <span class='keyword'>PublishSystemMemory</span> (MemoryBase, MemorySize);</pre>
+  <p><code>PublishSystemMemory</code> 把永久内存告知 PEI Core。此后 PEI Core 会触发 <strong>TemporaryRamMigration</strong>，将 HOB 和栈从临时区复制到永久区。</p>
+
+  <h3>8.5 临时内存迁移（Temporary RAM Migration）</h3>
+  <p>文件：<a class='file-link' href='file:///home/pbw/sg2046/sophgo-edk2/edk2-platforms/Silicon/Sophgo/Core/Sec/PeilessSec.c'>PeilessSec.c</a></p>
+<pre>OldHeapBase  = (VOID*)(UINTN)TemporaryMemoryBase;
+NewHeapBase  = (VOID*)((UINTN)PermanentMemoryBase + FixedPcdGet32 (PcdTemporaryRamSize));
+OldStackBase = (VOID*)((UINTN)TemporaryMemoryBase + (CopySize - FixedPcdGet32 (PcdTemporaryRamSize)));
+NewStackBase = (VOID*)((UINTN)PermanentMemoryBase);
+
+<span class='keyword'>CopyMem</span> (NewHeapBase, OldHeapBase, CopySize - FixedPcdGet32 (PcdTemporaryRamSize));   <span class='comment'>// 迁移 HOB 堆</span>
+<span class='keyword'>CopyMem</span> (NewStackBase, OldStackBase,  FixedPcdGet32 (PcdTemporaryRamSize));            <span class='comment'>// 迁移栈</span>
+
+Offset = (UINTN)NewStackBase - (UINTN)OldStackBase;
+register UINTN a0 <span class='keyword'>asm</span> (<span class='string'>"a0"</span>) = Offset;
+<span class='keyword'>asm volatile</span> (<span class='string'>"add sp, sp, a0"</span> :: <span class='string'>"r"</span> (a0) :);</pre>
+  <table>
+    <tr><th>迁移对象</th><th>源地址</th><th>目标地址</th><th>说明</th></tr>
+    <tr><td>HOB 堆</td><td>临时内存底部</td><td>永久内存 + 栈大小之后</td><td>HOB 列表整体复制</td></tr>
+    <tr><td>栈</td><td>临时内存顶部 - 栈大小</td><td>永久内存底部</td><td>sp 通过汇编偏移修正</td></tr>
+  </table>
+  <div class='note warning'>
+    迁移完成后，所有指向旧临时内存的指针都失效。HOB 中的物理地址在迁移后由 PEI Core 统一重定位，因此 SEC 代码不需要手动修改每个 HOB。
+  </div>
+
+  <h3>8.6 内存资源 HOB 与内存类型信息 HOB</h3>
+  <p>文件：<a class='file-link' href='file:///home/pbw/sg2046/sophgo-edk2/edk2-platforms/Silicon/Sophgo/Modules/MemoryInitPei/MemoryInitPei.c'>MemoryInitPei.c</a></p>
+<pre><span class='comment'>// 发布系统 RAM</span>
+AddMemoryBaseSizeHob (MemBaseAddress, MemSize);
+
+<span class='comment'>// 发布 MMIO 区域（SD 控制器）</span>
+AddIoMemoryBaseSizeHob (PcdGet64 (PcdSdBaseAddress), PcdGet64 (PcdSdRegSize));
+
+<span class='comment'>// 内存类型信息 HOB，供 DXE 阶段 gBS->AllocatePool 预留各类内存页数</span>
+BuildMemoryTypeInformationHob ();</pre>
+  <p>内存类型信息 HOB 的作用：</p>
+  <table>
+    <tr><th>内存类型</th><th>用途</th></tr>
+    <tr><td>EfiACPIReclaimMemory</td><td>ACPI 表可以被 OS 回收的内存</td></tr>
+    <tr><td>EfiACPIMemoryNVS</td><td>ACPI NVS，固件运行时需要保留</td></tr>
+    <tr><td>EfiReservedMemoryType</td><td>固件保留区域</td></tr>
+    <tr><td>EfiRuntimeServicesData</td><td>RT 阶段需要的数据页</td></tr>
+    <tr><td>EfiRuntimeServicesCode</td><td>RT 阶段需要的代码页</td></tr>
+  </table>
+
+  <h3>8.7 DXE 阶段页表与内存属性</h3>
+  <p>文件：<a class='file-link' href='file:///home/pbw/sg2046/sophgo-edk2/edk2/UefiCpuPkg/CpuDxeRiscV64/CpuDxe.c'>CpuDxe.c</a></p>
+<pre>Status = <span class='keyword'>RiscVConfigureMmu</span> ();
+ASSERT_EFI_ERROR (Status);</pre>
+  <p>进入 DXE 后，<code>CpuDxeRiscV64</code> 配置 RISC-V MMU，启用页表。此后：</p>
+  <ul>
+    <li>代码段映射为只读可执行</li>
+    <li>数据段映射为读写不可执行</li>
+    <li>MMIO 区域映射为 uncached</li>
+    <li>后续驱动可以通过 <code>gBS->SetMemoryAttributes</code> / <code>gCPU->SetMemoryAttributes</code> 修改属性</li>
+  </ul>
+  <div class='note'>
+    SEC/PEI 阶段通常<strong>不启用 MMU</strong>，使用物理地址直接访问。DXE 阶段启用 MMU 是 UEFI 规范要求，也是安全启动、内存保护的基础。
+  </div>
+</section>
+
+<section id='fdt'>
+  <h2>9. FDT（设备树）在 EDK2 中的流转</h2>
+  <div class='note'>
+    <strong>PI 规范定位：</strong>FDT（Flattened Device Tree）<strong>不是</strong> PI 规范定义的内容，它由独立的 <a href='https://devicetree-specification.readthedocs.io/'>Devicetree Specification</a> 维护。EDK2 中通过 HOB 传递 FDT 是 EDK2 的实现约定（基于 HOB GUID Extension 机制），而非 PI 规范要求。SG2046 遵循了 EDK2 RISC-V 平台的通用做法。
+  </div>
+  <p>FDT（Flattened Device Tree）是 ARM/RISC-V 平台描述硬件的标准格式。SG2046 的 FDT 从 OpenSBI 传入，贯穿 SEC/PEI/DXE。</p>
+
+  <h3>9.1 SEC 阶段：复制并保护 FDT</h3>
+  <p>文件：<a class='file-link' href='file:///home/pbw/sg2046/sophgo-edk2/edk2-platforms/Silicon/Sophgo/Core/Sec/PeilessSec.c'>PeilessSec.c</a></p>
+<pre>FdtSize  = <span class='keyword'>FdtTotalSize</span> (DeviceTreeAddress);
+FdtPages = <span class='keyword'>EFI_SIZE_TO_PAGES</span> (FdtSize);
+FdtCopy  = <span class='keyword'>AllocatePages</span> (FdtPages);
+
+<span class='keyword'>if</span> (FdtCopy != NULL) {
+  <span class='keyword'>FdtOpenInto</span> (DeviceTreeAddress, FdtCopy, EFI_PAGES_TO_SIZE (FdtPages));
+  FdtHobData = <span class='keyword'>BuildGuidHob</span> (&amp;gFdtHobGuid, <span class='keyword'>sizeof</span> *FdtHobData);
+  <span class='keyword'>if</span> (FdtHobData != NULL) {
+    *FdtHobData = (UINT64)(UINTN)FdtCopy;
+  }
+}</pre>
+  <div class='note'>
+    <strong>为什么要复制？</strong> OpenSBI 传入的 FDT 可能位于 PEI 永久内存范围内。当 PEI 开始从永久内存分配堆时，原始 FDT 会被覆盖。SEC 提前复制到安全区域，并通过 GUID HOB 传递地址。
+  </div>
+
+  <h3>9.2 FDT 的两个 HOB</h3>
+  <table>
+    <tr><th>HOB</th><th>GUID</th><th>创建位置</th><th>消费位置</th></tr>
+    <tr><td>FDT HOB</td><td><code>gFdtHobGuid</code></td><td>SEC</td><td>DXE（FdtClientDxe）</td></tr>
+    <tr><td>SEC Handoff HOB</td><td><code>RISCV_SEC_HANDOFF_HOB_GUID</code></td><td>SEC</td><td>CpuDxeRiscV64</td></tr>
+  </table>
+
+  <h3>9.3 DXE 阶段消费 FDT：FdtClientDxe</h3>
+  <p>SG2046-FPGA 的 FDF 中包含了：</p>
+<pre>INF  EmbeddedPkg/Drivers/FdtClientDxe/FdtClientDxe.inf</pre>
+  <p><a class='file-link' href='file:///home/pbw/sg2046/sophgo-edk2/edk2/EmbeddedPkg/Drivers/FdtClientDxe/FdtClientDxe.c'>FdtClientDxe.c</a> 是 EDK2 通用 FDT 解析驱动。它入口的大致逻辑是：</p>
+  <ol>
+    <li>从 HOB 列表中找到 <code>gFdtHobGuid</code> HOB，获取 FDT 指针</li>
+    <li>把 FDT 地址注册为 Configuration Table（<code>gEfiFdtTableGuid</code>）</li>
+    <li>安装 <code>FDT_CLIENT_PROTOCOL</code>，让其他 DXE 驱动可以查询节点/属性</li>
+  </ol>
+
+  <h4>FDT_CLIENT_PROTOCOL 接口</h4>
+<pre><span class='keyword'>struct</span> _FDT_CLIENT_PROTOCOL {
+  FDT_CLIENT_GET_NODE_PROPERTY                GetNodeProperty;
+  FDT_CLIENT_SET_NODE_PROPERTY                SetNodeProperty;
+  FDT_CLIENT_FIND_COMPATIBLE_NODE             FindCompatibleNode;
+  FDT_CLIENT_FIND_NEXT_COMPATIBLE_NODE        FindNextCompatibleNode;
+  FDT_CLIENT_FIND_COMPATIBLE_NODE_PROPERTY    FindCompatibleNodeProperty;
+  FDT_CLIENT_FIND_COMPATIBLE_NODE_REG         FindCompatibleNodeReg;
+  FDT_CLIENT_FIND_MEMORY_NODE_REG             FindMemoryNodeReg;
+  FDT_CLIENT_FIND_NEXT_MEMORY_NODE_REG        FindNextMemoryNodeReg;
+  FDT_CLIENT_GET_OR_INSERT_CHOSEN_NODE        GetOrInsertChosenNode;
+};</pre>
+  <p>驱动代码中通过 <code>gBS->LocateProtocol(&amp;gFdtClientProtocolGuid, ...)</code> 拿到该 Protocol，然后调用 <code>FindCompatibleNodeReg("snps,dwcmshc", ...)</code> 就能拿到 SD 控制器的 <code>reg</code> 属性（基址和大小）。这样驱动不需要硬编码 MMIO 地址，而是从设备树读取。</p>
+
+  <h3>9.4 FdtClientDxe 完整入口分析</h3>
+  <p>在 <a class='file-link' href='file:///home/pbw/sg2046/sophgo-edk2/edk2/EmbeddedPkg/Drivers/FdtClientDxe/FdtClientDxe.c#L405-L499'>FdtClientDxe.c#L405-L499</a> 中，<code>InitializeFdtClientDxe</code> 完成以下工作：</p>
+  <ol>
+    <li><strong>GetFirstGuidHob(&amp;gFdtHobGuid)</strong>：从 HOB 列表中找到 FDT 地址 HOB</li>
+    <li><strong>FdtCheckHeader</strong>：校验 FDT 魔数与版本</li>
+    <li><strong>CreateEvent + RegisterProtocolNotify</strong>：注册 <code>gEdkiiPlatformHasDeviceTreeGuid</code> 的事件通知</li>
+    <li><strong>SignalEvent</strong>：立即触发一次，若该 Protocol 已安装则直接执行回调</li>
+    <li><strong>InstallProtocolInterface</strong>：安装 <code>gFdtClientProtocolGuid</code></li>
+  </ol>
+  <p>回调 <code>OnPlatformHasDeviceTree</code> 做了一件关键的事：</p>
+<pre>Status = gBS->InstallConfigurationTable (&amp;gFdtTableGuid, DeviceTreeBase);</pre>
+  <p>这行代码把 FDT 地址注册到 <code>gST->ConfigurationTable</code> 中。操作系统启动后可以通过 System Table 的 Configuration Tables 找到 FDT。</p>
+
+  <h4>为什么保留 FDT 即使 ACPI 开启？</h4>
+  <div class='note'>
+    SG2046-FPGA 当前 <code>ACPI_ENABLE=TRUE</code>，因此 OS 优先使用 ACPI；FDT 作为兼容补充仍然保留在 System Table 中。某些内核或启动器可以选择忽略 ACPI、完全使用 FDT 启动。
+  </div>
+</section>
+
+<section id='sec'>
+  <h2>10. SEC 阶段 — 最早的 C 入口</h2>
+  <div class='note'>
+    <strong>PI 规范定位：</strong>SEC（Security Phase）本身不是 PEI，但 SEC 到 PEI 的切换由 <strong>PI 规范 Volume 1</strong> 标准化（第 5 章 PEI Foundation 和第 13 章 SEC Phase Information），核心结构是 <code>EFI_SEC_PEI_HAND_OFF</code>。SG2046 的 SEC 代码在 <a class='file-link' href='file:///home/pbw/sg2046/sophgo-edk2/edk2-platforms/Silicon/Sophgo/Core/Sec/PeilessSec.c'>PeilessSec.c</a> 中实现了这一 handoff。
+  </div>
+
+  <h3>10.1 入口汇编与 RISC-V 寄存器约定</h3>
+  <p>文件：<a class='file-link' href='file:///home/pbw/sg2046/sophgo-edk2/edk2-platforms/Silicon/Sophgo/Core/Sec/SecEntry.S'>SecEntry.S</a></p>
+<pre><span class='directive'>ASM_FUNC</span> (_ModuleEntryPoint)
+  li    a4, FixedPcdGet32 (PcdTemporaryRamBase)   <span class='comment'>; a4 = 0x84FF0000</span>
+  li    a5, FixedPcdGet32 (PcdTemporaryRamSize)   <span class='comment'>; a5 = 0x10000</span>
+
+  <span class='comment'>/* Use Temp memory as the stack for calling to C code */</span>
+  add   sp, a4, a5                                <span class='comment'>; sp = 0x85000000（栈顶）</span>
+
+  call SecStartup</pre>
+  <p><code>add sp, a4, a5</code> 将栈指针指向临时内存顶部。RISC-V 栈向下生长，后续压栈向低地址扩展。</p>
+  <table>
+    <tr><th>寄存器</th><th>OpenSBI 传入</th><th>SEC 使用</th></tr>
+    <tr><td>a0</td><td>Boot Hart ID</td><td>SecStartup 第一个参数 BootHartId</td></tr>
+    <tr><td>a1</td><td>FDT 地址</td><td>SecStartup 第二个参数 DeviceTreeAddress</td></tr>
+    <tr><td>sp</td><td>未定义/临时</td><td>SEC 汇编重新设置为 0x85000000</td></tr>
+  </table>
+
+  <h3>10.2 C 入口 SecStartup</h3>
+  <p>文件：<a class='file-link' href='file:///home/pbw/sg2046/sophgo-edk2/edk2-platforms/Silicon/Sophgo/Core/Sec/PeilessSec.c'>PeilessSec.c</a></p>
+  <div class='flow'>
+    <div class='flow-box sec'>SecStartup<br><small>a0=BootHartId<br>a1=FDT</small></div>
+    <div class='flow-arrow'>&#8594;</div>
+    <div class='flow-box sec'>SerialPortInitialize</div>
+    <div class='flow-arrow'>&#8594;</div>
+    <div class='flow-box sec'>HobConstructor</div>
+    <div class='flow-arrow'>&#8594;</div>
+    <div class='flow-box sec'>复制并注册 FDT HOB</div>
+    <div class='flow-arrow'>&#8594;</div>
+    <div class='flow-box sec'>SEC Handoff HOB</div>
+    <div class='flow-arrow'>&#8594;</div>
+    <div class='flow-box sec'>BuildFvHob / BuildStackHob</div>
+    <div class='flow-arrow'>&#8594;</div>
+    <div class='flow-box pei'>PeiCore</div>
+  </div>
+
+  <h4>关键代码：HOB 初始化</h4>
+<pre>StackBase      = (UINT64)FixedPcdGet32 (PcdTemporaryRamBase);   <span class='comment'>// 0x84FF0000</span>
+StackSize      = FixedPcdGet32 (PcdTemporaryRamSize);           <span class='comment'>// 0x10000</span>
+UefiMemoryBase = FixedPcdGet64 (PcdEfiMemoryBottom);            <span class='comment'>// 0x81000000</span>
+
+HobList = <span class='keyword'>HobConstructor</span> (
+            (VOID *)UefiMemoryBase + SEC_MEMORY_OFFSET,
+            StackBase - UefiMemoryBase - SEC_MEMORY_OFFSET,
+            (VOID *)UefiMemoryBase + SEC_MEMORY_OFFSET,
+            (VOID *)StackBase
+            );
+<span class='keyword'>PrePeiSetHobList</span> (HobList);</pre>
+
+  <h4>关键代码：FDT 复制保护</h4>
+<pre>FdtSize  = <span class='keyword'>FdtTotalSize</span> (DeviceTreeAddress);
+FdtPages = <span class='keyword'>EFI_SIZE_TO_PAGES</span> (FdtSize);
+FdtCopy  = <span class='keyword'>AllocatePages</span> (FdtPages);
+
+<span class='keyword'>if</span> (FdtCopy != NULL) {
+  <span class='keyword'>FdtOpenInto</span> (DeviceTreeAddress, FdtCopy, EFI_PAGES_TO_SIZE (FdtPages));
+  FdtHobData = <span class='keyword'>BuildGuidHob</span> (&amp;gFdtHobGuid, <span class='keyword'>sizeof</span> *FdtHobData);
+  <span class='keyword'>if</span> (FdtHobData != NULL) {
+    *FdtHobData = (UINT64)(UINTN)FdtCopy;
+  }
+}</pre>
+
+  <h4>关键代码：SEC Handoff HOB</h4>
+<pre>SecHandoffData.BootHartId = BootHartId;
+SecHandoffData.FdtPointer = FdtCopy;
+<span class='keyword'>BuildGuidDataHob</span> (&amp;SecHobDataGuid, &amp;SecHandoffData, <span class='keyword'>sizeof</span> (SecHandoffData));</pre>
+  <p>该 HOB 被 <a class='file-link' href='file:///home/pbw/sg2046/sophgo-edk2/edk2/UefiCpuPkg/CpuDxeRiscV64/CpuDxe.c'>CpuDxeRiscV64</a> 在 DXE 阶段消费，用于提供 <code>BootHartId</code> 和 FDT 指针。</p>
+
+  <h4>关键代码：SEC &#8594; PEI 切换</h4>
+<pre><span class='keyword'>VOID</span> <span class='keyword'>EFIAPI</span> PeiCore (EFI_SEC_PEI_HAND_OFF *SecCoreData) {
+  BootFv = (EFI_FIRMWARE_VOLUME_HEADER *)FixedPcdGet32 (PcdRiscVPeiFvBase);
+  <span class='keyword'>LoadPeiEntryPointFromFv</span> (&amp;PeiCoreEntryPoint);
+
+  SecCoreData->DataSize               = <span class='keyword'>sizeof</span> (EFI_SEC_PEI_HAND_OFF);
+  SecCoreData->BootFirmwareVolumeBase = BootFv;
+  SecCoreData->BootFirmwareVolumeSize = (UINTN)BootFv->FvLength;
+
+  EfiPeiPpiDescriptor = (EFI_PEI_PPI_DESCRIPTOR *)&amp;mPrivateDispatchTable;
+  (*PeiCoreEntryPoint)(SecCoreData, EfiPeiPpiDescriptor);
+}</pre>
+
+  <h3>10.3 SEC 注册的关键 PPI</h3>
+  <table>
+    <tr><th>PPI</th><th>用途</th></tr>
+    <tr><td><code>EFI_SEC_HOB_DATA_PPI</code></td><td>让 PEI Core 获取 SEC 构建的 HOB 列表</td></tr>
+    <tr><td><code>EFI_TEMPORARY_RAM_SUPPORT_PPI</code></td><td>将 HOB/栈从临时内存迁移到永久内存</td></tr>
+  </table>
+</section>
+
+<section id='pei'>
+  <h2>11. PEI 阶段 — 初始化内存与 CPU</h2>
+  <div class='note'>
+    <strong>PI 规范定位：</strong>PEI 阶段由 <strong>PI 规范 Volume 1</strong> 完整定义，核心抽象包括 PEIM、PPI、HOB、PEI Services、Boot Mode。本章节的代码分析对应 Volume 1 在 SG2046 上的具体实现。
+  </div>
+  <p>PEI Core 是 <a class='file-link' href='file:///home/pbw/sg2046/sophgo-edk2/edk2/MdeModulePkg/Core/Pei/PeiMain.inf'>MdeModulePkg/Core/Pei/PeiMain.inf</a>，由 SEC 直接跳转进入。SG2046 使用<strong>完整 PEI 路径</strong>。</p>
+
+<pre><span class='comment'># SG2046-FPGA.fdf [FV.FVMAIN_COMPACT]</span>
+INF Silicon/Sophgo/Core/Sec/PeilessSec.inf
+INF MdeModulePkg/Core/Pei/PeiMain.inf
+
+INF Silicon/Sophgo/Modules/CpuPei/CpuPei.inf
+INF Silicon/Sophgo/Modules/FvParserPei/FvParserPei.inf
+INF Silicon/Sophgo/Modules/MemoryInitPei/MemoryInitPei.inf
+INF Silicon/Sophgo/Modules/PlatformPei/PlatformInitPei.inf
+INF MdeModulePkg/Universal/PCD/Pei/Pcd.inf
+INF MdeModulePkg/Core/DxeIplPeim/DxeIpl.inf</pre>
+
+  <h3>11.1 PEI Core 的调度机制</h3>
+  <div class='card'>
+    <p>PEI Core 维护一个 <strong>PPI 数据库</strong>和一个<strong>待调度 PEIM 列表</strong>：</p>
+    <ol>
+      <li>PEI Core 从 BFV 中找到所有 PEIM</li>
+      <li>解析每个 PEIM 的 <code>PEI_DEPEX</code>，确定依赖的 PPI</li>
+      <li>循环检查：如果某个 PEIM 的所有依赖 PPI 都已安装，就调度它</li>
+      <li>PEIM 执行时可以通过 <code>PeiServicesInstallPpi</code> 安装新的 PPI，触发更多 PEIM 调度</li>
+    </ol>
+    <p>PEIM 的 <code>PeimInitialize</code> 入口函数返回 <code>EFI_SUCCESS</code> 后，PEI Core 认为该 PEIM 完成。</p>
+  </div>
+
+  <h4>PPI 数据库的内部结构</h4>
+  <p>PEI Core 在内存中维护一个 PPI 记录数组，每个记录包含 Flags、Guid、Ppi 指针。当 <code>PeiServicesInstallPpi</code> 被调用时，Core 会：</p>
+  <ol>
+    <li>把新 PPI 加入数据库</li>
+    <li>扫描所有已注册的 PPI Notify（通知回调），如果 GUID 匹配则调用回调</li>
+    <li>重新评估所有未调度 PEIM 的 DEPEX</li>
+  </ol>
+  <p>这种"安装-通知-重新评估"机制让 PEIM 之间可以形成依赖链。例如 <code>MemoryInitPei</code> 安装 <code>gEfiPeiMemoryDiscoveredPpiGuid</code> 后，依赖该 PPI 的 PEIM 才会被调度。</p>
+
+  <h4>PEIM 调度顺序示例（SG2046）</h4>
+  <div class='timeline'>
+    <div class='timeline-item'>PEI Core 启动，SEC 已安装 <code>SecHobDataPpi</code> 和 <code>TemporaryRamSupportPpi</code></div>
+    <div class='timeline-item pei'><code>CpuPei</code> 无特殊依赖，先运行，安装 CPU HOB</div>
+    <div class='timeline-item pei'><code>MemoryInitPei</code> 发布系统 RAM，安装 MemoryDiscoveredPpi</div>
+    <div class='timeline-item pei'><code>PlatformInitPei</code> 发布永久内存，触发 TemporaryRamMigration</div>
+    <div class='timeline-item pei'><code>FvParserPei</code> 解压 DXEFV，安装 <code>FvInfoPpi</code></div>
+    <div class='timeline-item pei'><code>DxeIpl</code> 安装 <code>DxeIplPpi</code>，最后被调用进入 DXE</div>
+  </div>
+  <p>注意实际调度顺序由 DEPEX 决定：需要 <code>MemoryDiscoveredPpi</code> 的 PEIM 必须等内存发布后才能运行。</p>
+
+  <h3>11.2 CpuPei — CPU 信息 HOB</h3>
+  <p>文件：<a class='file-link' href='file:///home/pbw/sg2046/sophgo-edk2/edk2-platforms/Silicon/Sophgo/Modules/CpuPei/CpuPei.c'>CpuPei.c</a></p>
+<pre><span class='keyword'>EFI_STATUS</span> PeiCpuInitialization (...) {
+  <span class='comment'>// 发布 CPU 内存和 IO 空间大小</span>
+  <span class='keyword'>BuildCpuHob</span> (PcdGet8 (PcdPrePiCpuMemorySize), PcdGet8 (PcdPrePiCpuIoSize));
+}</pre>
+  <div class='note'>这个 HOB 告诉后续阶段：CPU 支持多大的物理地址空间和 I/O 空间。SG2046 配置为 47 位物理地址。</div>
+
+  <h3>11.3 FvParserPei — 解压 DXE FV</h3>
+  <p>文件：<a class='file-link' href='file:///home/pbw/sg2046/sophgo-edk2/edk2-platforms/Silicon/Sophgo/Modules/FvParserPei/FvParserPei.c'>FvParserPei.c</a></p>
+<pre><span class='keyword'>EFI_STATUS</span> PeiFvInitialization (...) {
+  Status = <span class='keyword'>DecompressFirstFv</span> ();                    <span class='comment'>// 解压 DXEFV</span>
+  <span class='keyword'>if</span> (EFI_ERROR(Status)) {
+    DEBUG ((DEBUG_ERROR, <span class='string'>"%a (): Failed to Decompress DxeFv!\n"</span>, __func__));
+    <span class='keyword'>return</span> Status;
+  }
+
+  Status = <span class='keyword'>GetNextVolume</span> (1, &amp;VolumeHandle);         <span class='comment'>// 获取 DXE FV 句柄</span>
+  FvSize = ((EFI_FIRMWARE_VOLUME_HEADER *)VolumeHandle)->FvLength;
+
+  <span class='comment'>// 让 PEI 和 DXE 都能找到 DXE FV</span>
+  <span class='keyword'>PeiServicesInstallFvInfoPpi</span> (NULL, (VOID*)VolumeHandle, FvSize, NULL, NULL);
+}</pre>
+  <p>DXE FV 在 FDF 中以 LZMA 压缩形式嵌入 <code>FVMAIN_COMPACT</code>。FvParserPei 在 PEI 阶段将其解压到内存，供后续 DXE Core 使用。</p>
+
+  <h3>11.4 MemoryInitPei / PlatformInitPei — 发布永久内存</h3>
+  <p>文件：<a class='file-link' href='file:///home/pbw/sg2046/sophgo-edk2/edk2-platforms/Silicon/Sophgo/Modules/PlatformPei/PlatformInitPei.c'>PlatformInitPei.c</a></p>
+<pre><span class='keyword'>EFI_STATUS</span> PublishPeiMemory () {
+  MemoryBase = PcdGet64 (PcdPeiPermanentMemBase);   <span class='comment'>// 0x85000000</span>
+  MemorySize = PcdGet64 (PcdPeiPermanentMemSize);   <span class='comment'>// 0x4000000</span>
+  Status = <span class='keyword'>PublishSystemMemory</span> (MemoryBase, MemorySize);
+}
+
+<span class='keyword'>VOID</span> PopulateSdIoResources () {
+  <span class='keyword'>AddIoMemoryBaseSizeHob</span> (PcdGet64 (PcdSdBaseAddress), PcdGet64 (PcdSdRegSize));
+}</pre>
+  <p>永久内存发布后，PEI Core 调用 <code>TemporaryRamMigration()</code> 将 HOB 和栈从临时区复制到永久区，并切换 <code>sp</code> 到新的永久栈。</p>
+
+  <h3>11.5 MemoryDiscoveredPpi 与永久内存发布的关系</h3>
+  <p><code>gEfiPeiMemoryDiscoveredPpiGuid</code> 是 PEI 阶段最重要的 PPI 之一。当 <code>MemoryInitPei</code> 发布系统 RAM 后，它会安装这个 PPI，通知 PEI Core 和等待它的 PEIM："系统内存已经可用"。</p>
+  <p>SG2046 的 <code>PlatformInitPei</code> 依赖 <code>MemoryDiscoveredPpi</code>，因为它需要知道系统 RAM 已经初始化完成后，再发布一块专用的永久内存区域（<code>PcdPeiPermanentMemBase</code>）给 PEI Core。随后 PEI Core 触发 Temporary RAM Migration，将 HOB 和栈迁移到永久内存。</p>
+
+  <h3>11.6 DxeIpl — 进入 DXE</h3>
+  <p><a class='file-link' href='file:///home/pbw/sg2046/sophgo-edk2/edk2/MdeModulePkg/Core/DxeIplPeim/DxeIpl.inf'>MdeModulePkg/Core/DxeIplPeim/DxeIpl.inf</a> 是最后执行的 PEIM。它的核心流程：</p>
+  <ol>
+    <li>注册 <code>EFI_DXE_IPL_PPI</code>，等待被调用</li>
+    <li>当所有 PEIM 调度完成后，PEI Core 调用 <code>DxeLoadCore</code></li>
+    <li>从 FvInfoPpi 或 HOB 中找到 DXE FV</li>
+    <li>加载 <code>DxeCore</code>（<a class='file-link' href='file:///home/pbw/sg2046/sophgo-edk2/edk2/MdeModulePkg/Core/Dxe/DxeMain.inf'>MdeModulePkg/Core/Dxe/DxeMain.inf</a>）的 PE32 镜像</li>
+    <li>分配 DXE 栈（通常 128KB）</li>
+    <li>安装 <code>gEfiEndOfPeiSignalPpiGuid</code>，通知所有 PEI 阶段监听器"PEI 结束"</li>
+    <li>切换栈并跳转到 <code>DxeCoreEntryPoint(HobList)</code></li>
+  </ol>
+  <p>关键代码在 <a class='file-link' href='file:///home/pbw/sg2046/sophgo-edk2/edk2/MdeModulePkg/Core/DxeIplPeim/DxeHandoff.c'>DxeHandoff.c</a>：</p>
+<pre><span class='comment'>// 分配 DXE 栈</span>
+BaseOfStack = <span class='keyword'>AllocatePages</span> (EFI_SIZE_TO_PAGES (STACK_SIZE));
+TopOfStack  = (VOID *)((UINTN)BaseOfStack + EFI_SIZE_TO_PAGES (STACK_SIZE) * EFI_PAGE_SIZE - CPU_STACK_ALIGNMENT);
+
+<span class='comment'>// 发出 EndOfPei 信号</span>
+PeiServicesInstallPpi (&amp;gEndOfPeiSignalPpi);
+
+<span class='comment'>// 更新栈 HOB，切换栈，进入 DxeCore</span>
+UpdateStackHob ((EFI_PHYSICAL_ADDRESS)(UINTN)BaseOfStack, STACK_SIZE);
+SwitchStack (
+  (SWITCH_STACK_ENTRY_POINT)(UINTN)DxeCoreEntryPoint,
+  HobList.Raw,
+  NULL,
+  TopOfStack
+  );</pre>
+  <div class='note'>
+    <code>SwitchStack</code> 是一个汇编函数，把栈指针切换到新的 DXE 栈，然后以 <code>DxeCoreEntryPoint(HobList, NULL)</code> 的形式调用 DXE Core。
+  </div>
+</section>
+
+<section id='dxe'>
+  <h2>12. DXE 阶段 — 驱动执行环境</h2>
+  <div class='note'>
+    <strong>PI 规范定位：</strong>DXE 阶段由 <strong>PI 规范 Volume 2</strong> 定义，核心抽象包括 Protocol、Handle、Boot Services、Runtime Services、DEPEX 与 DXE Dispatcher。BDS 作为 DXE 的延伸，同样位于 Volume 2 的范畴。
+  </div>
+  <p>DXE Core 调度所有 DXE 驱动。APRIORI 列表定义了关键驱动的加载顺序：</p>
+
+<pre><span class='comment'># SG2046-FPGA.fdf [FV.DXEFV]</span>
+APRIORI DXE {
+  INF  MdeModulePkg/Universal/DevicePathDxe/DevicePathDxe.inf
+  INF  MdeModulePkg/Universal/PCD/Dxe/Pcd.inf
+  INF  MdeModulePkg/Universal/ReportStatusCodeRouter/RuntimeDxe/...
+  INF  MdeModulePkg/Universal/StatusCodeHandler/RuntimeDxe/...
+  INF  UefiCpuPkg/CpuDxeRiscV64/CpuDxeRiscV64.inf
+!if $(FLASH_ENABLE) == TRUE
+  INF  Silicon/Sophgo/SG2046Pkg/Drivers/SpifmcDxe/...
+  INF  Silicon/Sophgo/Drivers/NorFlashDxe/NorFlashDxe.inf
+  INF  Silicon/Sophgo/Drivers/FlashFvbDxe/FlashFvbDxe.inf
+!endif
+}</pre>
+
+  <h3>12.1 DxeMain 入口与 DXE Core 初始化</h3>
+  <p>DXE Core 的入口是 <code>DxeMain</code>，接收从 PEI 传来的 HOB 列表。它完成以下初始化：</p>
+  <ol>
+    <li>解析 HOB 列表，建立内存映射</li>
+    <li>初始化 Boot Services Table 和 Runtime Services Table</li>
+    <li>初始化 System Table</li>
+    <li>初始化 Handle/Protocol 数据库</li>
+    <li>安装 <code>EFI_LOADED_IMAGE_PROTOCOL</code> 到 DXE Core 自身</li>
+    <li>进入 DXE 调度循环</li>
+  </ol>
+
+  <h4>System Table 的组成</h4>
+<pre><span class='keyword'>typedef</span> <span class='keyword'>struct</span> {
+  EFI_TABLE_HEADER                  Hdr;
+  CHAR16                            *FirmwareVendor;
+  UINT32                            FirmwareRevision;
+  EFI_HANDLE                        ConsoleInHandle;
+  EFI_SIMPLE_TEXT_INPUT_PROTOCOL    *ConIn;
+  EFI_HANDLE                        ConsoleOutHandle;
+  EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL   *ConOut;
+  EFI_HANDLE                        StandardErrorHandle;
+  EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL   *StdErr;
+  EFI_RUNTIME_SERVICES              *RuntimeServices;
+  EFI_BOOT_SERVICES                 *BootServices;
+  UINTN                             NumberOfTableEntries;
+  EFI_CONFIGURATION_TABLE           *ConfigurationTable;
+} EFI_SYSTEM_TABLE;</pre>
+  <p>其中 <code>ConfigurationTable</code> 就是 FDT、ACPI 表、SMBIOS 表等配置表的入口。FdtClientDxe 通过 <code>InstallConfigurationTable</code> 把 FDT 注册到这里。</p>
+
+  <h3>12.2 System Table 与 Services</h3>
+  <table>
+    <tr><th>服务表</th><th>缩写</th><th>包含内容</th></tr>
+    <tr><td>Boot Services Table</td><td><code>gBS</code></td><td>内存分配、Protocol、Handle、事件、加载镜像等</td></tr>
+    <tr><td>Runtime Services Table</td><td><code>gRT</code></td><td>变量读写、时间、复位、Capsule 等</td></tr>
+    <tr><td>System Table</td><td><code>gST</code></td><td>指向 Boot/Runtime Services、Configuration Tables、Console 等</td></tr>
+  </table>
+  <p>DXE 驱动通过全局指针 <code>gBS</code>、<code>gRT</code>、<code>gST</code> 访问这些服务。它们由库构造函数自动从 System Table 中解析出来。</p>
+
+  <h3>12.3 核心驱动说明</h3>
+  <table>
+    <tr><th>驱动</th><th>文件路径</th><th>功能</th></tr>
+    <tr><td>CpuDxeRiscV64</td><td><code>UefiCpuPkg/CpuDxeRiscV64/CpuDxe.c</code></td><td>安装 CPU 协议；消费 SEC Handoff HOB 获取 BootHartId</td></tr>
+    <tr><td>CpuTimerDxeRiscV64</td><td><code>UefiCpuPkg/CpuTimerDxeRiscV64/...</code></td><td>RISC-V 定时器服务</td></tr>
+    <tr><td>MmcDxe / SdHostDxe</td><td><code>Silicon/Sophgo/Drivers/MmcDxe/</code></td><td>SD 卡协议栈，从 SD 加载 GRUB2</td></tr>
+    <tr><td>SmbiosPlatformDxe</td><td><code>Platform/Sophgo/SG2046Pkg/Drivers/SmbiosPlatformDxe/</code></td><td>Type00~Type44 完整 SMBIOS 表</td></tr>
+    <tr><td>AcpiPlatformDxe</td><td><code>Silicon/Sophgo/SG2046Pkg/Drivers/AcpiPlatformDxe/</code></td><td>安装 ACPI 表</td></tr>
+    <tr><td>VariableRuntimeDxe</td><td><code>MdeModulePkg/Universal/Variable/RuntimeDxe/</code></td><td>UEFI 变量存储</td></tr>
+  </table>
+
+  <h3>12.4 DXE 驱动调度与 DEPEX</h3>
+  <p>DXE Core 按照以下规则调度驱动：</p>
+  <ol>
+    <li><strong>APRIORI 列表</strong>中的驱动先加载，保证基础设施先就绪</li>
+    <li>其他驱动按 <code>DEPEX</code>（依赖表达式）决定加载时机</li>
+    <li>驱动安装 Protocol 后，DXE Core 会重新评估依赖，触发更多驱动加载</li>
+    <li>所有驱动加载完成后，进入 BDS 阶段</li>
+  </ol>
+  <div class='note'>
+    <code>DEPEX</code> 写在 <code>.inf</code> 文件里，例如 <code>gEfiCpuArchProtocolGuid</code> 表示"必须等 CPU Arch Protocol 安装后才能加载"。DXE Core 内部维护一张"已安装 Protocol 表"，每次新增 Protocol 都会重新扫描待调度驱动。
+  </div>
+
+  <h3>12.5 Handle/Protocol 数据库的内部机制</h3>
+  <p>DXE Core 内部用一个双向链表维护所有 Handle，每个 Handle 又有一个 Protocol 链表。关键数据结构大致如下：</p>
+<pre><span class='keyword'>typedef</span> <span class='keyword'>struct</span> {
+  UINTN             Signature;
+  LIST_ENTRY        AllHandles;       <span class='comment'>// 所有 Handle 的全局链表</span>
+  LIST_ENTRY        Protocols;        <span class='comment'>// 本 Handle 上安装的 Protocol 链表</span>
+} IHANDLE;
+
+<span class='keyword'>typedef</span> <span class='keyword'>struct</span> {
+  UINTN             Signature;
+  LIST_ENTRY        Link;             <span class='comment'>// 挂到 Handle 的 Protocols 链表</span>
+  EFI_GUID          ProtocolGuid;
+  PROTOCOL_ENTRY    *Protocol;        <span class='comment'>// 指向全局 Protocol 入口（含所有实例链表）</span>
+  VOID              *Interface;       <span class='comment'>// Protocol 实例指针</span>
+  LIST_ENTRY        OpenList;         <span class='comment'>// 打开本 Protocol 的 Consumer 列表</span>
+} PROTOCOL_INTERFACE;</pre>
+  <p>当驱动调用 <code>gBS->InstallProtocolInterface</code> 时，DXE Core 会：</p>
+  <ol>
+    <li>如果 Handle 不存在则创建新的 IHANDLE</li>
+    <li>创建 PROTOCOL_INTERFACE 并挂到 Handle 上</li>
+    <li>更新全局 Protocol 索引表</li>
+    <li>触发所有等待该 Protocol GUID 的事件通知</li>
+    <li>重新评估所有未调度驱动的 DEPEX</li>
+  </ol>
+</section>
+
+<section id='dxe-model'>
+  <h2>13. DXE 驱动模型：Protocol 的安装与消费</h2>
+  <p>DXE 阶段的核心机制是 <strong>Protocol</strong>。驱动通过 Protocol 暴露接口，其他驱动通过 Protocol 使用服务。</p>
+
+  <h3>13.1 Protocol 是什么？</h3>
+  <div class='card'>
+    <p>Protocol 是一个 C 结构体，包含一组函数指针和数据。每个 Protocol 用一个 GUID 唯一标识。例如：</p>
+    <ul>
+      <li><code>EFI_CPU_ARCH_PROTOCOL</code>：CPU 架构服务（开关中断、cache 操作、内存属性设置）</li>
+      <li><code>EFI_BLOCK_IO_PROTOCOL</code>：块设备读写（SD 卡、硬盘）</li>
+      <li><code>EFI_SIMPLE_FILE_SYSTEM_PROTOCOL</code>：文件系统访问</li>
+      <li><code>EFI_ACPI_TABLE_PROTOCOL</code>：ACPI 表安装</li>
+    </ul>
+  </div>
+
+  <h3>13.2 驱动入口与 Protocol 安装</h3>
+  <p>文件：<a class='file-link' href='file:///home/pbw/sg2046/sophgo-edk2/edk2/UefiCpuPkg/CpuDxeRiscV64/CpuDxe.c'>CpuDxe.c</a></p>
+<pre><span class='keyword'>EFI_STATUS</span>
+<span class='keyword'>EFIAPI</span>
+InitializeCpu (
+  IN EFI_HANDLE        ImageHandle,
+  IN EFI_SYSTEM_TABLE  *SystemTable
+  )
+{
+  <span class='comment'>// 从 SEC Handoff HOB 获取 BootHartId</span>
+  Hob = <span class='keyword'>GetFirstGuidHob</span> (&amp;SecHobDataGuid);
+  SecData = <span class='keyword'>GET_GUID_HOB_DATA</span> (Hob);
+  mBootHartId = SecData->BootHartId;
+
+  <span class='comment'>// 初始化异常处理、MMU、FPU</span>
+  InitializeCpuExceptionHandlers (NULL);
+  RiscVConfigureMmu ();
+  InitializeFloatingPointUnits ();
+
+  <span class='comment'>// 安装 RISC-V Boot Protocol</span>
+  gBS->InstallProtocolInterface (
+         &amp;ImageHandle,
+         &amp;gRiscVEfiBootProtocolGuid,
+         EFI_NATIVE_INTERFACE,
+         &amp;gRiscvBootProtocol
+         );
+
+  <span class='comment'>// 安装 CPU Arch Protocol</span>
+  gBS->InstallMultipleProtocolInterfaces (
+         &amp;mCpuHandle,
+         &amp;gEfiCpuArchProtocolGuid, &amp;gCpu,
+         NULL
+         );
+}</pre>
+  <div class='note'>
+    <code>gBS</code> 是 Boot Services Table，包含 <code>InstallProtocolInterface</code>、<code>LocateProtocol</code>、<code>ConnectController</code> 等核心服务。
+  </div>
+
+  <h3>13.3 Protocol 的消费</h3>
+  <p>文件：<a class='file-link' href='file:///home/pbw/sg2046/sophgo-edk2/edk2-platforms/Silicon/Sophgo/SG2046Pkg/Drivers/AcpiPlatformDxe/AcpiPlatformDxe.c'>AcpiPlatformDxe.c</a></p>
+<pre><span class='comment'>// 1. 定位 ACPI Table Protocol</span>
+gBS->LocateProtocol (
+       &amp;gEfiAcpiTableProtocolGuid,
+       NULL,
+       (VOID **)&amp;AcpiTable
+       );
+
+<span class='comment'>// 2. 读取 FV 中的 ACPI 表</span>
+FwVol->ReadSection (FwVol, PcdAcpiTableStorageFile, EFI_SECTION_RAW, ...);
+
+<span class='comment'>// 3. 安装到系统</span>
+AcpiTable->InstallAcpiTable (AcpiTable, CurrentTable, TableSize, &amp;TableHandle);</pre>
+
+  <h3>13.4 驱动绑定与 ConnectController</h3>
+  <p>很多驱动实现 <strong>Driver Binding Protocol</strong>，包含 <code>Supported</code>、<code>Start</code>、<code>Stop</code> 三个接口：</p>
+  <ul>
+    <li><code>Supported</code>：检查某个 Handle 是否由本驱动管理</li>
+    <li><code>Start</code>：初始化设备，安装子 Handle 和 Protocol</li>
+    <li><code>Stop</code>：停止设备，释放资源</li>
+  </ul>
+  <p>BDS 阶段调用 <code>gBS->ConnectController()</code> 触发驱动绑定：DXE Core 遍历所有 Driver Binding Protocol，对每个 Handle 调用 <code>Supported()</code>，成功者调用 <code>Start()</code>。这就是 PCI 设备枚举、USB 设备识别、SD 卡发现的本质。</p>
+
+  <h3>13.5 ConnectController 的递归与非递归</h3>
+  <p>在 <a class='file-link' href='file:///home/pbw/sg2046/sophgo-edk2/edk2-platforms/Silicon/Sophgo/Library/PlatformBootManagerLib/PlatformBm.c'>PlatformBm.c</a> 中可以看到：</p>
+<pre>Status = gBS->ConnectController (
+                Handle, <span class='comment'>// ControllerHandle</span>
+                NULL,   <span class='comment'>// DriverImageHandle</span>
+                NULL,   <span class='comment'>// RemainingDevicePath -- produce all children</span>
+                FALSE   <span class='comment'>// Recursive</span>
+                );</pre>
+  <p>第四个参数 <code>Recursive</code> 决定是否为递归连接。SG2046 BDS 通常使用非递归连接：先连接 PCI Root Bridge 产生 PciIo Handle，再连接显示设备产生 GOP Handle，最后再 <code>EfiBootManagerConnectAll()</code> 做全量递归连接。这样分阶段控制可以避免某些设备在控制台就绪前被错误初始化。</p>
+</section>
+
+<section id='bds'>
+  <h2>14. BDS 阶段：从固件到 OS Loader</h2>
+  <div class='note'>
+    <strong>PI 规范定位：</strong>BDS 通常被视为 DXE 阶段向 OS 移交前的最后一个子阶段，相关机制（Boot Services、Protocol、启动选项）由 <strong>PI 规范 Volume 2</strong> 定义。本章重点分析 SG2046 平台如何在这些标准接口之上实现具体启动策略。
+  </div>
+  <p>BDS（Boot Device Selection）是 UEFI 启动流程中最后一个由固件主导的阶段。DXE 把系统初始化完毕后，把控制权交给 BDS；BDS 负责枚举启动设备、建立控制台、处理用户热键，并最终启动 OS Loader（如 GRUB2、systemd-boot 或 UEFI Shell）。</p>
+
+  <h3>14.1 PlatformBootManagerLib 钩子</h3>
+  <p>EDK2 的 BDS Core 在 <code>MdeModulePkg/Universal/BdsDxe/BdsEntry.c</code> 中，它通过 <strong>PlatformBootManagerLib</strong> 类调用平台相关代码。SG2046 的实现位于：</p>
+  <p><a class='file-link' href='file:///home/pbw/sg2046/sophgo-edk2/edk2-platforms/Silicon/Sophgo/Library/PlatformBootManagerLib/PlatformBm.c'>PlatformBm.c</a></p>
+  <p>关键钩子有三个：</p>
+  <table>
+    <tr><th>钩子</th><th>调用时机</th><th>SG2046 职责</th></tr>
+    <tr><td>PlatformBootManagerBeforeConsole</td><td>控制台就绪前</td><td>发 EndOfDxe 事件、连接 PCI/USB/显示、准备 ConIn/ConOut/ErrOut</td></tr>
+    <tr><td>PlatformBootManagerAfterConsole</td><td>控制台就绪后</td><td>显示 Logo、ConnectAll、清理并刷新启动项、注册热键</td></tr>
+    <tr><td>PlatformBootManagerUnableToBoot</td><td>无可用启动项时</td><td>回退到 UEFI Shell</td></tr>
+  </table>
+
+  <h3>14.2 控制台建立：BeforeConsole 详解</h3>
+  <p>在 <code>PlatformBootManagerBeforeConsole</code> 中，SG2046 按顺序完成以下动作：</p>
+  <div class='timeline'>
+    <div class='timeline-item bds'>发 EndOfDxe 事件，触发依赖该事件的驱动调度。</div>
+    <div class='timeline-item bds'>非递归连接所有 PCI Root Bridge，产生 PciIo Handle。</div>
+    <div class='timeline-item bds'>连接 USB Host Controller，让键盘可用。</div>
+    <div class='timeline-item bds'>过滤并连接 PCI Display 设备，产生 GOP（Graphics Output Protocol）。</div>
+    <div class='timeline-item bds'>把 GOP 设备路径加入 ConOut/ErrOut，把 USB 键盘和串口加入 ConIn。</div>
+  </div>
+  <p>对应源码：</p>
+<pre><span class='comment'>// PlatformBm.c</span>
+<span class='keyword'>VOID</span>
+<span class='keyword'>EFIAPI</span>
+PlatformBootManagerBeforeConsole (
+  <span class='keyword'>VOID</span>
+  )
+{
+  EfiEventGroupSignal (&amp;gEfiEndOfDxeEventGroupGuid);
+  EfiBootManagerDispatchDeferredImages ();
+
+  <span class='comment'>// 1) PCI Root Bridge</span>
+  FilterAndProcess (&amp;gEfiPciRootBridgeIoProtocolGuid, NULL, Connect);
+  <span class='comment'>// 2) USB Host</span>
+  FilterAndProcess (&amp;gEfiUsb2HcProtocolGuid, NULL, Connect);
+  <span class='comment'>// 3) PCI Display -> GOP</span>
+  FilterAndProcess (&amp;gEfiPciIoProtocolGuid, IsPciDisplay, Connect);
+  FilterAndProcess (&amp;gEfiGraphicsOutputProtocolGuid, NULL, AddOutput);
+  <span class='comment'>// 4) USB keyboard + serial console</span>
+  EfiBootManagerUpdateConsoleVariable (ConIn, (EFI_DEVICE_PATH_PROTOCOL *)&amp;mUsbKeyboard, NULL);
+  EfiBootManagerUpdateConsoleVariable (ConIn,  (EFI_DEVICE_PATH_PROTOCOL *)&amp;mSerialConsole, NULL);
+  EfiBootManagerUpdateConsoleVariable (ConOut, (EFI_DEVICE_PATH_PROTOCOL *)&amp;mSerialConsole, NULL);
+  EfiBootManagerUpdateConsoleVariable (ErrOut, (EFI_DEVICE_PATH_PROTOCOL *)&amp;mSerialConsole, NULL);
+}</pre>
+  <div class='note'>
+    <code>FilterAndProcess</code> 先通过 <code>gBS->LocateHandleBuffer</code> 拿到所有携带指定 Protocol 的 Handle，再对过滤通过的 Handle 调用 <code>Connect()</code> 或 <code>AddOutput()</code>。
+  </div>
+
+  <h3>14.3 启动项管理与 AfterConsole</h3>
+  <p>控制台建立后，<code>PlatformBootManagerAfterConsole</code> 执行：</p>
+  <ol>
+    <li><code>BootLogoEnableLogo()</code>：显示启动 Logo。</li>
+    <li><code>EfiBootManagerConnectAll()</code>：递归连接剩余所有控制器，完成 PCI/USB/SD 等设备全枚举。</li>
+    <li><code>PlatformCleanupBootOptions()</code>：检查已有 Boot#### 变量是否仍指向有效块设备，清理失效项。</li>
+    <li><code>EfiBootManagerRefreshAllBootOption()</code>：扫描所有可启动设备，自动创建启动项。</li>
+    <li><code>PlatformRegisterKeys()</code>：注册 F2（Setup）、F7（启动菜单）、s（Shell）等热键。</li>
+  </ol>
+
+  <h3>14.4 Boot#### 变量与 Device Path</h3>
+  <p>UEFI 启动项以 <strong>Boot####</strong>（#### 为 4 位十六进制）变量存储。每个变量是一个 <code>EFI_LOAD_OPTION</code> 结构，包含：</p>
+  <ul>
+    <li><strong>Attributes</strong>：如 LOAD_OPTION_ACTIVE 表示激活。</li>
+    <li><strong>FilePathListLength</strong>：Device Path 列表长度。</li>
+    <li><strong>Description</strong>：启动项描述（如 "UEFI Shell"）。</li>
+    <li><strong>FilePathList</strong>：指向目标 EFI 应用的 Device Path。</li>
+    <li><strong>OptionalData</strong>：可选附加数据（SG2046 用 GUID 标记自动创建的项）。</li>
+  </ul>
+  <p>SG2046 用 <code>mAutoCreateBootOptionGuid</code> 作为 <code>OptionalData</code>，在 <code>IsAutoCreateBootOption()</code> 中区分自动项与手动项，便于在设备变化时批量清理。</p>
+
+  <h3>14.5 热键注册</h3>
+  <p><code>PlatformRegisterKeys()</code> 通过 <code>EfiBootManagerAddKeyOptionVariable()</code> 把按键映射到启动项：</p>
+<pre>Enter.ScanCode    = SCAN_NULL;
+Enter.UnicodeChar = CHAR_CARRIAGE_RETURN;
+EfiBootManagerRegisterContinueKeyOption (0, &amp;Enter, NULL);  <span class='comment'>// 回车继续默认启动</span>
+
+F7.ScanCode    = SCAN_F7;
+F7.UnicodeChar = CHAR_NULL;
+OptionNumber   = GetOption (L"UEFI BootManagerMenuApp", mBootMenuFile, Hide);
+EfiBootManagerAddKeyOptionVariable (NULL, (UINT16)OptionNumber, 0, &amp;F7, NULL);
+
+F2.ScanCode    = SCAN_F2;
+F2.UnicodeChar = CHAR_NULL;
+OptionNumber   = GetOption (L"UEFI UiApp", mUiApp, Hide);
+EfiBootManagerAddKeyOptionVariable (NULL, (UINT16)OptionNumber, 0, &amp;F2, NULL);
+
+Key.ScanCode    = SCAN_NULL;
+Key.UnicodeChar = L's';
+OptionNumber    = GetOption (L"UEFI Shell", gUefiShellFileGuid, Default);
+EfiBootManagerAddKeyOptionVariable (NULL, (UINT16)OptionNumber, 0, &amp;Key, NULL);</pre>
+</section>
+
+<section id='vars-security'>
+  <h2>15. 变量存储与安全启动</h2>
+  <div class='note'>
+    <strong>PI 规范定位：</strong>UEFI 变量（Variable）的存储模型、属性、访问接口由 <strong>PI 规范 Volume 3（Shared Architectural Elements）</strong> 定义；Runtime Services 中的 <code>GetVariable</code> / <code>SetVariable</code> 由 <strong>PI 规范 Volume 2</strong> 暴露。安全启动（Secure Boot）则是 UEFI 规范内容。
+  </div>
+
+  <h3>15.1 UEFI 变量是什么？</h3>
+  <p>UEFI 变量是固件与 OS Loader 之间持久化存储的键值对，通过 Runtime Service <code>GetVariable()</code> / <code>SetVariable()</code> 访问。常见变量包括：</p>
+  <ul>
+    <li><code>BootOrder</code>：启动顺序。</li>
+    <li><code>Boot####</code>：具体启动项。</li>
+    <li><code>ConIn</code> / <code>ConOut</code> / <code>ErrOut</code>：控制台设备路径。</li>
+    <li><code>SecureBoot</code> / <code>PK</code> / <code>KEK</code> / <code>db</code> / <code>dbx</code>：安全启动相关。</li>
+  </ul>
+
+  <h3>15.2 VariableRuntimeDxe 与变量存储布局</h3>
+  <p>EDK2 中变量服务由 <code>MdeModulePkg/Universal/Variable/RuntimeDxe/VariableRuntimeDxe.inf</code> 提供。SG2046 的变量存储区域在 <a class='file-link' href='file:///home/pbw/sg2046/sophgo-edk2/edk2-platforms/Platform/Sophgo/SG2046Pkg/SG2046.fdf.inc'>SG2046.fdf.inc</a> 中定义：</p>
+<pre>DEFINE VARS_OFFSET                   = 0x00800000
+DEFINE VARS_SIZE                     = 0x00010000
+DEFINE VARS_FTW_WORKING_OFFSET       = $(VARS_OFFSET) + $(VARS_SIZE)
+DEFINE VARS_FTW_WORKING_SIZE         = 0x00010000
+DEFINE VARS_FTW_SPARE_OFFSET         = $(VARS_FTW_WORKING_OFFSET) + $(VARS_FTW_WORKING_SIZE)
+DEFINE VARS_FTW_SPARE_SIZE           = 0x00010000</pre>
+  <p>其中 <code>VARS_SIZE</code> 是变量存储区，<code>FTW_WORKING</code> 和 <code>FTW_SPARE</code> 是 FaultTolerantWriteDxe 用于掉电安全写入的冗余区。</p>
+
+  <h3>15.3 安全启动（Secure Boot）</h3>
+  <p>SG2046-FPGA 的 DSC 中默认启用 <code>SECURE_BOOT_ENABLE = TRUE</code>，会额外编译：</p>
+  <ul>
+    <li><code>SecureBootConfigDxe</code>：Setup 界面配置安全启动。</li>
+    <li><code>SecureBootDefaultKeysDxe</code>：预置默认 PK/KEK/db/dbx。</li>
+    <li><code>AuthVariableLib</code>：对安全启动变量做签名验证。</li>
+  </ul>
+  <p>安全启动链：BootROM 验证 FW → FW 验证 OS Loader（通过 db 证书链）→ OS Loader 验证 OS Kernel。任一环节失败则拒绝启动。</p>
+  <div class='warning'>
+    当前 SG2046 平台把 <code>FLASH_ENABLE</code> 默认设为 FALSE，变量通常存于模拟变量存储（EmuVariableNvMode）中，掉电不保留；正式产品需开启 NOR Flash 变量支持。
+  </div>
+</section>
+
+<section id='acpi-smbios'>
+  <h2>16. ACPI 与 SMBIOS 表安装</h2>
+  <div class='note'>
+    <strong>PI 规范定位：</strong>ACPI 表和 SMBIOS 表属于跨阶段共享架构元素，由 <strong>PI 规范 Volume 3（Shared Architectural Elements）</strong> 定义如何在 PI 架构中生成、安装并通过 UEFI Configuration Table 暴露给 OS。
+  </div>
+
+  <h3>16.1 ACPI 表安装流程</h3>
+  <p>ACPI（Advanced Configuration and Power Interface）表是 OS 识别硬件拓扑的重要数据结构。SG2046 的 ACPI 表在构建时编译进 FV，运行期由 <a class='file-link' href='file:///home/pbw/sg2046/sophgo-edk2/edk2-platforms/Silicon/Sophgo/SG2046Pkg/Drivers/AcpiPlatformDxe/AcpiPlatformDxe.c'>AcpiPlatformDxe.c</a> 安装：</p>
+  <div class='step'>
+    <div class='step-num'>1</div>
+    <div class='step-body'>
+      <h4>定位 EFI_ACPI_TABLE_PROTOCOL</h4>
+      <p>通过 <code>gBS->LocateProtocol</code> 找到负责管理 ACPI 表的通用驱动。</p>
+    </div>
+  </div>
+  <div class='step'>
+    <div class='step-num'>2</div>
+    <div class='step-body'>
+      <h4>定位包含 ACPI 存储文件的 FV</h4>
+      <p>遍历所有 FirmwareVolume2 Protocol 实例，查找 <code>PcdAcpiTableStorageFile</code> 指定的 GUID 文件。</p>
+    </div>
+  </div>
+  <div class='step'>
+    <div class='step-num'>3</div>
+    <div class='step-body'>
+      <h4>读取并校验表</h4>
+      <p>用 <code>FwVol->ReadSection(..., EFI_SECTION_RAW, ...)</code> 读取每个原始表，重新计算 checksum。</p>
+    </div>
+  </div>
+  <div class='step'>
+    <div class='step-num'>4</div>
+    <div class='step-body'>
+      <h4>安装到系统</h4>
+      <p>调用 <code>AcpiTable->InstallAcpiTable(...)</code>，最终由 AcpiTableDxe 把 RSDT/XSDT 指针写入 EFI System Table Configuration Tables。</p>
+    </div>
+  </div>
+
+  <h3>16.2 什么是 SMBIOS？为什么操作系统需要它？</h3>
+  <p><strong>SMBIOS（System Management BIOS）</strong>是一种标准化的数据结构，固件通过它向操作系统描述硬件信息：BIOS 厂商、主板型号、CPU 型号、内存容量、序列号、UUID 等。它源自 DMI（Desktop Management Interface），现在由 DMTF 维护，最新版本为 3.6.x。</p>
+  <p>对 OS 和用户态工具来说，SMBIOS 是<strong>"只读硬件信息数据库"</strong>：</p>
+  <ul>
+    <li><strong>Linux 内核</strong>启动时读取 SMBIOS，生成 <code>/sys/class/dmi/id/</code> 下的文件（如 <code>product_name</code>、<code>board_serial</code>、<code>bios_version</code>），也用于 <code>dmi_scan</code> 匹配驱动。</li>
+    <li><strong>用户态工具</strong>如 <code>dmidecode</code>、<code>lshw</code>、<code>systemd-detect-virt</code> 都解析 SMBIOS。</li>
+    <li><strong>OS 安装程序 / 云初始化</strong>通过 UUID、序列号识别实例身份。</li>
+  </ul>
+  <p>换句话说：ACPI 告诉 OS "有什么设备和资源"，SMBIOS 告诉 OS "这些设备是什么型号、序列号是什么"。</p>
+
+  <h3>16.3 SMBIOS 物理结构：从 Entry Point 到字符串</h3>
+  <p>SMBIOS 数据在内存中由两部分组成：<strong>Entry Point Structure（EPS）</strong>和<strong>表数据区</strong>。EPS 是 OS 寻找 SMBIOS 的"路标"，表数据区包含若干条记录。</p>
+
+  <h4>16.3.1 Entry Point Structure</h4>
+  <p>EFI 系统会同时安装两个 EPS（通过 EFI Configuration Table）：</p>
+  <table>
+    <tr><th>版本</th><th>Anchor String</th><th>Guid</th><th>地址宽度</th></tr>
+    <tr><td>SMBIOS 2.x</td><td><code>_SM_</code></td><td><code>gEfiSmbiosTableGuid</code></td><td>32 位物理地址（TableAddress）</td></tr>
+    <tr><td>SMBIOS 3.x</td><td><code>_SM3_</code></td><td><code>gEfiSmbios3TableGuid</code></td><td>64 位物理地址（TableAddress）</td></tr>
+  </table>
+  <p>EPS 包含：Anchor String、Entry Point Length、SMBIOS 主/次版本号、表数据区最大长度、校验和、以及最重要的 <strong>TableAddress</strong>（指向表数据区起始）。</p>
+
+  <h4>16.3.2 单条记录结构</h4>
+  <p>表数据区由若干条记录顺序排列组成，每条记录格式固定：</p>
+<pre><span class='keyword'>typedef</span> <span class='keyword'>struct</span> {
+  UINT8   Type;      <span class='comment'>// 记录类型，如 0=BIOS, 1=System, 4=Processor, 17=Memory Device</span>
+  UINT8   Length;    <span class='comment'>// 格式化区域长度（含本头）</span>
+  UINT16  Handle;    <span class='comment'>// 唯一句柄，用于记录间交叉引用（如 Cache 指向 Processor）</span>
+  <span class='comment'>// Length 之后是字符串区，由若干 \0 结尾的 ASCII 字符串组成，最后以双 \0 结束</span>
+} EFI_SMBIOS_TABLE_HEADER;</pre>
+  <p>记录的<strong>字符串引用</strong>很有意思：格式化区域里的字符串字段只存一个 <strong>index</strong>（1 开始），真正的字符串在记录尾部的字符串区。index 为 0 表示"无字符串"。例如 Type 1 的 Manufacturer 字段如果是 1，就表示字符串区第 1 个字符串是厂商名。</p>
+  <div class='note'>
+    <strong>为什么这样设计？</strong>字符串长度差异大，统一放在记录尾部可以避免结构体对齐浪费，也便于本地化（同一 Type 不同语言的记录只有字符串区不同）。
+  </div>
+
+  <h4>16.3.3 遍历方法</h4>
+  <p>OS 从 EPS 拿到 TableAddress 后，按 <code>Type/Length/Handle + 字符串区</code> 逐条解析。每条记录长度 = Length + 字符串区长度（到双 <code>\0</code> 为止）。Type 为 <code>127</code> 的记录是表结束标记。</p>
+
+  <h3>16.4 固件内部：谁生成 SMBIOS？谁把它交给 OS？</h3>
+  <p>EDK2 把 SMBIOS 工作分成两层：</p>
+  <div class='diagram'>
+    <div class='diagram-title'>SMBIOS 在 EDK2 中的两层架构</div>
+    <div class='diagram-row'>
+      <div class='diagram-box'>平台驱动<br>SmbiosPlatformDxe</div>
+      <div class='diagram-arrow'>&#8594;</div>
+      <div class='diagram-box'>通用协议<br>EFI_SMBIOS_PROTOCOL</div>
+      <div class='diagram-arrow'>&#8594;</div>
+      <div class='diagram-box'>SmbiosDxe</div>
+      <div class='diagram-arrow'>&#8594;</div>
+      <div class='diagram-box'>EFI System Table<br>Configuration Table</div>
+      <div class='diagram-arrow'>&#8594;</div>
+      <div class='diagram-box'>OS / 内核</div>
+    </div>
+  </div>
+  <ul>
+    <li><strong>SmbiosPlatformDxe</strong>：平台相关，负责填充各 Type 的具体字段（CPU 型号、内存大小、序列号等）。</li>
+    <li><strong>SmbiosDxe（MdeModulePkg/Universal/SmbiosDxe）</strong>：通用驱动，维护 SMBIOS 记录数据库，最终构造 EPS 并调用 <code>gBS->InstallConfigurationTable</code> 注册到 System Table。</li>
+    <li><strong>EFI_SMBIOS_PROTOCOL</strong>：两层之间的接口，提供 <code>Add</code>、<code>GetNext</code>、<code>UpdateString</code> 等函数。</li>
+  </ul>
+
+  <h3>16.5 SG2046 SmbiosPlatformDxe 代码结构</h3>
+  <p>SG2046 实现位于 <a class='file-link' href='file:///home/pbw/sg2046/sophgo-edk2/edk2-platforms/Platform/Sophgo/SG2046Pkg/Drivers/SmbiosPlatformDxe/SmbiosPlatformDxe.c'>SmbiosPlatformDxe.c</a>，并通过 <a class='file-link' href='file:///home/pbw/sg2046/sophgo-edk2/edk2-platforms/Platform/Sophgo/SG2046Pkg/Drivers/SmbiosPlatformDxe/SmbiosPlatformDxeDataTable.c'>SmbiosPlatformDxeDataTable.c</a> 组织所有表类型：</p>
+<pre><span class='comment'>// SmbiosPlatformDxeDataTable.c：列出所有要安装的 SMBIOS 类型</span>
+SMBIOS_PLATFORM_DXE_DATA_TABLE mSmbiosPlatformDxeDataTable[] = {
+  SMBIOS_PLATFORM_DXE_TABLE_ENTRY_DATA_AND_FUNCTION (PlatformBios),              <span class='comment'>// Type 0</span>
+  SMBIOS_PLATFORM_DXE_TABLE_ENTRY_DATA_AND_FUNCTION (PlatformSystem),            <span class='comment'>// Type 1</span>
+  SMBIOS_PLATFORM_DXE_TABLE_ENTRY_DATA_AND_FUNCTION (PlatformBoard),             <span class='comment'>// Type 2</span>
+  SMBIOS_PLATFORM_DXE_TABLE_ENTRY_DATA_AND_FUNCTION (PlatformChassis),           <span class='comment'>// Type 3</span>
+  SMBIOS_PLATFORM_DXE_TABLE_ENTRY_DATA_AND_FUNCTION (PlatformProcessor),         <span class='comment'>// Type 4</span>
+  SMBIOS_PLATFORM_DXE_TABLE_ENTRY_DATA_AND_FUNCTION (PlatformCache),             <span class='comment'>// Type 7</span>
+  SMBIOS_PLATFORM_DXE_TABLE_ENTRY_DATA_AND_FUNCTION (PlatformSystemSlot),        <span class='comment'>// Type 9</span>
+  SMBIOS_PLATFORM_DXE_TABLE_ENTRY_DATA_AND_FUNCTION (PlatformOemString),         <span class='comment'>// Type 11</span>
+  SMBIOS_PLATFORM_DXE_TABLE_ENTRY_DATA_AND_FUNCTION (PlatformLanguage),          <span class='comment'>// Type 13</span>
+  SMBIOS_PLATFORM_DXE_TABLE_ENTRY_DATA_AND_FUNCTION (PlatformPhysicalMemoryArray), <span class='comment'>// Type 16</span>
+  SMBIOS_PLATFORM_DXE_TABLE_ENTRY_DATA_AND_FUNCTION (PlatformMemoryDevice),      <span class='comment'>// Type 17</span>
+  SMBIOS_PLATFORM_DXE_TABLE_ENTRY_DATA_AND_FUNCTION (PlatformMemoryArrayMappedAddress), <span class='comment'>// Type 19</span>
+  SMBIOS_PLATFORM_DXE_TABLE_ENTRY_DATA_AND_FUNCTION (PlatformSystemBoot),        <span class='comment'>// Type 32</span>
+  SMBIOS_PLATFORM_DXE_TABLE_ENTRY_DATA_AND_FUNCTION (PlatformIpmiDevice),        <span class='comment'>// Type 38</span>
+  SMBIOS_PLATFORM_DXE_TABLE_ENTRY_DATA_AND_FUNCTION (PlatformOnboardDevicesExtended), <span class='comment'>// Type 41</span>
+  SMBIOS_PLATFORM_DXE_TABLE_ENTRY_DATA_AND_FUNCTION (PlatformProcessorAdditional), <span class='comment'>// Type 44</span>
+};</pre>
+  <p>每个 Type 通常由三个文件组成（以 Type 1 为例）：</p>
+  <ul>
+    <li><code>Type01/PlatformSystemData.c</code>：定义静态数据结构 <code>PlatformSystemData[]</code> 和字符串 token <code>PlatformSystemStrToken[]</code>。</li>
+    <li><code>Type01/PlatformSystemFunction.c</code>：实现 <code>PlatformSystemFunction</code>，负责把 PCD/HII 字符串填入结构体并调用 <code>SmbiosPlatformDxeAddRecord</code>。</li>
+    <li><code>Type01/PlatformSystem.uni</code>：HII 字符串包，存放默认字符串（如 "SOPHGO"、"SG2046"），支持本地化。</li>
+  </ul>
+
+  <h3>16.6 Type 1 System Information 实例：从 PCD 到 SMBIOS 记录</h3>
+  <p>Type 1 描述整机信息：厂商、产品名、版本、序列号、UUID、唤醒类型等。SG2046 的静态模板在 <a class='file-link' href='file:///home/pbw/sg2046/sophgo-edk2/edk2-platforms/Platform/Sophgo/SG2046Pkg/Drivers/SmbiosPlatformDxe/Type01/PlatformSystemData.c'>PlatformSystemData.c</a>：</p>
+<pre><span class='comment'>// Type01/PlatformSystemData.c</span>
+SMBIOS_PLATFORM_DXE_TABLE_DATA (SMBIOS_TABLE_TYPE1, PlatformSystem) = {
+  {
+    {
+      EFI_SMBIOS_TYPE_SYSTEM_INFORMATION,   <span class='comment'>// Type = 1</span>
+      <span class='keyword'>sizeof</span> (SMBIOS_TABLE_TYPE1),          <span class='comment'>// Length</span>
+      SMBIOS_HANDLE_PI_RESERVED             <span class='comment'>// Handle 由 SmbiosDxe 动态分配</span>
+    },
+    1,                                          <span class='comment'>// Manufacturer 字符串索引</span>
+    2,                                          <span class='comment'>// ProductName 字符串索引</span>
+    3,                                          <span class='comment'>// Version 字符串索引</span>
+    4,                                          <span class='comment'>// SerialNumber 字符串索引</span>
+    { 0x9987FD42, 0x907E, 0x5446,             <span class='comment'>// UUID（静态值）</span>
+      { 0x1D, 0x7D, 0x7D, 0xA0, 0x10, 0x9F, 0x60, 0xA1 }},
+    6,                                          <span class='comment'>// WakeupType</span>
+    0,                                          <span class='comment'>// SKU number string index (none)</span>
+    0,                                          <span class='comment'>// Family string index (none)</span>
+  },
+  { { NULL_TERMINATED_TYPE, 0, 0 } }            <span class='comment'>// 表结束标记</span>
+};
+
+<span class='comment'>// 字符串 token 表，对应索引 1~4</span>
+SMBIOS_PLATFORM_DXE_STRING_TOKEN_DATA (PlatformSystem) = {
+  {
+    {
+      STRING_TOKEN (STR_PLATFORM_DXE_SYSTEM_MANUFACTURER),
+      STRING_TOKEN (STR_PLATFORM_DXE_SYSTEM_PRODUCT_NAME),
+      STRING_TOKEN (STR_PLATFORM_DXE_SYSTEM_VERSION),
+      STRING_TOKEN (STR_PLATFORM_DXE_SYSTEM_SERIAL)
+    },
+    ADDITIONAL_STR_INDEX_4
+  }
+};</pre>
+  <p>运行时函数 <a class='file-link' href='file:///home/pbw/sg2046/sophgo-edk2/edk2-platforms/Platform/Sophgo/SG2046Pkg/Drivers/SmbiosPlatformDxe/Type01/PlatformSystemFunction.c'>PlatformSystemFunction.c</a> 把 PCD 中的产品信息写入 HII 字符串：</p>
+<pre><span class='comment'>// Type01/PlatformSystemFunction.c</span>
+UnicodeStrFromPcd = FixedPcdGetPtr (PcdProductManufacturer);
+HiiSetString (mSmbiosPlatformDxeHiiHandle, InputStrToken->TokenArray[0], UnicodeStrFromPcd, NULL);
+
+UnicodeStrFromPcd = FixedPcdGetPtr (PcdProductName);
+HiiSetString (mSmbiosPlatformDxeHiiHandle, InputStrToken->TokenArray[1], UnicodeStrFromPcd, NULL);
+
+UnicodeStrFromPcd = FixedPcdGetPtr (PcdProductVersion);
+HiiSetString (mSmbiosPlatformDxeHiiHandle, InputStrToken->TokenArray[2], UnicodeStrFromPcd, NULL);
+
+UnicodeStrFromPcd = FixedPcdGetPtr (PcdProductSN);
+HiiSetString (mSmbiosPlatformDxeHiiHandle, InputStrToken->TokenArray[3], UnicodeStrFromPcd, NULL);
+
+SmbiosPlatformDxeCreateTable ((VOID **)&amp;Type1Record, (VOID **)&amp;InputData,
+                              <span class='keyword'>sizeof</span> (SMBIOS_TABLE_TYPE1), InputStrToken);
+SmbiosPlatformDxeAddRecord ((UINT8 *)Type1Record, NULL);</pre>
+  <p>这里的关键流程是：</p>
+  <ol>
+    <li>静态模板定义字段布局和各字符串索引。</li>
+    <li>运行时从 PCD 读取实际字符串，用 <code>HiiSetString</code> 更新 HII 数据库中的 token。</li>
+    <li><code>SmbiosPlatformDxeCreateTable</code> 把 HII 字符串拷贝到记录尾部，生成最终的 SMBIOS 二进制记录。</li>
+    <li><code>SmbiosPlatformDxeAddRecord</code> 调用 <code>EFI_SMBIOS_PROTOCOL.Add()</code>，把记录交给 SmbiosDxe。</li>
+  </ol>
+
+  <h3>16.7 Type 4 Processor 与 Type 17 Memory Device 实例</h3>
+  <p>Type 4 描述 CPU。SG2046 的 Type 4 在 <a class='file-link' href='file:///home/pbw/sg2046/sophgo-edk2/edk2-platforms/Platform/Sophgo/SG2046Pkg/Drivers/SmbiosPlatformDxe/Type04/PlatformProcessorData.c'>PlatformProcessorData.c</a> 中声明了 64 核、RISC-V RV64、主频 2800 MHz、Cache 句柄关联等：</p>
+<pre>{
+  EFI_SMBIOS_TYPE_PROCESSOR_INFORMATION,
+  <span class='keyword'>sizeof</span> (SMBIOS_TABLE_TYPE4),
+  SMBIOS_HANDLE_PROCESSOR,            <span class='comment'>// 固定句柄，Type 7 Cache 会引用它</span>
+  1,                                   <span class='comment'>// SocketDesignation 字符串索引</span>
+  3,                                   <span class='comment'>// ProcessorType = CPU</span>
+  ProcessorFamilyIndicatorFamily2,     <span class='comment'>// 用 Family2 字段</span>
+  2,                                   <span class='comment'>// ProcessorManufacturer 字符串索引</span>
+  {{0,},{0,}},                         <span class='comment'>// ProcessorID</span>
+  3,                                   <span class='comment'>// ProcessorVersion 字符串索引</span>
+  {0,0,0,0,0,1},                       <span class='comment'>// Voltage</span>
+  0,                                   <span class='comment'>// ExternalClock</span>
+  2800,                                <span class='comment'>// MaxSpeed MHz</span>
+  2800,                                <span class='comment'>// CurrentSpeed MHz</span>
+  0x41,                                <span class='comment'>// Status</span>
+  ProcessorUpgradeOther,
+  SMBIOS_HANDLE_L1I,                   <span class='comment'>// L1 Instruction Cache handle</span>
+  SMBIOS_HANDLE_L2,                    <span class='comment'>// L2 Cache handle</span>
+  SMBIOS_HANDLE_L3,                    <span class='comment'>// L3 Cache handle</span>
+  4,                                   <span class='comment'>// Serial 字符串索引（未设置）</span>
+  0,                                   <span class='comment'>// AssetTag 字符串索引（未设置）</span>
+  5,                                   <span class='comment'>// PartNumber 字符串索引</span>
+  64,                                  <span class='comment'>// CoreCount</span>
+  64,                                  <span class='comment'>// EnabledCoreCount</span>
+  64,                                  <span class='comment'>// ThreadCount</span>
+  0xAC,                                <span class='comment'>// ProcessorCharacteristics</span>
+  ProcessorFamilyRiscVRV64,            <span class='comment'>// RISC-V RV64</span>
+  0,                                   <span class='comment'>// CoreCount2</span>
+  0,                                   <span class='comment'>// EnabledCoreCount2</span>
+  0                                    <span class='comment'>// ThreadCount2</span>
+}</pre>
+  <p>Type 17 描述内存条。SG2046 的 <a class='file-link' href='file:///home/pbw/sg2046/sophgo-edk2/edk2-platforms/Platform/Sophgo/SG2046Pkg/Drivers/SmbiosPlatformDxe/Type17/PlatformMemoryDeviceData.c'>PlatformMemoryDeviceData.c</a> 中（注意源码注释写"DDR4"但枚举值实为 <code>MemoryTypeLpddr5</code>）：</p>
+<pre>{
+  EFI_SMBIOS_TYPE_MEMORY_DEVICE,
+  <span class='keyword'>sizeof</span> (SMBIOS_TABLE_TYPE17),
+  SMBIOS_HANDLE_PI_RESERVED,
+  SMBIOS_HANDLE_MEMORY,                <span class='comment'>// 指向 Type 16 Physical Memory Array</span>
+  0xFFFE,                              <span class='comment'>// MemoryErrorInformationHandle = no error</span>
+  64,                                  <span class='comment'>// TotalWidth bits（无 ECC 时 64 位）</span>
+  16,                                  <span class='comment'>// DataWidth bits</span>
+  0xFFFF,                              <span class='comment'>// Size：运行时动态获取</span>
+  MemoryFormFactorSip,                 <span class='comment'>// 封装形式 SIP</span>
+  0,                                   <span class='comment'>// Not part of a set</span>
+  1,                                   <span class='comment'>// DeviceLocator 字符串索引</span>
+  0,                                   <span class='comment'>// BankLocator</span>
+  MemoryTypeLpddr5,                    <span class='comment'>// 枚举值 LPDDR5（源码注释误写为 DDR4）</span>
+  {0,0,0,0,0,0,0,0,0,0,0,0,0,0,1},    <span class='comment'>// MemoryTypeDetails: unbuffered</span>
+  0,                                   <span class='comment'>// Speed - 运行时更新</span>
+  2,                                   <span class='comment'>// Manufacturer 字符串索引</span>
+  0,                                   <span class='comment'>// SerialNumber</span>
+  0,                                   <span class='comment'>// AssetTag</span>
+  0,                                   <span class='comment'>// PartNumber</span>
+  2,                                   <span class='comment'>// Rank</span>
+  0x4000,                              <span class='comment'>// ExtendedSize</span>
+  0xFFFF,                              <span class='comment'>// ConfiguredMemoryClockSpeed - 运行时更新</span>
+  0,                                   <span class='comment'>// MinimumVoltage</span>
+  0,                                   <span class='comment'>// MaximumVoltage</span>
+  500,                                <span class='comment'>// ConfiguredVoltage</span>
+  MemoryTechnologyDram,                <span class='comment'>// MemoryTechnology = DRAM</span>
+  ...
+  0x400000000,                         <span class='comment'>// VolatileSize = 16 GB - 运行时更新</span>
+  ...
+  8533,                                <span class='comment'>// ExtendedSpeed MT/s</span>
+  8533                                 <span class='comment'>// ExtendedConfiguredMemorySpeed</span>
+}</pre>
+  <div class='note'>
+    <strong>交叉引用示例：</strong>Type 4 通过 <code>L1/L2/L3 Cache Handle</code> 指向 Type 7 Cache 记录；Type 17 通过 <code>MemoryArrayHandle</code> 指向 Type 16 Physical Memory Array。Handle 必须全局唯一，SG2046 在 <a class='file-link' href='file:///home/pbw/sg2046/sophgo-edk2/edk2-platforms/Platform/Sophgo/SG2046Pkg/Drivers/SmbiosPlatformDxe/SmbiosPlatformDxe.h'>SmbiosPlatformDxe.h</a> 中预定义了这些常量：<code>SMBIOS_HANDLE_L1I = 0x1000</code>、<code>SMBIOS_HANDLE_L1D = 0x1001</code>、<code>SMBIOS_HANDLE_L2 = 0x1002</code>、<code>SMBIOS_HANDLE_L3 = 0x1003</code>、<code>SMBIOS_HANDLE_MOTHERBOARD = 0x1004</code>、<code>SMBIOS_HANDLE_CHASSIS = 0x1005</code>、<code>SMBIOS_HANDLE_MEMORY = 0x1007</code>、<code>SMBIOS_HANDLE_PROCESSOR = 0x1008</code>。
+  </div>
+
+  <h3>16.8 SmbiosDxe：把记录变成 OS 可见的表</h3>
+  <p>平台驱动把记录添加完后，SmbiosDxe 在 DXE 后期做两件事：</p>
+  <ol>
+    <li><strong>构造 EPS</strong>：把所有记录按 SMBIOS 格式拼成连续内存，计算总长度和校验和，生成 <code>SMBIOS_TABLE_ENTRY_POINT</code>（2.x）和 <code>SMBIOS_TABLE_3_0_ENTRY_POINT</code>（3.x）。</li>
+    <li><strong>注册到 System Table</strong>：调用 <code>gBS->InstallConfigurationTable (&amp;gEfiSmbiosTableGuid, Eps)</code> 和 <code>gBS->InstallConfigurationTable (&amp;gEfiSmbios3TableGuid, Eps64Bit)</code>。</li>
+  </ol>
+  <p>之后，DXE Core 的 <code>EfiGetSystemConfigurationTable</code>、BDS 启动管理器、OS Loader 都能通过 System Table 找到 SMBIOS 入口。</p>
+
+  <h3>16.9 操作系统怎么读 SMBIOS？</h3>
+  <p>UEFI OS Loader（GRUB2、systemd-boot、Linux EFISTUB）进入内核时会把 EFI System Table 传给内核。Linux 内核在 <code>drivers/firmware/dmi_scan.c</code> 中：</p>
+  <ol>
+    <li>调用 <code>efi.get_system_config_table(gEfiSmbios3TableGuid)</code> 或 <code>gEfiSmbiosTableGuid</code> 拿到 EPS 地址。</li>
+    <li>校验 Anchor String 和 checksum。</li>
+    <li>根据 EPS 中的 TableAddress 遍历所有记录，解析 Type/Length/Handle/Strings。</li>
+    <li>把信息暴露到 sysfs：<code>/sys/firmware/dmi/tables/DMI</code>（原始表）、<code>/sys/firmware/dmi/tables/smbios_entry_point</code>（EPS）。</li>
+    <li>在 <code>/sys/class/dmi/id/</code> 下生成人类可读的文件，如 <code>sys_vendor</code>、<code>product_name</code>、<code>product_version</code>、<code>product_serial</code>、<code>product_uuid</code>、<code>bios_vendor</code>、<code>bios_version</code> 等。</li>
+  </ol>
+  <p>用户态可以通过 <code>dmidecode</code> 查看：</p>
+<pre><span class='comment'># dmidecode -t 1    // 查看 System Information</span>
+Handle 0x0001, DMI type 1, 27 bytes
+System Information
+	Manufacturer: SOPHGO
+	Product Name: SG2046
+	Version: ...
+	Serial Number: ...
+	UUID: ...
+
+<span class='comment'># dmidecode -t 4    // 查看 Processor Information</span>
+Handle 0x0009, DMI type 4, 48 bytes
+Processor Information
+	Socket Designation: CPU0
+	Type: Central Processor
+	Family: RISC-V
+	Manufacturer: SOPHGO
+	ID: ...
+	Version: SG2046
+	Core Count: 64
+	Thread Count: 64
+	Characteristics: ...</pre>
+  <div class='note'>
+    <strong>注意：</strong>某些敏感字段（如序列号、UUID）受 <code>/sys/class/dmi/id/product_serial</code> 等文件的权限控制，普通用户可能无法读取，需要 root 权限或特定内核配置。
+  </div>
+
+  <h3>16.10 SG2046 各 Type 速查表</h3>
+  <table>
+    <tr><th>Type</th><th>名称</th><th>SG2046 说明</th></tr>
+    <tr><td>0</td><td>BIOS Information</td><td>固件厂商、版本、发布日期、ROM 大小等。</td></tr>
+    <tr><td>1</td><td>System Information</td><td>厂商 SOPHGO、产品名 SG2046、序列号、UUID。</td></tr>
+    <tr><td>2</td><td>Baseboard Information</td><td>主板厂商、型号、版本、序列号、资产标签。</td></tr>
+    <tr><td>3</td><td>System Enclosure / Chassis</td><td>机箱类型、厂商、版本、序列号、资产标签、启动状态。</td></tr>
+    <tr><td>4</td><td>Processor Information</td><td>64 核 RISC-V RV64、2800 MHz、L1/L2/L3 Cache 句柄。</td></tr>
+    <tr><td>7</td><td>Cache Information</td><td>L1I/L1D/L2/L3 缓存大小、关联性、类型。</td></tr>
+    <tr><td>9</td><td>System Slot</td><td>PCIe 插槽信息。</td></tr>
+    <tr><td>11</td><td>OEM Strings</td><td>OEM 自定义字符串。</td></tr>
+    <tr><td>13</td><td>BIOS Language</td><td>固件支持的语言。</td></tr>
+    <tr><td>16</td><td>Physical Memory Array</td><td>系统物理内存阵列：位置、用途、容量、错误校正。</td></tr>
+    <tr><td>17</td><td>Memory Device</td><td>每根内存条/SIP 信息：容量、类型 LPDDR5、速度、厂商。</td></tr>
+    <tr><td>19</td><td>Memory Array Mapped Address</td><td>内存阵列映射到的物理地址范围。</td></tr>
+    <tr><td>32</td><td>System Boot Information</td><td>启动状态、状态码。</td></tr>
+    <tr><td>38</td><td>IPMI Device Information</td><td>IPMI/BMC 控制器信息。</td></tr>
+    <tr><td>41</td><td>Onboard Devices Extended</td><td>板载设备（如网卡、显卡）的扩展描述。</td></tr>
+    <tr><td>44</td><td>Processor Additional Information</td><td>处理器附加信息（SMBIOS 3.3+ 新增）。</td></tr>
+  </table>
+
+  <h3>16.11 调试与验证 SMBIOS</h3>
+  <p>在 UEFI Shell 中可以用 <code>dh</code>、<code>memmap</code> 等命令观察，但最直接的方式是进入 Linux 后检查：</p>
+<pre><span class='comment'># 查看所有 DMI 信息</span>
+dmidecode
+
+<span class='comment'># 只看特定 Type</span>
+dmidecode -t 1
+dmidecode -t 4
+dmidecode -t 17
+
+<span class='comment'># 查看内核导出的可读文件</span>
+cat /sys/class/dmi/id/product_name
+cat /sys/class/dmi/id/board_vendor
+cat /sys/class/dmi/id/bios_version
+
+<span class='comment'># 查看原始表和入口点（二进制）</span>
+xxd /sys/firmware/dmi/tables/smbios_entry_point
+xxd /sys/firmware/dmi/tables/DMI</pre>
+  <p>如果固件阶段想确认表是否安装成功，可以在 <code>SmbiosPlatformDxeEntry</code> 后增加 <code>DEBUG</code> 输出，或在 SmbiosDxe 构造完 EPS 后打印 <code>InstallConfigurationTable</code> 的状态码。</p>
+</section>
+
+<section id='pcds'>
+  <h2>17. PCD：平台配置数据库</h2>
+
+  <h3>17.1 PCD 是什么？</h3>
+  <p>PCD（Platform Configuration Database）是 EDK2 的“配置中心”。它把平台相关的常量、开关、地址、GUID 等集中声明，模块通过统一宏访问，避免把平台细节硬编码到源码中。</p>
+
+  <h3>17.2 PCD 类型</h3>
+  <table>
+    <tr><th>类型</th><th>说明</th><th>典型用途</th></tr>
+    <tr><td>FixedAtBuild</td><td>构建时固定，运行期只读</td><td>寄存器基址、内存大小、功能开关</td></tr>
+    <tr><td>PatchableInModule</td><td>构建时固定，但可在二进制中补丁</td><td>需要运行时 patch 的常量</td></tr>
+    <tr><td>Dynamic</td><td>运行期可读写</td><td>Flash 变量偏移等状态</td></tr>
+    <tr><td>DynamicEx</td><td>跨 Token Space 访问的 Dynamic PCD</td><td>多包共享的动态配置</td></tr>
+  </table>
+
+  <h3>17.3 Token Space 与 AutoGen</h3>
+  <p>每个包声明自己的 Token Space GUID。SG2046 平台在 <a class='file-link' href='file:///home/pbw/sg2046/sophgo-edk2/edk2-platforms/Silicon/Sophgo/Sophgo.dec'>Sophgo.dec</a> 中声明：</p>
+<pre>[Guids]
+  gSophgoTokenSpaceGuid  = { 0xDA6ECA1D, 0x220A, 0x45D6, { 0xA7, 0x4D, 0x83, 0x64, 0x50, 0x90, 0x82, 0x1C } }
+
+[PcdsFixedAtBuild]
+  gSophgoTokenSpaceGuid.PcdPlatformType|0x0|UINT32|0x00001001
+  gSophgoTokenSpaceGuid.PcdMemoryBaseAddress|0|UINT64|0x00003001
+  gSophgoTokenSpaceGuid.PcdSdBaseAddress|0|UINT64|0x0000C001</pre>
+  <p>构建时 <code>build</code> 工具解析 .dec、.dsc、.inf 后生成 AutoGen 头文件（位于 <code>Build/SG2046-FPGA/DEBUG_GCC5/RISCV64/</code> 下），把每个 PCD 映射为 <code>PcdGetXX / PcdSetXX</code> 宏。例如 <code>PcdGet64 (PcdSdBaseAddress)</code> 最终展开为对生成常量的内联访问。</p>
+
+  <h3>17.4 PCD 访问宏示例</h3>
+  <p>在 <a class='file-link' href='file:///home/pbw/sg2046/sophgo-edk2/edk2-platforms/Silicon/Sophgo/Modules/PlatformPei/PlatformInitPei.c'>PlatformInitPei.c</a> 中：</p>
+<pre>MemoryBase = PcdGet64 (PcdPeiPermanentMemBase);
+MemorySize = PcdGet64 (PcdPeiPermanentMemSize);
+Status = PublishSystemMemory (MemoryBase, MemorySize);
+
+AddIoMemoryBaseSizeHob (PcdGet64 (PcdSdBaseAddress), PcdGet64 (PcdSdRegSize));</pre>
+  <div class='note'>
+    PCD 的精妙之处在于：平台地址变化时，只需修改 .dsc 或 .fdf.inc，无需改动 C 源码；同时源码中所有依赖点自动同步。
+  </div>
+</section>
+
+<section id='build-system'>
+  <h2>18. 构建系统：DSC / FDF / INF / DEC</h2>
+
+  <h3>18.1 四种文件的角色</h3>
+  <table>
+    <tr><th>文件类型</th><th>扩展名</th><th>角色</th></tr>
+    <tr><td>Package Declaration</td><td>.dec</td><td>声明包级 GUID、PPI、Protocol、PCD Token Space</td></tr>
+    <tr><td>Platform Description</td><td>.dsc</td><td>定义平台构建目标、库类映射、PCD 值、包含哪些模块</td></tr>
+    <tr><td>Flash Description</td><td>.fdf</td><td>定义 FD（Firmware Device）布局、FV 分区、模块打包规则</td></tr>
+    <tr><td>Module Information</td><td>.inf</td><td>单个模块（驱动/应用/库）的源码、依赖、入口点</td></tr>
+  </table>
+
+  <h3>18.2 SG2046-FPGA.dsc 关键片段</h3>
+  <p><a class='file-link' href='file:///home/pbw/sg2046/sophgo-edk2/edk2-platforms/Platform/Sophgo/SG2046Pkg/SG2046-FPGA/SG2046-FPGA.dsc'>SG2046-FPGA.dsc</a> 中：</p>
+<pre>[Defines]
+  PLATFORM_NAME                  = SG2046-FPGA
+  SUPPORTED_ARCHITECTURES        = RISCV64
+  FLASH_DEFINITION               = Platform/Sophgo/SG2046Pkg/SG2046-FPGA/SG2046-FPGA.fdf
+  DEFINE SECURE_BOOT_ENABLE      = TRUE
+  DEFINE FLASH_ENABLE            = FALSE
+  DEFINE ACPI_ENABLE             = TRUE
+  DEFINE PLATFORM_TYPE           = 1</pre>
+  <p><code>FLASH_DEFINITION</code> 指向 FDF；<code>DEFINE</code> 宏控制条件编译；<code>[LibraryClasses]</code> 段把抽象库类映射到具体实现。</p>
+
+  <h3>18.3 SG2046.fdf.inc 内存布局</h3>
+  <p><a class='file-link' href='file:///home/pbw/sg2046/sophgo-edk2/edk2-platforms/Platform/Sophgo/SG2046Pkg/SG2046.fdf.inc'>SG2046.fdf.inc</a> 定义关键地址：</p>
+<pre>DEFINE BLOCK_SIZE        = 0x1000
+DEFINE FW_BASE_ADDRESS   = 0x80200000
+DEFINE FW_SIZE           = 0x00e00000
+DEFINE EFI_MEMORY_SIZE   = 64 * 1024 * 1024
+DEFINE EFI_STACK_SIZE    = 64 * 1024
+DEFINE EFI_MEMORY_BOTTOM = $(FW_BASE_ADDRESS) + $(FW_SIZE)
+DEFINE EFI_MEMORY_TOP    = $(EFI_MEMORY_BOTTOM) + $(EFI_MEMORY_SIZE)
+DEFINE EFI_STACK_BASE    = $(EFI_MEMORY_TOP) - $(EFI_STACK_SIZE)
+
+SET gSophgoTokenSpaceGuid.PcdPeiPermanentMemBase = $(EFI_MEMORY_TOP)
+SET gSophgoTokenSpaceGuid.PcdPeiPermanentMemSize = $(EFI_MEMORY_SIZE)</pre>
+
+  <h3>18.4 SG2046-FPGA.fdf 与 Rule 段</h3>
+  <p><a class='file-link' href='file:///home/pbw/sg2046/sophgo-edk2/edk2-platforms/Platform/Sophgo/SG2046Pkg/SG2046-FPGA/SG2046-FPGA.fdf'>SG2046-FPGA.fdf</a> 把模块按阶段打包到不同 FV：</p>
+  <ul>
+    <li><code>[FV.FVMAIN_COMPACT]</code>：包含 SEC、PEI Core、PEIM，通常被压缩。</li>
+    <li><code>[FV.DXEFV]</code>：包含 DXE Core、所有 DXE 驱动、BDS、ACPI/SMBIOS 等。</li>
+    <li><code>APRIORI DXE { ... }</code>：指定 DXE 阶段必须优先调度的驱动，如 DevicePathDxe、PcdDxe、CpuDxeRiscV64。</li>
+  </ul>
+  <p>Rule 段定义如何把 EFI 文件打包成 PEI_DEPEX、DXE_DEPEX、PE32 等 Section。例如 PEIM 规则：</p>
+<pre>[Rule.Common.PEIM]
+  FILE PEIM = $(NAMED_GUID) {
+    PEI_DEPEX   PEI_DEPEX Optional        $(INF_OUTPUT)/$(MODULE_NAME).depex
+    PE32        PE32    Align=Auto        $(INF_OUTPUT)/$(MODULE_NAME).efi
+    UI          STRING="$(MODULE_NAME)"   Optional
+  }</pre>
+</section>
+
+<section id='debug'>
+  <h2>19. 调试技巧</h2>
+
+  <h3>19.1 串口日志</h3>
+  <p>SG2046 使用 SBI 提供的串口服务，<code>SerialPortLib</code> 实现位于 <code>MdePkg/Library/BaseSerialPortLibRiscVSbiLib/</code>。在 DSC 中：</p>
+<pre>!ifdef DEBUG_ON_SERIAL_PORT
+  DebugLib|MdePkg/Library/BaseDebugLibSerialPort/BaseDebugLibSerialPort.inf
+!else
+  DebugLib|MdePkg/Library/BaseDebugLibNull/BaseDebugLibNull.inf
+!endif</pre>
+  <p>代码中使用 <code>DEBUG ((DEBUG_INFO | DEBUG_ERROR, "..."))</code> 输出。常用级别：DEBUG_INIT、DEBUG_INFO、DEBUG_WARN、DEBUG_ERROR、DEBUG_VERBOSE。</p>
+
+  <h3>19.2 断言与死机定位</h3>
+  <p><code>ASSERT_EFI_ERROR (Status)</code> 在 DEBUG 构建中会触发死机并打印文件名/行号。遇到 ASSERT 时，根据打印的 PC 值对照 <code>Build/SG2046-FPGA/DEBUG_GCC5/RISCV64/</code> 下的 .map 文件即可定位函数。</p>
+
+  <h3>19.3 GDB / Source Level Debug</h3>
+  <p>开启 <code>SOURCE_DEBUG_ENABLE</code> 后，DSC 会链接 <code>PeCoffExtraActionLibDebug</code> 和 <code>DebugCommunicationLibSerialPort</code>，支持通过串口或以太网进行 GDB 远程调试。配合 OpenOCD / JTAG 可单步跟踪 SEC/PEI/DXE。</p>
+
+  <h3>19.4 UEFI Shell</h3>
+  <p>按 <code>s</code> 键进入 UEFI Shell 后，可使用：</p>
+  <ul>
+    <li><code>devices</code> / <code>drivers</code> / <code>devtree</code>：查看 Handle、Protocol、驱动绑定关系。</li>
+    <li><code>memmap</code>：查看 UEFI 内存映射。</li>
+    <li><code>dh</code>：Dump Handles，配合 Protocol GUID 过滤。</li>
+    <li><code>setvar</code>：读写 UEFI 变量。</li>
+    <li><code>edit</code> / <code>type</code>：查看文件。</li>
+  </ul>
+</section>
+
+<section id='dev-flow'>
+  <h2>20. SG2046 EDK2 开发流程</h2>
+
+  <h3>20.1 环境准备</h3>
+  <ol>
+    <li>安装 RISC-V GCC 交叉工具链（通常用 <code>riscv64-unknown-elf-gcc</code> 或 <code>riscv64-linux-gnu-gcc</code>）。</li>
+    <li>安装 Python3、nasm、iasl（ACPI 编译器）、uuid-dev 等依赖。</li>
+    <li>source EDK2 环境：<code>source edksetup.sh</code>。</li>
+  </ol>
+
+  <h3>20.2 典型构建命令</h3>
+<pre>build -a RISCV64 -t GCC5 -p Platform/Sophgo/SG2046Pkg/SG2046-FPGA/SG2046-FPGA.dsc -b DEBUG -D PLATFORM_TYPE=1</pre>
+  <p>产物位于 <code>Build/SG2046-FPGA/DEBUG_GCC5/FV/</code>，主要包括：</p>
+  <ul>
+    <li><code>SG2046-FPGA.fd</code>：完整固件镜像，可直接烧录。</li>
+    <li><code>DXEFV.Fv</code> / <code>FVMAIN_COMPACT.Fv</code>：各个 FV 分区。</li>
+  </ul>
+
+  <h3>20.3 烧录与启动</h3>
+  <p>根据板级支持，可通过以下方式加载：</p>
+  <ul>
+    <li>SD 卡启动：把 <code>.fd</code> 写入 SD 卡特定偏移。</li>
+    <li>SPI NOR Flash 启动：使用 <code>flashcp</code> 或厂商工具烧录。</li>
+    <li>网络 / JTAG：用于开发阶段快速迭代。</li>
+  </ul>
+  <div class='good'>
+    开发新驱动时，建议先在 DXE 阶段用 UEFI_DRIVER 模板验证，再逐步前移到 PEI；避免在 SEC 阶段直接调试复杂逻辑。
+  </div>
+</section>
+
+<section id='design-decisions'>
+  <h2>21. 关键设计决策与 rationale</h2>
+
+  <h3>21.1 为什么选择 PeilessSec？</h3>
+  <p>SG2046 使用 <code>PeilessSec</code>（无独立 PEI SEC 库）模式，SEC 阶段的 C 入口 <code>SecStartup</code> 直接构建 HOB 并调用 PEI Core。相比传统 OVMF 的 PlatformSecLib 封装，这种方式：</p>
+  <ul>
+    <li>减少一层抽象，代码更直观。</li>
+    <li>便于在 SEC 中直接复制 FDT、构建 RISC-V 专属 Handoff HOB。</li>
+    <li>与 RiscVVirt 风格保持一致，降低 RISC-V 平台维护成本。</li>
+  </ul>
+
+  <h3>21.2 FDT 为什么要复制一份？</h3>
+  <p><a class='file-link' href='file:///home/pbw/sg2046/sophgo-edk2/edk2-platforms/Silicon/Sophgo/Core/Sec/PeilessSec.c'>PeilessSec.c</a> 中：</p>
+<pre>FdtSize  = FdtTotalSize (DeviceTreeAddress);
+FdtPages = EFI_SIZE_TO_PAGES (FdtSize);
+FdtCopy  = AllocatePages (FdtPages);
+if (FdtCopy != NULL) {
+  FdtOpenInto (DeviceTreeAddress, FdtCopy, EFI_PAGES_TO_SIZE (FdtPages));
+  FdtHobData = BuildGuidHob (&amp;gFdtHobGuid, sizeof *FdtHobData);
+  if (FdtHobData != NULL) {
+    *FdtHobData = (UINT64)(UINTN)FdtCopy;
+  }
+}</pre>
+  <p>原因：Bootloader 传入的 FDT 可能位于后续会被 PEI/DXE 覆盖的内存区域。复制到 SEC 堆（HOB 内存）可确保 FDT 安全传递到 DXE，并避免原位置被内存分配破坏。</p>
+
+  <h3>21.3 临时栈与永久内存的边界</h3>
+  <p>SG2046 把临时栈放在 FW 之后 64MB 区域的最高端（<code>EFI_STACK_BASE = EFI_MEMORY_TOP - EFI_STACK_SIZE</code>），永久内存从 <code>EFI_MEMORY_TOP</code> 开始。这样：</p>
+  <ul>
+    <li>SEC/PEI 早期有确定可用的栈空间。</li>
+    <li>PEI 发现永久内存后通过 <code>TemporaryRamMigration</code> 把 HOB 和栈迁移过去，再归还临时内存。</li>
+  </ul>
+
+  <h3>21.4 为什么默认 FLASH_ENABLE=FALSE？</h3>
+  <p>FPGA 平台通常没有可靠的 SPI NOR Flash 或主要用于仿真验证，关闭 Flash 驱动可缩短构建时间、减少依赖；变量使用 EmuVariable，便于在内存中快速重置测试。ASIC 平台会改为 TRUE，把变量持久化到 NOR Flash。</p>
+</section>
+
+<section id='callchain'>
+  <h2>22. 源码级调用链：从复位向量到 OS Loader</h2>
+  <p>下面给出 SG2046 启动的主干函数调用链，便于新手按图索骥：</p>
+
+  <h3>22.1 SEC → PEI</h3>
+  <div class='diagram'>
+    <div class='diagram-title'>SEC 阶段调用链</div>
+    <div class='diagram-row'><div class='diagram-box'>复位向量 / OpenSBI</div><div class='diagram-arrow'>&#8594;</div><div class='diagram-box'>SecEntry.S<br>_ModuleEntryPoint</div><div class='diagram-arrow'>&#8594;</div><div class='diagram-box'>SecStartup<br>(PeilessSec.c)</div></div>
+    <div class='diagram-row'><div class='diagram-box'>SecStartup</div><div class='diagram-arrow'>&#8594;</div><div class='diagram-box'>HobConstructor<br>BuildGuidHob(gFdtHobGuid)<br>BuildStackHob</div><div class='diagram-arrow'>&#8594;</div><div class='diagram-box'>PeiCore<br>(PeilessSec.c)</div></div>
+    <div class='diagram-row'><div class='diagram-box'>PeiCore</div><div class='diagram-arrow'>&#8594;</div><div class='diagram-box'>LoadPeiEntryPointFromFv</div><div class='diagram-arrow'>&#8594;</div><div class='diagram-box'>PeiCoreEntryPoint<br>(MdeModulePkg/Core/Pei)</div></div>
+  </div>
+
+  <h3>22.2 PEI 阶段关键调用</h3>
+  <pre>PeiCoreEntryPoint
+  |- ProcessLibraryConstructorList
+  |- PeiDispatcher (按 DEPEX 调度 PEIM)
+       |- CpuPei       : 初始化 CPU，构建 CPU HOB
+       |- MemoryInitPei: InitializeRamRegions -> AddMemoryBaseSizeHob -> BuildMemoryTypeInformationHob
+       |- PlatformPei  : PublishPeiMemory -> PopulateSdIoResources
+       |- FvParserPei  : DecompressFirstFv -> PeiServicesInstallFvInfoPpi
+       |- DxeIpl       : HandOffToDxeCore
+            |- PeiServicesInstallPpi(gEndOfPeiSignalPpi)
+            |- SwitchStack(DxeCoreEntryPoint, HobList, NULL, TopOfStack)</pre>
+
+  <h3>22.3 DXE → BDS</h3>
+  <pre>DxeCoreEntryPoint (MdeModulePkg/Core/Dxe/DxeMain.c)
+  |- CoreInitializeMemoryServices   // 从 HOB 建立内存池
+  |- CoreInitializeGcdServices      // GCD 内存/IO 服务
+  |- CoreInitializeEventServices    // 事件/TPL
+  |- InstallProtocolInterface(gEfiDxeArchProtocolGuid)
+  |- Dispatch DxeDrivers (按 APRIORI 与 DEPEX)
+       |- FdtClientDxe  : InitializeFdtClientDxe -> InstallConfigurationTable(gFdtTableGuid)
+       |- CpuDxeRiscV64 : InitializeCpu -> RiscVConfigureMmu -> InstallCpuArchProtocol
+       |- AcpiPlatformDxe / SmbiosPlatformDxe
+       |- BdsDxe        : BdsEntry
+            |- PlatformBootManagerBeforeConsole
+            |- PlatformBootManagerAfterConsole
+            |- EfiBootManagerBoot(BootOption)</pre>
+</section>
+
+<section id='compare'>
+  <h2>23. 与 QEMU RiscVVirt 的对比</h2>
+  <table>
+    <tr><th>维度</th><th>QEMU RiscVVirt (OVMF)</th><th>SOPHGO SG2046</th></tr>
+    <tr><td>启动入口</td><td>QEMU 加载 OVMF_CODE.fd 到固定地址</td><td>OpenSBI / Bootloader 链式加载 SG2046.fd</td></tr>
+    <tr><td>FDT 来源</td><td>QEMU 生成并传入</td><td>Bootloader 或 Flash 中的 DTB</td></tr>
+    <tr><td>内存发现</td><td>通过 FDT memory 节点或平台固定值</td><td>MemoryInitPei 根据平台类型/FDT 构建 RAM HOB</td></tr>
+    <tr><td>存储介质</td><td>VirtIO Block / NVMe 虚拟设备</td><td>SD 卡 / SDIO / SPI NOR / NVMe (PCIe)</td></tr>
+    <tr><td>显示</td><td>QEMU 标准 VGA / VirtIO GPU</td><td>PCIe 显卡 GOP</td></tr>
+    <tr><td>变量持久化</td><td>Flash 变量存储（OVMF_VARS）</td><td>可选 SPI NOR Flash 或 EmuVariable</td></tr>
+    <tr><td>安全启动</td><td>完整 Secure Boot + TPM 可选</td><td>Secure Boot 框架已集成，TPM 可选</td></tr>
+    <tr><td>代码组织</td><td>大量通用 OvmfPkg 代码</td><td>Silicon/Sophgo + Platform/Sophgo 平台定制</td></tr>
+  </table>
+  <div class='note'>
+    QEMU RiscVVirt 是“参考实现”，重在通用可移植；SG2046 是“产品化实现”，重在利用真实 SoC 的 SD、PCIe、ACPI、SMBIOS 等硬件能力。
+  </div>
+</section>
+
+<section id='glossary'>
+  <h2>24. 术语表</h2>
+  <table>
+    <tr><th>术语</th><th>含义</th></tr>
+    <tr><td>UEFI</td><td>Unified Extensible Firmware Interface，统一可扩展固件接口规范</td></tr>
+    <tr><td>PI</td><td>Platform Initialization，平台初始化规范</td></tr>
+    <tr><td>SEC</td><td>Security Phase，最早执行阶段，建立临时栈</td></tr>
+    <tr><td>PEI</td><td>Pre-EFI Initialization，初始化内存、CPU、芯片组</td></tr>
+    <tr><td>DXE</td><td>Driver Execution Environment，加载驱动、建立 Boot/Runtime Services</td></tr>
+    <tr><td>BDS</td><td>Boot Device Selection，选择并启动 OS Loader</td></tr>
+    <tr><td>HOB</td><td>Hand-Off Block，阶段间传递数据的数据块链表</td></tr>
+    <tr><td>PPI</td><td>PEIM-to-PEIM Interface，PEI 阶段模块间接口</td></tr>
+    <tr><td>Protocol</td><td>DXE/BDS 阶段模块间接口，由 Handle/Protocol 数据库管理</td></tr>
+    <tr><td>PCD</td><td>Platform Configuration Database，平台配置数据库</td></tr>
+    <tr><td>DEPEX</td><td>Dependency Expression，模块调度依赖表达式</td></tr>
+    <tr><td>FDT</td><td>Flattened Device Tree，扁平设备树</td></tr>
+    <tr><td>FV</td><td>Firmware Volume，固件卷，模块打包单位</td></tr>
+    <tr><td>FD</td><td>Firmware Device，最终烧录的完整固件镜像</td></tr>
+    <tr><td>DSC</td><td>Platform Description 文件</td></tr>
+    <tr><td>FDF</td><td>Flash Description 文件</td></tr>
+    <tr><td>INF</td><td>Module Information 文件</td></tr>
+    <tr><td>DEC</td><td>Package Declaration 文件</td></tr>
+    <tr><td>GOP</td><td>Graphics Output Protocol，图形输出协议</td></tr>
+    <tr><td>ACPI</td><td>Advanced Configuration and Power Interface</td></tr>
+    <tr><td>SMBIOS</td><td>System Management BIOS，系统管理 BIOS 表</td></tr>
+    <tr><td>SBI</td><td>RISC-V Supervisor Binary Interface</td></tr>
+  </table>
+</section>
+
+</main>
+
+<footer>
+  <p>本文档基于 SOPHGO SG2046 EDK2 平台源码整理，旨在帮助 EDK2 新手建立从规范到源码的全景认知。</p>
+  <p>主要参考路径：<code>sophgo-edk2/edk2-platforms/Silicon/Sophgo</code> 与 <code>sophgo-edk2/edk2-platforms/Platform/Sophgo/SG2046Pkg</code></p>
+</footer>
+
+</div> <!-- page-container -->
+
+<script>
+// 左侧目录生成与滚动高亮
+(function () {
+  const tocNav = document.getElementById('toc-nav');
+  const main = document.querySelector('main');
+  if (!tocNav || !main) return;
+
+  // 收集 h2/h3/h4，要求有 id（没有则自动生成）
+  const headings = Array.from(main.querySelectorAll('h2, h3, h4'));
+  headings.forEach((h, i) => {
+    if (!h.id) h.id = '_heading_' + i;
+  });
+
+  // 构建嵌套目录树
+  const root = { children: [], level: 1 };
+  const stack = [root];
+  headings.forEach(h => {
+    const level = parseInt(h.tagName[1], 10);
+    const text = h.textContent.trim();
+    const item = { id: h.id, text: text, level: level, children: [] };
+    while (stack[stack.length - 1].level >= level) {
+      stack.pop();
+    }
+    stack[stack.length - 1].children.push(item);
+    stack.push(item);
+  });
+
+  // 递归渲染
+  function renderList(items) {
+    const ul = document.createElement('ul');
+    items.forEach(item => {
+      const li = document.createElement('li');
+      li.dataset.level = item.level;
+      const a = document.createElement('a');
+      a.href = '#' + item.id;
+      a.textContent = item.text;
+      a.dataset.target = item.id;
+      li.appendChild(a);
+      if (item.children.length) {
+        li.appendChild(renderList(item.children));
+      }
+      ul.appendChild(li);
+    });
+    return ul;
+  }
+  tocNav.appendChild(renderList(root.children));
+
+  // 点击平滑滚动
+  tocNav.addEventListener('click', function (e) {
+    const a = e.target.closest('a');
+    if (!a) return;
+    e.preventDefault();
+    const target = document.getElementById(a.dataset.target);
+    if (target) {
+      target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      history.pushState(null, null, '#' + a.dataset.target);
+    }
+  });
+
+  // 滚动高亮
+  const tocLinks = Array.from(tocNav.querySelectorAll('a'));
+  const tocItems = tocLinks.map(a => ({
+    link: a,
+    target: document.getElementById(a.dataset.target)
+  })).filter(x => x.target);
+
+  let activeId = null;
+  function updateActive() {
+    const scrollPos = window.scrollY + 120; // 留出顶部偏移
+    let current = null;
+    for (let i = tocItems.length - 1; i >= 0; i--) {
+      if (tocItems[i].target.offsetTop <= scrollPos) {
+        current = tocItems[i];
+        break;
+      }
+    }
+    if (!current && tocItems.length) current = tocItems[0];
+    if (current && current.link.dataset.target !== activeId) {
+      tocLinks.forEach(a => a.classList.remove('active'));
+      current.link.classList.add('active');
+      activeId = current.link.dataset.target;
+      // 自动展开父级并滚动到可视区
+      let parent = current.link.closest('li');
+      while (parent) {
+        parent.classList.add('expanded');
+        parent = parent.parentElement.closest('li');
+      }
+    }
+  }
+
+  window.addEventListener('scroll', updateActive, { passive: true });
+  window.addEventListener('resize', updateActive);
+  document.addEventListener('DOMContentLoaded', updateActive);
+  updateActive();
+
+  // 移动端目录折叠
+  const toggleBtn = document.getElementById('toc-toggle');
+  const sidebar = document.getElementById('toc-sidebar');
+  if (toggleBtn && sidebar) {
+    toggleBtn.addEventListener('click', () => {
+      sidebar.classList.toggle('collapsed');
+    });
+  }
+})();
+</script>
+
+</body>
+</html>

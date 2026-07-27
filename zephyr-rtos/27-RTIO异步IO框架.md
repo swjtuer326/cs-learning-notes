@@ -783,7 +783,7 @@ RTIO 的代价是每个上下文要一对池 + IODEV 结构，但相比"每路�
 
 ## 参考资料
 
-- 官方文档 [doc/services/rtio/index.rst](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/doc/services/rtio/index.rst) — RTIO 总览与 rings.png 图示
+- 官方文档 [doc/services/rtio/index.rst](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/doc/services/rtio/index.rst) — 参考了 §"Problem"、§"Inspiration, introducing io_uring"、§"Submission Queue"、§"Completion Queue"、§"Executor"、§"IO Device"、§"Cancellation"、§"Memory pools"、§"When to Use"、§"Supported Buses"、§"API Reference"，以及 rings.png 图示
 - 源码 [subsys/rtio/rtio_init.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/rtio/rtio_init.c) — SQE/CQE 池初始化（遍历 iterable section）
 - 源码 [subsys/rtio/rtio_executor.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/rtio/rtio_executor.c) — 执行器：链链接、dispatch、multishot 重投
 - 源码 [subsys/rtio/rtio_sched.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/rtio/rtio_sched.c) — DELAY 调度（复用内核 timeout_q）

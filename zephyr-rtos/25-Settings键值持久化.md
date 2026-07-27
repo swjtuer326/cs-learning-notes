@@ -571,7 +571,7 @@ ZMS（2024 年由 BayLibre 引入）是 Settings 的新一代后端，思路类�
 
 `settings_zms.h` 定义了 32-bit ID 的位布局：
 
-```
+```text
 | 31 30 | 29 ... (COLLISION_BITS+1) | COLLISION_BITS ... 1 | 0 |
 | MSB   | hash (截断)                | collision_num        |LL|
 |       |                            |                      | |
@@ -707,7 +707,7 @@ retention 后端（`subsys/settings/src/settings_retention.c`）面向"启动时
 
 数据格式很简单（`settings_retention.c:24-37`）：
 
-```
+```text
 | uint16_t length_name | uint16_t length_value | name 字节 | value 字节 |
 | ... 重复 ... |
 | 0x0000 0x0000（结束标记） |
@@ -886,7 +886,7 @@ int app_save_calib(int32_t new_offset)
 
 整个生命周期如下（编号步骤）：
 
-```
+```text
 启动阶段（一次性）：
 1. flash 驱动就绪后，某模块调 settings_subsys_init()
 2. settings_init() 初始化链表；settings_backend_init() 挂载 ZMS/NVS/FCB
@@ -968,7 +968,7 @@ Settings 是 [20 章 iterable sections](./20-Iterable%20Sections链接器魔法.
 
 ## 参考资料
 
-- [Settings 官方文档](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/doc/services/storage/settings/index.rst) — Zephyr Settings 子系统官方说明
+- [Settings 官方文档](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/doc/services/storage/settings/index.rst) — 参考了 §"Handlers"、§"Backends"、§"Zephyr Storage Backends"、§"Storage Location"、§"Loading data from persistent storage"、§"Storing data to persistent storage"
 - 源码 [subsys/settings/src/settings.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/settings/src/settings.c) — Settings 核心：handler 注册、名字解析、commit 排序
 - 源码 [subsys/settings/src/settings_store.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/settings/src/settings_store.c) — 存储抽象：load/save 流程、source/dst 注册
 - 源码 [subsys/settings/src/settings_init.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/settings/src/settings_init.c) — 子系统初始化

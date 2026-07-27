@@ -1,0 +1,144 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 940 620" style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,PingFang SC,Microsoft YaHei,sans-serif;font-size:13px;">
+  <defs>
+    <marker id="arr45" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#636c76"/>
+    </marker>
+    <marker id="arr45r" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#bf3989"/>
+    </marker>
+  </defs>
+  <rect width="940" height="620" fill="#ffffff"/>
+
+  <text x="470" y="25" text-anchor="middle" font-size="15" font-weight="700" fill="#1f2328">入站请求处理状态机</text>
+
+  <!-- ===== Row 1: Start → DDTP.MODE → DDT → DC.tc.V → Permission (y=50-100) ===== -->
+
+  <!-- Start -->
+  <ellipse cx="80" cy="75" rx="55" ry="22" fill="#0969da1a" stroke="#0969da" stroke-width="1.5"/>
+  <text x="80" y="73" text-anchor="middle" fill="#0969da" font-size="11" font-weight="600">请求到达</text>
+  <text x="80" y="87" text-anchor="middle" fill="#57606a" font-size="9">DID/PID/IOVA/TTYP</text>
+
+  <line x1="135" y1="75" x2="195" y2="75" stroke="#636c76" stroke-width="1.5" marker-end="url(#arr45)"/>
+
+  <!-- DDTP.MODE check -->
+  <polygon points="260,45 340,75 260,105 180,75" fill="#fff8c5" stroke="#d29922" stroke-width="1.5"/>
+  <text x="260" y="71" text-anchor="middle" fill="#1f2328" font-size="11" font-weight="600">DDTP.MODE</text>
+  <text x="260" y="85" text-anchor="middle" fill="#57606a" font-size="9">= OFF?</text>
+
+  <!-- Fault branch from DDTP (down-left) -->
+  <path d="M 180,75 L 80,75 L 80,140" stroke="#bf3989" stroke-width="1.5" fill="none" marker-end="url(#arr45r)"/>
+  <text x="130" y="68" text-anchor="middle" fill="#bf3989" font-size="10" font-weight="600">是</text>
+  <rect x="20" y="140" width="120" height="40" rx="6" fill="#cf222e1a" stroke="#cf222e" stroke-width="1.5"/>
+  <text x="80" y="160" text-anchor="middle" fill="#cf222e" font-size="11" font-weight="600">cause 256</text>
+  <text x="80" y="174" text-anchor="middle" fill="#cf222e" font-size="9">DMA_DISABLED</text>
+
+  <!-- Continue right from DDTP -->
+  <line x1="340" y1="75" x2="395" y2="75" stroke="#636c76" stroke-width="1.5" marker-end="url(#arr45)"/>
+  <text x="367" y="67" text-anchor="middle" fill="#1a7f37" font-size="10" font-weight="600">否</text>
+
+  <!-- DDT lookup -->
+  <rect x="395" y="53" width="100" height="44" rx="6" fill="#f6f8fa" stroke="#8250df" stroke-width="1.5"/>
+  <text x="445" y="73" text-anchor="middle" fill="#1f2328" font-size="11" font-weight="600">查 DDT</text>
+  <text x="445" y="89" text-anchor="middle" fill="#57606a" font-size="9">得 DC</text>
+
+  <line x1="495" y1="75" x2="535" y2="75" stroke="#636c76" stroke-width="1.5" marker-end="url(#arr45)"/>
+
+  <!-- DC.tc.V check -->
+  <polygon points="600,45 680,75 600,105 520,75" fill="#fff8c5" stroke="#d29922" stroke-width="1.5"/>
+  <text x="600" y="71" text-anchor="middle" fill="#1f2328" font-size="11" font-weight="600">DC.tc.V</text>
+  <text x="600" y="85" text-anchor="middle" fill="#57606a" font-size="9">= 1?</text>
+
+  <!-- Fault from V=0 (down) -->
+  <line x1="600" y1="105" x2="600" y2="140" stroke="#bf3989" stroke-width="1.5" marker-end="url(#arr45r)"/>
+  <text x="615" y="125" fill="#bf3989" font-size="10" font-weight="600">否</text>
+  <rect x="540" y="140" width="120" height="40" rx="6" fill="#cf222e1a" stroke="#cf222e" stroke-width="1.5"/>
+  <text x="600" y="160" text-anchor="middle" fill="#cf222e" font-size="11" font-weight="600">cause 258</text>
+  <text x="600" y="174" text-anchor="middle" fill="#cf222e" font-size="9">DDT_INVALID</text>
+
+  <!-- Continue right from DC.tc.V -->
+  <line x1="680" y1="75" x2="735" y2="75" stroke="#636c76" stroke-width="1.5" marker-end="url(#arr45)"/>
+  <text x="707" y="67" text-anchor="middle" fill="#1a7f37" font-size="10" font-weight="600">是</text>
+
+  <!-- Permission check -->
+  <rect x="735" y="53" width="130" height="44" rx="6" fill="#f6f8fa" stroke="#0969da" stroke-width="1.5"/>
+  <text x="800" y="73" text-anchor="middle" fill="#1f2328" font-size="11" font-weight="600">权限/ATS/PRI</text>
+  <text x="800" y="89" text-anchor="middle" fill="#57606a" font-size="9">检查</text>
+
+  <!-- Arrow down to IOTLB -->
+  <line x1="800" y1="97" x2="800" y2="220" stroke="#636c76" stroke-width="1.5" marker-end="url(#arr45)"/>
+
+  <!-- ===== Row 2: IOTLB check (y=220-280) ===== -->
+
+  <!-- IOTLB check -->
+  <polygon points="800,220 880,255 800,290 720,255" fill="#fff8c5" stroke="#d29922" stroke-width="1.5"/>
+  <text x="800" y="251" text-anchor="middle" fill="#1f2328" font-size="11" font-weight="600">IOTLB</text>
+  <text x="800" y="267" text-anchor="middle" fill="#57606a" font-size="9">命中?</text>
+
+  <!-- Hit: output SPA (left) -->
+  <line x1="720" y1="255" x2="590" y2="255" stroke="#1a7f37" stroke-width="1.5" marker-end="url(#arr45)"/>
+  <text x="655" y="247" text-anchor="middle" fill="#1a7f37" font-size="10" font-weight="600">命中</text>
+  <rect x="450" y="233" width="130" height="44" rx="6" fill="#dafbe1" stroke="#1a7f37" stroke-width="2"/>
+  <text x="515" y="253" text-anchor="middle" fill="#1a7f37" font-size="12" font-weight="700">输出 SPA</text>
+  <text x="515" y="269" text-anchor="middle" fill="#1a7f37" font-size="9">DMA 完成</text>
+
+  <!-- Miss: PTW (down) -->
+  <line x1="800" y1="290" x2="800" y2="330" stroke="#bf3989" stroke-width="1.5" marker-end="url(#arr45r)"/>
+  <text x="820" y="313" fill="#bf3989" font-size="10" font-weight="600">未命中</text>
+
+  <!-- ===== Row 3: PDT check + First-stage (y=330-400) ===== -->
+
+  <!-- PDT check -->
+  <polygon points="800,330 870,360 800,390 730,360" fill="#fff8c5" stroke="#d29922" stroke-width="1.5"/>
+  <text x="800" y="357" text-anchor="middle" fill="#1f2328" font-size="11" font-weight="600">PDT?</text>
+  <text x="800" y="371" text-anchor="middle" fill="#57606a" font-size="9">PDTV=1</text>
+
+  <!-- Yes: First-stage walk (left) -->
+  <line x1="730" y1="360" x2="620" y2="360" stroke="#636c76" stroke-width="1.5" marker-end="url(#arr45)"/>
+  <text x="675" y="352" text-anchor="middle" fill="#1a7f37" font-size="10" font-weight="600">是</text>
+
+  <rect x="490" y="338" width="130" height="44" rx="6" fill="#0969da1a" stroke="#0969da" stroke-width="1.5"/>
+  <text x="555" y="358" text-anchor="middle" fill="#1f2328" font-size="11" font-weight="600">First-stage walk</text>
+  <text x="555" y="374" text-anchor="middle" fill="#0969da" font-size="9">GVA → GPA</text>
+
+  <!-- No: skip to G-stage (down) -->
+  <line x1="800" y1="390" x2="800" y2="430" stroke="#636c76" stroke-width="1.5" marker-end="url(#arr45)"/>
+  <text x="820" y="413" fill="#57606a" font-size="10" font-weight="600">否</text>
+
+  <!-- Arrow from First-stage down to G-stage -->
+  <line x1="555" y1="382" x2="555" y2="430" stroke="#636c76" stroke-width="1.5" marker-end="url(#arr45)"/>
+
+  <!-- ===== Row 4: G-stage walk (y=430-475) ===== -->
+
+  <rect x="420" y="430" width="440" height="44" rx="6" fill="#fff8c51a" stroke="#d29922" stroke-width="1.5"/>
+  <text x="640" y="450" text-anchor="middle" fill="#1f2328" font-size="11" font-weight="600">G-stage walk（如果 iohgatp != BARE）</text>
+  <text x="640" y="466" text-anchor="middle" fill="#d29922" font-size="9">GPA → SPA</text>
+
+  <!-- Arrow down to output -->
+  <line x1="640" y1="474" x2="640" y2="510" stroke="#636c76" stroke-width="1.5" marker-end="url(#arr45)"/>
+
+  <!-- ===== Row 5: Output (y=510-555) ===== -->
+
+  <rect x="500" y="510" width="120" height="40" rx="6" fill="#dafbe1" stroke="#1a7f37" stroke-width="2"/>
+  <text x="560" y="528" text-anchor="middle" fill="#1a7f37" font-size="11" font-weight="700">SPA 输出</text>
+  <text x="560" y="542" text-anchor="middle" fill="#1a7f37" font-size="9">+ 更新 IOTLB</text>
+
+  <rect x="660" y="510" width="120" height="40" rx="6" fill="#cf222e1a" stroke="#cf222e" stroke-width="1.5"/>
+  <text x="720" y="528" text-anchor="middle" fill="#cf222e" font-size="11" font-weight="700">写 FQ</text>
+  <text x="720" y="542" text-anchor="middle" fill="#cf222e" font-size="9">Fault Record</text>
+
+  <line x1="620" y1="530" x2="660" y2="530" stroke="#636c76" stroke-width="1" stroke-dasharray="4,3"/>
+
+  <!-- ===== Legend (y=575-605) ===== -->
+  <rect x="20" y="575" width="900" height="35" rx="6" fill="#f6f8fa" stroke="#d0d7de"/>
+  <text x="35" y="597" fill="#57606a" font-size="11" font-weight="600">图例：</text>
+  <ellipse cx="100" cy="593" rx="16" ry="9" fill="#0969da1a" stroke="#0969da" stroke-width="1"/>
+  <text x="125" y="597" fill="#57606a" font-size="11">起点</text>
+  <polygon points="185,585 200,593 185,601 170,593" fill="#fff8c5" stroke="#d29922" stroke-width="1"/>
+  <text x="210" y="597" fill="#57606a" font-size="11">判断</text>
+  <rect x="265" y="585" width="20" height="16" rx="3" fill="#f6f8fa" stroke="#8250df" stroke-width="1.5"/>
+  <text x="295" y="597" fill="#57606a" font-size="11">处理步骤</text>
+  <rect x="375" y="585" width="20" height="16" rx="3" fill="#dafbe1" stroke="#1a7f37" stroke-width="1.5"/>
+  <text x="405" y="597" fill="#57606a" font-size="11">成功</text>
+  <rect x="455" y="585" width="20" height="16" rx="3" fill="#cf222e1a" stroke="#cf222e" stroke-width="1.5"/>
+  <text x="485" y="597" fill="#57606a" font-size="11">Fault</text>
+</svg>

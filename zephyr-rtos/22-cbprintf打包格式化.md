@@ -206,7 +206,7 @@ struct cbprintf_package_hdr_ext {
 
 包的内存布局：
 
-```
+```text
 +----------------------+
 | desc (4 或 8 字节)    |  ← len / str_cnt / ro_str_cnt / rw_str_cnt
 +----------------------+

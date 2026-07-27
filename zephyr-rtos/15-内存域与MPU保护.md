@@ -63,7 +63,7 @@ Zephyr 的内存保护分两层：
 >
 > Zephyr 选择前者是资源约束下的务实判断：MCU 上 RAM 以 KB 计，把每个驱动拆成独立地址空间的开销无法承受；同时 MCU 上的"内核"通常只有几十个驱动几个常用 API，TCB 比服务器 Linux 小一两个数量级，bug 面也相应小。这一选择也意味着"用 Zephyr 用户态做隔离"的有效场景是受限的：它能挡住用户线程的越界写、缓冲区溢出、第三方库 bug，但挡不住内核自身的逻辑错误或驱动 bug。设计时必须把"需要防御的代码"明确放进用户线程，"被防御的资源"留在内核侧，否则隔离形同虚设。
 
-Zephyr 官方文档（[file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/doc/kernel/usermode/memory_domain.rst](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/doc/kernel/usermode/memory_domain.rst)）开篇即说明：Zephyr 的内存保护设计面向带 MPU 的 MCU；对于带分页 MMU 的架构（如 x86），MMU 被当作"分区数无限的 MPU"使用（identity page table）。
+Zephyr 官方文档（[memory_domain.rst](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/doc/kernel/usermode/memory_domain.rst)）开篇即说明：Zephyr 的内存保护设计面向带 MPU 的 MCU；对于带分页 MMU 的架构（如 x86），MMU 被当作"分区数无限的 MPU"使用（identity page table）。
 
 ---
 
@@ -73,7 +73,7 @@ Zephyr 官方文档（[file:///home/pbw/rtos/cs-learning-notes/zephyr-project/ze
 
 ### 2.1 数据结构
 
-两个核心结构体定义在 [file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/app_memory/mem_domain.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/app_memory/mem_domain.h)（行 55-95）：
+两个核心结构体定义在 [include/zephyr/app_memory/mem_domain.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/app_memory/mem_domain.h)（行 55-95）：
 
 ```c
 /* include/zephyr/app_memory/mem_domain.h:55-62 */
@@ -124,7 +124,7 @@ static int init_mem_domain_module(void)
 SYS_INIT(init_mem_domain_module, PRE_KERNEL_1, CONFIG_KERNEL_INIT_PRIORITY_DEFAULT);
 ```
 
-`arch_mem_domain_max_partitions_get()` 的实现因架构而异。以 ARM Cortex-M 为例（[file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/arch/arm/core/mpu/arm_core_mpu.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/arch/arm/core/mpu/arm_core_mpu.c) 行 352-365）：
+`arch_mem_domain_max_partitions_get()` 的实现因架构而异。以 ARM Cortex-M 为例（[arch/arm/core/mpu/arm_core_mpu.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/arch/arm/core/mpu/arm_core_mpu.c) 行 352-365）：
 
 ```c
 int arch_mem_domain_max_partitions_get(void)
@@ -223,7 +223,7 @@ flowchart TD
 
 Zephyr 定义了一套统一命名的权限宏，所有架构都遵循 `K_MEM_PARTITION_P_xx_U_xx` 的形式——`P` 表示特权态（Privileged）、`U` 表示用户态（Unprivileged）、`R/W/X/N` 表示读/写/执行/无权限。完整列表见各架构的 `arch.h` 或 `mpu/*.h`。
 
-ARMv8-M 的权限宏定义在 [file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/arch/arm/mpu/arm_mpu_v8.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/arch/arm/mpu/arm_mpu_v8.h)（行 382-399）：
+ARMv8-M 的权限宏定义在 [include/zephyr/arch/arm/mpu/arm_mpu_v8.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/arch/arm/mpu/arm_mpu_v8.h)（行 382-399）：
 
 ```c
 /* arm_mpu_v8.h:382-399 */
@@ -470,7 +470,7 @@ uint8_t rx_buf[128];
 
 ### 6.2 自动分区的三步法
 
-`K_APPMEM_PARTITION_DEFINE` 解决这个问题，定义在 [file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/app_memory/app_memdomain.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/app_memory/app_memdomain.h)（行 127-142）：
+`K_APPMEM_PARTITION_DEFINE` 解决这个问题，定义在 [include/zephyr/app_memory/app_memdomain.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/app_memory/app_memdomain.h)（行 127-142）：
 
 ```c
 #define K_APPMEM_PARTITION_DEFINE(name) \
@@ -632,7 +632,7 @@ if (domain == &k_mem_domain_default) {
 
 ### 8.1 回调列表
 
-架构层必须或可选实现的回调定义在 [file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/arch/arch_interface.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/arch/arch_interface.h)（行 697-812）：
+架构层必须或可选实现的回调定义在 [include/zephyr/arch/arch_interface.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/arch/arch_interface.h)（行 697-812）：
 
 | 回调 | 触发时机 | 必需条件 | 作用 |
 |------|----------|----------|------|

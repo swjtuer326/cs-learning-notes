@@ -195,7 +195,7 @@ flowchart LR
 
 `K_OBJ_TYPE_ID_GEN("SEM4")` 在编译期展开为：
 
-```
+```text
 'S' = 0x53  'E' = 0x45  'M' = 0x4D  '4' = 0x34
 id = (0x53 << 24) | (0x45 << 16) | (0x4D << 8) | 0x34
    = 0x53454D34
@@ -497,7 +497,7 @@ struct k_obj_core_stats_desc {
 
 `CONFIG_OBJ_CORE_STATS` 是统计框架的总开关，[kernel/Kconfig.obj_core](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/Kconfig.obj_core#L122-L153)：
 
-```
+```kconfig
 menuconfig OBJ_CORE_STATS
 	bool "Object core statistics"
 	default n
@@ -642,7 +642,7 @@ static int k_mem_slab_stats_query(struct k_obj_core *obj_core, void *stats)
 
 **raw 直读**（`k_obj_core_stats_raw`）：
 
-```
+```text
 num_blocks    = 10
 block_size    = 32
 num_used      = 3
@@ -651,7 +651,7 @@ max_used      = 7
 
 **query 转换**（`k_mem_slab_stats_query`）：
 
-```
+```text
 free_bytes          = (10 - 3) * 32 = 224
 allocated_bytes     = 3 * 32        = 96
 max_allocated_bytes = 7 * 32        = 224
@@ -928,7 +928,7 @@ Object Core 的设计灵感来自 Linux kobject，但二者在目标与实现上
 
 ## 参考资料
 
-- [Object Cores（官方文档）](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/doc/kernel/object_cores/index.rst) — 概念、统计、自定义类型集成示例
+- [Object Cores（官方文档）](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/doc/kernel/object_cores/index.rst) — 参考了 §"Object Core Concepts"、§"Object Core Statistics Concepts"、§"Implementation"、§"Configuration Options"
 - 源码 [kernel/obj_core.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/kernel/obj_core.c) — 框架核心实现：`z_obj_type_init`、`k_obj_core_init`、`k_obj_core_link`、`k_obj_type_walk_locked`、所有 `k_obj_core_stats_*` API
 - 源码 [include/zephyr/kernel/obj_core.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/kernel/obj_core.h) — `struct k_obj_core`、`struct k_obj_type`、`struct k_obj_core_stats_desc` 定义，`K_OBJ_TYPE_ID_GEN` 宏，所有内置类型 ID 宏
 - 源码 [include/zephyr/kernel/stats.h](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/include/zephyr/kernel/stats.h) — `struct k_cycle_stats`（线程/CPU 的 raw 统计类型）

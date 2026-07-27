@@ -415,7 +415,7 @@ MCUboot 利用约束 1 做了一个精巧的设计：**trailer 所有状态变�
 
 但**首次刷写**和**复位所有字段**时，必须把整个 trailer page 从全 0 恢复到全 `0xFF`——这就需要用擦除了。如果 trailer 与镜像头在同一 page：
 
-```
+```text
 ┌──── 同一擦除 page (4 KB) ────┐
 │ 头+签名 │  镜像体  │ trailer  │
 └──────────────────────────────┘
@@ -425,7 +425,7 @@ MCUboot 利用约束 1 做了一个精巧的设计：**trailer 所有状态变�
 
 所以 trailer 必须放在与头不同的擦除 page 里：
 
-```
+```text
 ┌─ 擦除 page 1 ─┬─ 擦除 page N ─┐
 │ 头+签名 │ 镜像体  │    trailer   │
 └────────────────┴──────────────┘
@@ -487,7 +487,7 @@ stateDiagram-v2
 
 假设 slot0 跑 v1.0.0，slot1 收到 v2.0.0（通过 SMP 传输，见第 7 章）。应用调 `boot_request_upgrade(BOOT_UPGRADE_TEST)`：
 
-```
+```text
 步骤 1: slot1 trailer 写 swap_type = TEST
          └─ 此时 flash 状态: slot0=v1.0.0, slot1=v2.0.0+TEST
 
@@ -506,7 +506,7 @@ stateDiagram-v2
 
 **每个步骤的写入都是一个不可逆的进度节点**。但步骤 2 内部不是原子操作——swap 把一个 slot 分成若干 **swap unit**（通常 4 KB，等于 flash sector 大小），逐块搬移。每块的三个子步骤：
 
-```
+```text
 子步骤 A: 从 slot1 第 N 块读到 RAM 缓冲
 子步骤 B: slot0 第 N 块 → 写到 slot1 第 N 块（旧数据挪走）
 子步骤 C: RAM 中的新块 → 写到 slot0 第 N 块（新数据到位）
@@ -514,7 +514,7 @@ stateDiagram-v2
 
 三个子步骤之间，MCUboot 在 trailer 前部的 **swap status area** 写入逐块进度——每个 swap unit 用一个固定字节，通过 NOR flash 的 **1→0 累进写**（擦除态 `0xFF`，每写入一步清空若干 bit）编码当前状态，全程不需要擦除：
 
-```
+```text
 swap unit N 的状态字节:
   0xFF = 未搬（用 0xFE = 0b1111_1110 表示"子步骤 A 已完成"）
   后续写入清更多 bit:
@@ -524,7 +524,7 @@ swap unit N 的状态字节:
 
 恢复逻辑：
 
-```
+```text
 断电发生在 子步骤 A 与 B 之间:
   slot1 第 N 块可能还没损坏 → 重启读 swap status = 0xFE
   → 知道"数据还在 slot1，没动 slot0"，重试子步骤 B 即可
@@ -543,7 +543,7 @@ swap unit N 的状态字节:
 
 如果在步骤 2 整体完成前断电（整个 swap 没做完）：
 
-```
+```text
 MCUboot 重启 → 读 trailer → copy_done 未写 → 知道 swap 中断
 → 读每个 swap unit 的 status 字节，找到第一个 status < 0xF0 的块
 → 从中断点续搬 → 搬完所有块后写 copy_done
@@ -553,7 +553,7 @@ MCUboot 重启 → 读 trailer → copy_done 未写 → 知道 swap 中断
 
 如果在步骤 3 之前断电（v2.0.0 没机会确认）：
 
-```
+```text
 断电发生在步骤 2-3 之间:
   下次重启 → MCUboot 看到 copy_done 但无 image_ok
   → swap_type = REVERT
@@ -792,7 +792,7 @@ int stream_flash_init(struct stream_flash_ctx *ctx, const struct device *fdev,
 
 `stream_flash_buffered_write()`（[stream_flash.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/storage/stream/stream_flash.c#L261-L303)）是核心入口。一次写入的完整步骤：
 
-```
+```text
 1. 校验 ctx 非空，检查剩余空间是否够 (bytes_written + buf_bytes + len ≤ available)
 2. while (待写数据 ≥ 缓冲剩余空间):
    a. 把数据拷满缓冲
@@ -863,7 +863,7 @@ static int stream_flash_erase_to_append(struct stream_flash_ctx *ctx, size_t siz
 
 SMP（Simple Management Protocol）是应用层协议，与传输无关。[doc/services/device_mgmt/smp_protocol.rst](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/doc/services/device_mgmt/smp_protocol.rst) 定义帧格式：
 
-```
+```text
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 | Res |Ver| OP  |      Flags    |          Data Length          |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
@@ -1115,7 +1115,7 @@ flowchart TD
 
 ### 9.2 编号步骤：完整 OTA 时序
 
-```
+```text
 1. 构建镜像：west build -b <board> -- -DCONFIG_BOOTLOADER_MCUBOOT=y
 2. 签名镜像：west sign -t imgtool -- --key root-rsa-3072.pem（生成带头的 signed.bin）
 3. 烧录 MCUboot：west flash --hex build/mcuboot/mcuboot.hex
@@ -1362,11 +1362,11 @@ flowchart TD
 
 ### 官方文档
 
-- [Device Firmware Upgrade](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/doc/services/device_mgmt/dfu.rst) — DFU 子系统总览
-- [Over-the-Air Update](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/doc/services/device_mgmt/ota.rst) — OTA 方案对比（Golioth/hawkBit/UpdateHub/SMP/LwM2m）
-- [MCUmgr](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/doc/services/device_mgmt/mcumgr.rst) — MCUmgr 管理子系统
-- [SMP Protocol Specification](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/doc/services/device_mgmt/smp_protocol.rst) — SMP 帧格式规范
-- [MCUboot 官方文档](https://docs.mcuboot.com/) — MCUboot 引导加载器
+- [Device Firmware Upgrade](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/doc/services/device_mgmt/dfu.rst) — 参考了 §"Overview"、§"Flash Image"、§"MCUBoot API"、§"Bootloaders"、§"MCUboot"
+- [Over-the-Air Update](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/doc/services/device_mgmt/ota.rst) — 参考了 §"Overview"、§"Examples of OTA"、§"Eclipse hawkBit™"、§"SMP Server"
+- [MCUmgr](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/doc/services/device_mgmt/mcumgr.rst) — 参考了 §"Overview"、§"Tools/libraries"、§"Bootloader Integration"
+- [SMP Protocol Specification](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/doc/services/device_mgmt/smp_protocol.rst) — 参考了 §"Frame: The envelope"、§"Management Group ID's"、§"Minimal response"
+- [MCUboot 官方文档](https://docs.mcuboot.com/) — MCUboot 引导加载器总览
 - [MCUboot with Zephyr](https://docs.mcuboot.com/readme-zephyr) — MCUboot 与 Zephyr 集成指南
 - [Eclipse hawkBit](https://www.eclipse.org/hawkbit/) — hawkBit 服务器框架
 

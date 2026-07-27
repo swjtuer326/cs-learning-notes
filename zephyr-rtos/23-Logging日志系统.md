@@ -123,7 +123,7 @@ flowchart TD
 
 源码 [subsys/logging/Kconfig.mode](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/logging/Kconfig.mode#L43-L49) 定义 `LOG_FRONTEND`：
 
-```
+```kconfig
 config LOG_FRONTEND
     bool "Frontend"
     help
@@ -241,7 +241,7 @@ static const struct mpsc_pbuf_buffer_config mpsc_config = {
 
 源码 [subsys/logging/Kconfig.processing](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/logging/Kconfig.processing#L17-L40)：
 
-```
+```kconfig
 config LOG_MODE_OVERFLOW
     bool "Drop oldest message when full"
     default y
@@ -524,7 +524,7 @@ flowchart TD
 
 源码 [subsys/logging/Kconfig.misc](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/logging/Kconfig.misc#L53-L68)：
 
-```
+```kconfig
 config LOG_FMT_SECTION
     bool "Keep log strings in dedicated section"
 
@@ -620,7 +620,7 @@ bool log_cache_get(struct log_cache *cache, uintptr_t id, uint8_t **data)
 
 源码 [subsys/logging/Kconfig.links](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/logging/Kconfig.links#L13-L20)：
 
-```
+```kconfig
 config LOG_LINK_IPC_SERVICE_BUFFER_SIZE
     int "Dedicated buffer size"
     depends on LOG_LINK_IPC_SERVICE
@@ -986,8 +986,8 @@ RT-Thread ulog 哲学是"中等够用"：有异步、有过滤、有后端注册
 
 ## 参考资料
 
-- [Logging 官方文档](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/doc/services/logging/index.rst) — Zephyr 日志子系统官方说明
-- [MIPI SyS-T 集成文档](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/doc/services/logging/cs_stm.rst) — SyS-T 格式输出说明
+- [Logging 官方文档](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/doc/services/logging/index.rst) — 参考了 §"Global Kconfig Options"、§"Usage"、§"Architecture"、§"Run-time filtering"、§"Multi-domain support"、§"Dictionary-based Logging"、§"Logging panic"
+- [MIPI SyS-T 集成文档](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/doc/services/logging/cs_stm.rst) — 参考了 §"Introduction"、§"Configuration"
 - 源码 [subsys/logging/log_core.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/logging/log_core.c) — 日志核心：初始化、处理线程、过滤、消息提交
 - 源码 [subsys/logging/log_msg.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/logging/log_msg.c) — 日志消息：finalize、simple/static/runtime 创建路径
 - 源码 [subsys/logging/log_output.c](file:///home/pbw/rtos/cs-learning-notes/zephyr-project/zephyr/subsys/logging/log_output.c) — 文本格式化输出

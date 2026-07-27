@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 320" style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,PingFang SC,Microsoft YaHei,sans-serif;font-size:13px;">
+  <defs>
+    <marker id="arr3" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#57606a"/>
+    </marker>
+  </defs>
+  <rect width="760" height="320" fill="#ffffff"/>
+  <text x="380" y="28" text-anchor="middle" font-size="16" font-weight="700" fill="#1f2328">2LVL DDT 查找示例（DeviceID = DDI[1] : DDI[0]）</text>
+
+  <!-- DeviceID input -->
+  <rect x="20" y="70" width="140" height="44" rx="6" fill="#f6f8fa" stroke="#d0d7de"/>
+  <text x="90" y="90" text-anchor="middle" fill="#1f2328" font-weight="600">DeviceID</text>
+  <text x="90" y="106" text-anchor="middle" fill="#57606a" font-size="11">16-bit (SiFive)</text>
+  <line x1="160" y1="92" x2="210" y2="92" stroke="#57606a" stroke-width="1.5" marker-end="url(#arr3)"/>
+
+  <!-- split -->
+  <g transform="translate(220,60)">
+    <rect width="120" height="64" rx="6" fill="#0969da" fill-opacity="0.08" stroke="#0969da" stroke-width="1.5"/>
+    <text x="60" y="25" text-anchor="middle" fill="#0969da" font-weight="600">位切分</text>
+    <text x="60" y="45" text-anchor="middle" fill="#1f2328" font-size="12">DDI[1] = 9 bits</text>
+    <text x="60" y="60" text-anchor="middle" fill="#1f2328" font-size="12">DDI[0] = 7 bits</text>
+  </g>
+
+  <!-- root table -->
+  <g transform="translate(380,60)">
+    <rect width="140" height="100" rx="6" fill="#f6f8fa" stroke="#d0d7de"/>
+    <text x="70" y="25" text-anchor="middle" fill="#1f2328" font-weight="600">DDT Root (4KB)</text>
+    <text x="70" y="48" text-anchor="middle" fill="#57606a" font-size="11">512 entries</text>
+    <text x="70" y="68" text-anchor="middle" fill="#0969da" font-size="12">按 DDI[1] 索引</text>
+    <text x="70" y="88" text-anchor="middle" fill="#57606a" font-size="11">非叶 DDTE (V+PPN)</text>
+  </g>
+  <line x1="340" y1="110" x2="380" y2="110" stroke="#57606a" stroke-width="1.5" marker-end="url(#arr3)"/>
+
+  <!-- leaf table -->
+  <g transform="translate(560,60)">
+    <rect width="140" height="100" rx="6" fill="#f6f8fa" stroke="#d0d7de"/>
+    <text x="70" y="25" text-anchor="middle" fill="#1f2328" font-weight="600">Leaf Table (4KB)</text>
+    <text x="70" y="48" text-anchor="middle" fill="#57606a" font-size="11">128 entries (32B DC)</text>
+    <text x="70" y="68" text-anchor="middle" fill="#0969da" font-size="12">按 DDI[0] 索引</text>
+    <text x="70" y="88" text-anchor="middle" fill="#57606a" font-size="11">叶 DDTE = DC</text>
+  </g>
+  <line x1="520" y1="110" x2="560" y2="110" stroke="#57606a" stroke-width="1.5" marker-end="url(#arr3)"/>
+
+  <!-- DC -->
+  <g transform="translate(560,200)">
+    <rect width="140" height="80" rx="6" fill="#1a7f37" fill-opacity="0.12" stroke="#1a7f37" stroke-width="1.5"/>
+    <text x="70" y="28" text-anchor="middle" fill="#1a7f37" font-weight="700">DC</text>
+    <text x="70" y="50" text-anchor="middle" fill="#1f2328" font-size="11">tc / iohgatp / ta</text>
+    <text x="70" y="68" text-anchor="middle" fill="#1f2328" font-size="11">fsc / msiptp ...</text>
+  </g>
+  <line x1="630" y1="160" x2="630" y2="200" stroke="#57606a" stroke-width="1.5" marker-end="url(#arr3)"/>
+
+  <text x="380" y="310" text-anchor="middle" fill="#57606a" font-size="12">▲ 内核 riscv_iommu_get_dc() 负责这次多级查找，必要时懒分配中间页</text>
+</svg>

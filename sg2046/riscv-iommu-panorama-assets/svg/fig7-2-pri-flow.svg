@@ -1,0 +1,95 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 400" style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,PingFang SC,Microsoft YaHei,sans-serif;font-size:13px;">
+  <defs>
+    <marker id="arr72" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#636c76"/>
+    </marker>
+    <marker id="arr72g" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#1a7f37"/>
+    </marker>
+  </defs>
+  <rect width="860" height="400" fill="#ffffff"/>
+
+  <text x="430" y="25" text-anchor="middle" font-size="15" font-weight="700" fill="#1f2328">Page Request 端到端流程</text>
+
+  <!-- Phase labels -->
+  <text x="160" y="55" text-anchor="middle" fill="#0969da" font-size="11" font-weight="700">设备 → IOMMU</text>
+  <text x="430" y="55" text-anchor="middle" fill="#8250df" font-size="11" font-weight="700">IOMMU → CPU</text>
+  <text x="700" y="55" text-anchor="middle" fill="#1a7f37" font-size="11" font-weight="700">CPU → 设备</text>
+
+  <!-- Divider lines -->
+  <line x1="295" y1="45" x2="295" y2="370" stroke="#d0d7de" stroke-width="1" stroke-dasharray="5,4"/>
+  <line x1="565" y1="45" x2="565" y2="370" stroke="#d0d7de" stroke-width="1" stroke-dasharray="5,4"/>
+
+  <!-- Step 1: Device DMA -->
+  <rect x="50" y="80" width="140" height="50" rx="8" fill="#0969da1a" stroke="#0969da" stroke-width="1.5"/>
+  <text x="120" y="102" text-anchor="middle" fill="#1f2328" font-size="12" font-weight="600">设备 DMA 访问</text>
+  <text x="120" y="118" text-anchor="middle" fill="#57606a" font-size="10">GVA, 页表项缺失</text>
+
+  <line x1="190" y1="105" x2="225" y2="105" stroke="#636c76" stroke-width="1.5" marker-end="url(#arr72)"/>
+
+  <!-- Step 2: IOMMU PTW -->
+  <rect x="225" y="80" width="140" height="50" rx="8" fill="#8250df1a" stroke="#8250df" stroke-width="1.5"/>
+  <text x="295" y="102" text-anchor="middle" fill="#1f2328" font-size="12" font-weight="600">IOMMU PTW</text>
+  <text x="295" y="118" text-anchor="middle" fill="#57606a" font-size="10">发现缺页，不 fault</text>
+
+  <line x1="365" y1="105" x2="400" y2="105" stroke="#636c76" stroke-width="1.5" marker-end="url(#arr72)"/>
+
+  <!-- Step 3: Write PQ -->
+  <rect x="400" y="80" width="140" height="50" rx="8" fill="#8250df1a" stroke="#8250df" stroke-width="1.5"/>
+  <text x="470" y="100" text-anchor="middle" fill="#1f2328" font-size="12" font-weight="600">写 PQ Record</text>
+  <text x="470" y="116" text-anchor="middle" fill="#57606a" font-size="10">DID/PID/IOVA/权限</text>
+
+  <line x1="470" y1="130" x2="470" y2="155" stroke="#636c76" stroke-width="1.5" marker-end="url(#arr72)"/>
+
+  <!-- Step 4: IRQ -->
+  <rect x="400" y="155" width="140" height="40" rx="8" fill="#fff8c5" stroke="#d29922" stroke-width="1.5"/>
+  <text x="470" y="173" text-anchor="middle" fill="#1f2328" font-size="12" font-weight="600">置 PIP 中断</text>
+  <text x="470" y="187" text-anchor="middle" fill="#57606a" font-size="10">CPU 进入 PQ ISR</text>
+
+  <line x1="540" y1="175" x2="575" y2="175" stroke="#636c76" stroke-width="1.5" marker-end="url(#arr72)"/>
+
+  <!-- Step 5: Software alloc page -->
+  <rect x="575" y="153" width="140" height="44" rx="8" fill="#1a7f371a" stroke="#1a7f37" stroke-width="1.5"/>
+  <text x="645" y="173" text-anchor="middle" fill="#1f2328" font-size="12" font-weight="600">分配物理页</text>
+  <text x="645" y="187" text-anchor="middle" fill="#57606a" font-size="10">建立页表映射</text>
+
+  <line x1="645" y1="197" x2="645" y2="225" stroke="#636c76" stroke-width="1.5" marker-end="url(#arr72)"/>
+
+  <!-- Step 6: IOTINVAL -->
+  <rect x="575" y="225" width="140" height="44" rx="8" fill="#fff8c5" stroke="#d29922" stroke-width="1.5"/>
+  <text x="645" y="245" text-anchor="middle" fill="#1f2328" font-size="12" font-weight="600">发 IOTINVAL.VMA</text>
+  <text x="645" y="259" text-anchor="middle" fill="#57606a" font-size="10">失效 IOTLB</text>
+
+  <line x1="645" y1="269" x2="645" y2="295" stroke="#636c76" stroke-width="1.5" marker-end="url(#arr72)"/>
+
+  <!-- Step 7: PRGR -->
+  <rect x="575" y="295" width="140" height="50" rx="8" fill="#1a7f371a" stroke="#1a7f37" stroke-width="1.5"/>
+  <text x="645" y="315" text-anchor="middle" fill="#1f2328" font-size="12" font-weight="600">发 ATS.PRGR</text>
+  <text x="645" y="331" text-anchor="middle" fill="#57606a" font-size="10">PRGI + RESP_CODE</text>
+
+  <line x1="575" y1="320" x2="190" y2="320" stroke="#1a7f37" stroke-width="1.5" marker-end="url(#arr72g)" stroke-dasharray="6,3"/>
+  <text x="380" y="312" text-anchor="middle" fill="#1a7f37" font-size="10" font-weight="600">响应回送</text>
+
+  <!-- Step 8: Device retry -->
+  <rect x="50" y="295" width="140" height="50" rx="8" fill="#dafbe1" stroke="#1a7f37" stroke-width="2"/>
+  <text x="120" y="315" text-anchor="middle" fill="#1a7f37" font-size="12" font-weight="700">设备收到响应</text>
+  <text x="120" y="331" text-anchor="middle" fill="#1a7f37" font-size="10">重试 DMA → 成功</text>
+
+  <!-- Step number badges -->
+  <circle cx="50" cy="80" r="12" fill="#0969da"/>
+  <text x="50" y="84" text-anchor="middle" fill="#fff" font-size="10" font-weight="700">1</text>
+  <circle cx="225" cy="80" r="12" fill="#8250df"/>
+  <text x="225" y="84" text-anchor="middle" fill="#fff" font-size="10" font-weight="700">2</text>
+  <circle cx="400" cy="80" r="12" fill="#8250df"/>
+  <text x="400" y="84" text-anchor="middle" fill="#fff" font-size="10" font-weight="700">3</text>
+  <circle cx="400" cy="155" r="12" fill="#d29922"/>
+  <text x="400" y="159" text-anchor="middle" fill="#fff" font-size="10" font-weight="700">4</text>
+  <circle cx="575" cy="153" r="12" fill="#1a7f37"/>
+  <text x="575" y="157" text-anchor="middle" fill="#fff" font-size="10" font-weight="700">5</text>
+  <circle cx="575" cy="225" r="12" fill="#d29922"/>
+  <text x="575" y="229" text-anchor="middle" fill="#fff" font-size="10" font-weight="700">6</text>
+  <circle cx="575" cy="295" r="12" fill="#1a7f37"/>
+  <text x="575" y="299" text-anchor="middle" fill="#fff" font-size="10" font-weight="700">7</text>
+  <circle cx="50" cy="295" r="12" fill="#1a7f37"/>
+  <text x="50" y="299" text-anchor="middle" fill="#fff" font-size="10" font-weight="700">8</text>
+</svg>
