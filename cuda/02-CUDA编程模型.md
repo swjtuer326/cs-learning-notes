@@ -20,7 +20,7 @@
 | blockDim | Block Dimension | Block 的维度（每维的线程数） |
 | gridDim | Grid Dimension | Grid 的维度（每维的 Block 数） |
 
-### 前置知识
+### 2.1 前置知识
 
 | 需要了解 | 参考文档 |
 |----------|----------|
@@ -550,9 +550,9 @@ nvcc vectorAdd.cu -o vectorAdd
 
 ## 参考资料
 
-- [CUDA C Programming Guide §3. Programming Model](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#programming-model) — 参考了 §3.1-3.3 Thread 层次、SIMT 模型
-- [CUDA C Programming Guide §5.2. Shared Memory](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#shared-memory) — 参考了共享内存和 Bank 冲突
-- [CUDA C Programming Guide §B. Memory Optimizations](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#memory-optimizations) — 参考了合并访问、常量缓存
+- [CUDA C Programming Guide "Programming Model" 章节](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#programming-model) — 参考了 Kernels、Thread Hierarchy、SIMT 模型（CUDA 12 中为 §3、CUDA 13 中为 §5，本文以章节名引用）
+- [CUDA C Programming Guide "Shared Memory" 段](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#shared-memory) — 参考了共享内存和 Bank 冲突
+- [CUDA C Programming Guide "Memory Optimizations" 段](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#memory-optimizations) — 参考了合并访问、常量缓存
 
 ***
 

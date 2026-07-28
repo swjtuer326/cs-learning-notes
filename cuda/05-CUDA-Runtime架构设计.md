@@ -298,15 +298,15 @@ for (int i = 0; i < 100; i++) {
 ```
 
 **性能影响**：
-- 上下文切换开销约 10-100 微秒
+- 上下文切换开销为微秒到数十微秒量级（NVIDIA 未公开精确数字；具体取决于 GPU 代际与 SM 数量，主要消耗在 flush TLB 与 drain SM 两步）
 - 频繁切换会导致性能下降
 - 建议：尽量使用单个上下文，必要时批量切换
 
 #### 2.4.1 上下文切换的硬件机制
 
-**本质先行**：上下文切换开销 10-100 μs 不是 API 调用开销，而是 GPU 硬件状态切换的必然——切换 context 需要切换 VA 空间、flush TLB、drain SM 上所有活跃 warp、排空 MIO (Memory IO) pending 请求，每一步都是同步操作。
+**本质先行**：上下文切换开销不是 API 调用开销，而是 GPU 硬件状态切换的必然——切换 context 需要切换 VA 空间、flush TLB、drain SM 上所有活跃 warp、排空 MIO (Memory IO) pending 请求，每一步都是同步操作。
 
-**4 步硬件切换路径**（基于 GPU 架构公开文档推断，参考 NVIDIA V100 Whitepaper §2.3 "Streaming Multiprocessor" 与 H100 Whitepaper §2.4 "Hopper Streaming Multiprocessor"）：
+**4 步硬件切换路径**（基于 GPU 架构公开文档推断；NVIDIA Whitepaper 未对 context 切换路径给出公开图示，以下为通用 GPU command processor 工作模式的合理推断，参考 V100 / H100 Whitepaper 中 Streaming Multiprocessor 相关章节）：
 
 1. **Drain SM 活跃 warp**：FE 停止向 SM 分发新 warp，等待当前 SM 上所有活跃 warp 完成或被换出（寄存器/共享内存内容保存到 context 私有存储区）
 2. **排空 MIO pending 请求**：等待所有 in-flight 的内存访问完成（global memory load/store、texture fetch、constant cache fill）——未完成的请求不能跨 context
@@ -423,7 +423,7 @@ cuModuleGetFunction(&kernel, module, "myKernel");
 cuModuleUnload(module);
 ```
 
-> **缓存策略对比**：Driver **不缓存** module——每次 `cuModuleLoadData` 都重新解析 fatbin、（必要时）JIT PTX、构建符号表。同一 fatbin 加载两次得到两个独立的 `CUmodule` 句柄。Runtime 则自动缓存（见 §3.3）。JIT 结果本身有进程级缓存（Linux 通常在 `~/.nv/ComputeCache`，参考 CUDA Programming Guide §4.4.4 "JIT Compilation"）。
+> **缓存策略对比**：Driver **不缓存** module——每次 `cuModuleLoadData` 都重新解析 fatbin、（必要时）JIT PTX、构建符号表。同一 fatbin 加载两次得到两个独立的 `CUmodule` 句柄。Runtime 则自动缓存（见 §3.3）。JIT 结果本身有进程级缓存（Linux 通常在 `~/.nv/ComputeCache`，参考 CUDA Programming Guide "Compilation with NVCC → Just-in-Time Compilation" 段）。
 
 ### 3.3 Runtime API 的自动管理
 
@@ -692,7 +692,9 @@ kernel3<<<blocks, threads, 0, stream>>>(args3);  // 不等待默认流
 
 #### 4.4.1 Legacy 默认流的隐式同步实现
 
-**本质先行**：Legacy 默认流（Stream 0）与所有非默认流的"互锁行为"不是软件调度，而是 Driver 在每次 Kernel launch / Memcpy 提交时插入的隐式 `cudaStreamWaitEvent(0)`——Legacy 默认流等价于一个"全局屏障"，任何 non-blocking stream 的任务在它前后都必须等待。
+**本质先行**：Legacy 默认流（Stream 0）与所有非默认流的"互锁行为"不是软件调度，而是 Driver 在每次 Kernel launch / Memcpy 提交时通过 launch descriptor 中的 flag 强制插入的隐式等待——Legacy 默认流等价于一个"全局屏障"，任何 non-blocking stream 的任务在它前后都必须等待。
+
+> **实现说明**：下面的"等价变换"用 `cudaEventRecord` + `cudaStreamWaitEvent` 表达语义，仅用于帮助理解 Legacy 默认流的行为，**不代表 Driver 真的创建 event 或调用这两个 API**——实际实现是 launch descriptor 中的 sync flag，开销远小于显式 event。
 
 **隐式同步的等价变换**：Legacy 模式下，以下代码：
 
@@ -724,7 +726,7 @@ cudaStreamWaitEvent(stream, implicit_event, 0);     // 隐式：stream 等待默
 kernel3<<<blocks, threads, 0, stream>>>(args3);
 ```
 
-**为什么 `cudaStreamNonBlocking` 能绕过这个互锁？** 关键在 Driver 的 launch descriptor 中有一个 flag 位——`cudaStreamNonBlocking` 创建的 stream 会让 Driver 跳过"在 stream 前后插入 `cudaStreamWaitEvent(0)`"的隐式步骤。这让该 stream 与 Legacy 默认流完全独立，可以真正并发（参考 CUDA C Programming Guide §3.2.6.5 "Stream and Event Management"）。
+**为什么 `cudaStreamNonBlocking` 能绕过这个互锁？** 关键在 Driver 的 launch descriptor 中有一个 flag 位——`cudaStreamNonBlocking` 创建的 stream 会让 Driver 跳过"在 stream 前后插入对 NULL stream 的隐式等待"这一步骤。这让该 stream 与 Legacy 默认流完全独立，可以真正并发（参考 CUDA C Programming Guide §3.2.5 "Asynchronous Concurrent Execution" 中关于 "Default Stream" 与 `cudaStreamNonBlocking` 的说明）。
 
 **源码证据**——`simpleDrvRuntime.cpp` 用 `cudaStreamNonBlocking` 创建非阻塞流以避免 Legacy 默认流互锁：
 
@@ -914,7 +916,7 @@ public:
 
 **权衡**：
 - **优点**：编程简单，启动快
-- **缺点**：首次调用延迟大（约 100-500 毫秒），不适合实时应用
+- **缺点**：首次调用延迟大（涉及 driver 初始化、context 创建、JIT 编译等多步，NVIDIA 未公开精确数字；实测通常在百毫秒级），不适合实时应用
 
 **具体例子**：
 
@@ -966,7 +968,7 @@ cudaMalloc((void **)&d_data2, size);  // 耗时 < 1ms
 
 **本质先行**：很多文档把 Runtime 描述为"Driver 的薄封装"——这是简化说法。Runtime 在每次 API 调用前做了大量状态检查和配置栈管理，并非简单透传。
 
-**`<<<>>>` 的真实展开路径**（参考 CUDA C Programming Guide §4.3.2 "Kernel Execution Syntax"）：
+**`<<<>>>` 的真实展开路径**（参考 CUDA C Programming Guide "Kernels" 段与 "Execution Configuration" 段，以及 CUDA Runtime API `cudaLaunchKernel` 条目）：
 
 ```c
 /* 用户代码 */
@@ -1009,7 +1011,7 @@ CUresult cuMemAlloc(CUdeviceptr *dptr, size_t bytesize) {
 }
 ```
 
-**性能开销**：`cudaMalloc` 比 `cuMemAlloc` 多一次 `cuCtxGetCurrent` 检查（约 50-100ns），对单次分配可忽略，对高频分配（如循环内分配）会累积。这就是性能敏感场景推荐 Driver API 的原因之一。
+**性能开销**：`cudaMalloc` 比 `cuMemAlloc` 多一次 `cuCtxGetCurrent` 检查（一次轻量的当前上下文查询，开销在 ns 级别，但 NVIDIA 未公开精确值），对单次分配可忽略，对高频分配（如循环内分配）会累积。这就是性能敏感场景推荐 Driver API 的原因之一。
 
 #### 6.4.2 版本独立性的实现
 
@@ -1048,11 +1050,11 @@ if (driverVersion < CUDART_VERSION) {  /* CUDART_VERSION 是编译时常量 */
 
 - [CUDA Runtime API Reference](https://docs.nvidia.com/cuda/cuda-runtime-api/) — 参考了上下文管理、模块管理、Stream 语义
 - [CUDA Driver API Reference](https://docs.nvidia.com/cuda/cuda-driver-api/) — 参考了底层 API 的语义
-- [CUDA C Programming Guide §4.3. CUDA Runtime](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#cuda-runtime) — 参考了 Runtime 的设计
-- [CUDA C Programming Guide §3.2.6.5. Stream and Event Management](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#stream-and-event-management) — 参考了 Legacy 默认流隐式同步与 cudaStreamNonBlocking 语义
-- [CUDA C Programming Guide §G.1. CUDA Runtime API Compatibility](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html) — 参考了 Runtime/Driver 互操作模式
-- [NVIDIA V100 Architecture Whitepaper](https://images.nvidia.com/content/volta-architecture/pdf/volta-architecture-whitepaper.pdf) — 参考了 §2.3 Streaming Multiprocessor (上下文切换硬件路径)
-- [NVIDIA H100 Architecture Whitepaper](https://resources.nvidia.com/en-us-hopper-architecture/hopper-architecture-whitepaper-paper) — 参考了 §2.4 Hopper Streaming Multiprocessor (context 切换开销)
+- [CUDA C Programming Guide "CUDA Runtime" 章节](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#cuda-runtime) — 参考了 Runtime 的设计（CUDA 12 为 §3.2、CUDA 13 为 §6.2，本文以章节名引用）
+- [CUDA C Programming Guide §3.2.5 Asynchronous Concurrent Execution](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#asynchronous-concurrent-execution) — 参考了 Legacy 默认流隐式同步与 cudaStreamNonBlocking 语义
+- [CUDA C Programming Guide "Compatibility" 段](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html) — 参考了 Runtime/Driver 互操作模式与版本兼容性
+- [NVIDIA V100 Architecture Whitepaper](https://images.nvidia.com/content/volta-architecture/pdf/volta-architecture-whitepaper.pdf) — 参考了 Streaming Multiprocessor (上下文切换硬件路径推断依据)
+- [NVIDIA H100 Architecture Whitepaper](https://resources.nvidia.com/en-us-hopper-architecture/hopper-architecture-whitepaper-paper) — 参考了 Hopper Streaming Multiprocessor (context 切换开销推断依据)
 
 ***
 

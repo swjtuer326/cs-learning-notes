@@ -420,7 +420,7 @@ flowchart TD
 
 - [NVIDIA A100 Tensor Core GPU Architecture Whitepaper](https://images.nvidia.com/aem-dam/en-z3/Solutions/data-center/nvidia-ampere-architecture-whitepaper.pdf) — 参考了 §2.1 SM 结构、§3 内存层级
 - [NVIDIA H100 Tensor Core GPU Architecture Whitepaper](https://resources.nvidia.com/en-us-hopper-architecture/h100-tensor-core-gpu-architecture-whitepaper) — 参考了 §2 SM 增强、§4 内存系统
-- [CUDA C Programming Guide §5. Architecture](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#architecture) — 参考了 §5.1-5.3 GPU 硬件结构
+- [CUDA C Programming Guide §7 Hardware Implementation](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#hardware-implementation) — 参考了 SIMT 架构、Hardware Multithreading 等 GPU 硬件结构描述（CUDA 13 中重编为 §7；CUDA 12 中为同章节名）
 
 ---
 

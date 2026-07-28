@@ -19,7 +19,7 @@
 | Thread-local Storage | — | 线程本地存储 |
 | Reference Counting | — | 引用计数，管理资源生命周期 |
 
-### 前置知识
+### 6.1 前置知识
 
 | 需要了解 | 参考文档 |
 |----------|----------|
@@ -389,7 +389,7 @@ CUresult cuDevicePrimaryCtxRelease(CUdevice dev);
 **语义**：
 - 释放主上下文的引用
 - 引用计数减 1
-- 计数归 0 后主上下文仍存在,需调用 `cuDevicePrimaryCtxReset` 才真正销毁(与显式 `cuCtxDestroy` 不同)
+- 计数归 0 时主上下文被销毁（与显式 `cuCtxDestroy` 对普通 context 的语义一致；但 primary context 的特点是后续再次 `cuDevicePrimaryCtxRetain` 会自动重新创建一个全新的 primary context）
 
 **重置主上下文**:
 
@@ -397,7 +397,7 @@ CUresult cuDevicePrimaryCtxRelease(CUdevice dev);
 CUresult cuDevicePrimaryCtxReset(CUdevice dev);
 ```
 
-**语义**:销毁主上下文及其所有资源(Stream、Event、Module、内存分配),即使有未完成的引用。调用此函数后,正在使用主上下文的其他线程会得到错误。Runtime API 的 `cudaDeviceReset` 内部就调用此函数。
+**语义**:强制销毁主上下文及其所有资源(Stream、Event、Module、内存分配),**无视当前引用计数**。调用此函数后,正在使用主上下文的其他线程会得到错误。Runtime API 的 `cudaDeviceReset` 内部就调用此函数。
 
 **具体例子**：
 
@@ -418,7 +418,8 @@ cuDevicePrimaryCtxRelease(device);
 // 再释放一次（引用计数 = 0）
 cuDevicePrimaryCtxRelease(device);
 
-// 主上下文仍然存在，但可以被 cuDevicePrimaryCtxReset 销毁
+// 引用计数归 0，主上下文被销毁
+// 后续若再调用 cuDevicePrimaryCtxRetain，会自动创建一个新的 primary context
 ```
 
 > **显式上下文 vs 主上下文**:
@@ -461,7 +462,7 @@ if (err != CUDA_SUCCESS) {
 CUresult cuModuleLoadData(CUmodule *module, const void *image);
 ```
 
-**语义**：从内存加载模块。`image` 指向模块数据，**Driver 通过前 4 字节 magic 自动识别格式**（参考 CUDA Driver API §8.3.4）：
+**语义**：从内存加载模块。`image` 指向模块数据，**Driver 通过前 4 字节 magic 自动识别格式**（参考 CUDA Driver API "Module Management" 章节中 `cuModuleLoadData` 条目）：
 
 | 前 4 字节 | Magic 值 | 识别为 | 加载路径 |
 |-----------|----------|--------|----------|
@@ -549,16 +550,16 @@ checkCudaErrors(cuModuleLoadData(&cuModule, fatbin.str().c_str()));
 
 #### 4.1.2 加载开销分解与缓存策略
 
-**加载开销构成**（典型值，参考 CUDA Driver API §8.3 与 Binary Utilities Guide §5）：
+**加载开销构成**（典型量级，参考 CUDA Driver API "Module Management" 章节与 Binary Utilities Guide 中关于 fatbin/PTX 的说明；具体数字会因 PTX 大小与目标架构而显著变化，下列仅为量级估计）：
 
-| 阶段 | 开销 | 说明 |
+| 阶段 | 开销量级 | 说明 |
 |------|------|------|
-| fatbin 解析 | ~10μs | 扫描子节表，选最优子节 |
-| PTX JIT（首次） | ~10-100ms | PTX → SASS 编译，主要开销 |
-| cubin 重定位 | ~100μs | 符号重定位、绝对地址修正 |
-| 符号表构建 | ~10μs | 构建 kernel/device function 查找表 |
+| fatbin 解析 | 十微秒级 | 扫描子节表，选最优子节 |
+| PTX JIT（首次） | 十毫秒到百毫秒级 | PTX → SASS 编译，主要开销 |
+| cubin 重定位 | 百微秒级 | 符号重定位、绝对地址修正 |
+| 符号表构建 | 十微秒级 | 构建 kernel/device function 查找表 |
 
-**JIT 缓存**：Driver 维护进程级 JIT 缓存（Linux 默认在 `~/.nv/ComputeCache`，参考 CUDA Programming Guide §4.4.4 "JIT Compilation"）。同一 PTX 二次加载直接读 cubin，跳过 JIT 阶段——这就是"第二次加载比第一次快一个数量级"的原因。
+**JIT 缓存**：Driver 维护进程级 JIT 缓存（Linux 默认在 `~/.nv/ComputeCache`，参考 CUDA Programming Guide "Compilation with NVCC → Just-in-Time Compilation" 段）。同一 PTX 二次加载直接读 cubin，跳过 JIT 阶段——这就是"第二次加载比第一次快一个数量级"的原因。
 
 **Driver 不缓存 module**：每次 `cuModuleLoadData` 都创建新的 `CUmodule` 对象，**应用层必须自己缓存**。常见的应用层缓存策略：
 
@@ -640,7 +641,7 @@ CUresult cuLaunchKernel(CUfunction f,
 
 #### 4.3.1 两套参数传递 ABI
 
-**本质先行**：`kernelParams` 和 `extra` 不是冗余参数，而是**两套独立的参数传递 ABI** 并存于同一 API——它们对应不同的使用场景与性能特性（参考 CUDA Driver API §6.3 "cuLaunchKernel"）。
+**本质先行**：`kernelParams` 和 `extra` 不是冗余参数，而是**两套独立的参数传递 ABI** 并存于同一 API——它们对应不同的使用场景与性能特性（参考 CUDA Driver API `cuLaunchKernel` 条目）。
 
 **简单 ABI（`kernelParams` 非 NULL）**：
 
@@ -944,7 +945,7 @@ cuMemHostGetDevicePointer(&d_data, h_data, 0);
 
 ### 5.5 虚拟内存管理（VMM）与 IPC
 
-> 传统 `cuMemAlloc` 把"分配 VA + 分配物理内存 + 建立 VA→phys 映射"打包成一个调用。本节深入 CUDA 10.0+ 引入的 VMM API，它把这三步解耦，支持跨进程共享——这是高性能多进程 GPU 协作的基础（参考 CUDA Driver API §1.4 "Virtual Memory Management"）。
+> 传统 `cuMemAlloc` 把"分配 VA + 分配物理内存 + 建立 VA→phys 映射"打包成一个调用。本节深入 CUDA 10.0+ 引入的 VMM API，它把这三步解耦，支持跨进程共享——这是高性能多进程 GPU 协作的基础（参考 CUDA Driver API "Virtual Memory Management" 章节）。
 
 #### 5.5.1 VMM 三段式 API
 
@@ -958,7 +959,7 @@ cuMemHostGetDevicePointer(&d_data, h_data, 0);
 
 **释放流程**（与申请对称）：`cuMemUnmap` → `cuMemAddressFree` → `cuMemRelease`（释放 handle）。
 
-**粒度对齐要求**：分配大小必须是 `cuMemGetAllocationGranularity` 返回值的倍数（通常 2MB，参考 CUDA Driver API §1.4）。这是硬件 page size 与 L2 cache line 的约束。
+**粒度对齐要求**：分配大小必须是 `cuMemGetAllocationGranularity` 返回值的倍数（通常 2MB，参考 CUDA Driver API "Virtual Memory Management" 章节中 `cuMemGetAllocationGranularity` 条目）。这是硬件 page size 与 L2 cache line 的约束。
 
 #### 5.5.2 跨进程共享（IPC）
 
@@ -1379,11 +1380,11 @@ gcc program.c -lcuda -o program
 
 ## 参考资料
 
-- [CUDA Driver API Reference](https://docs.nvidia.com/cuda/cuda-driver-api/) — 参考了所有 Driver API 的语义
-- [CUDA C Programming Guide §4.4. CUDA Driver API](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#cuda-driver-api) — 参考了 Driver API 的设计
-- [CUDA C Programming Guide §G.1. CUDA Runtime API Compatibility](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html) — 参考了 Runtime/Driver 三种互操作模式与 context 共享机制
-- [CUDA Binary Utilities Guide §3. Fat Binary](https://docs.nvidia.com/cuda/cuda-binary-utilities/index.html) — 参考了 fatbin 容器格式与 magic 0xBA55ED50
-- [NVIDIA H100 Architecture Whitepaper](https://resources.nvidia.com/en-us-hopper-architecture/hopper-architecture-whitepaper-paper) — 参考了 §2.4 VMM 与 cuMemMap IPC 实现的硬件基础
+- [CUDA Driver API Reference](https://docs.nvidia.com/cuda/cuda-driver-api/) — 参考了所有 Driver API 的语义（Module Management、Kernel Management、Virtual Memory Management、Memory Management 等章节）
+- [CUDA C Programming Guide "CUDA Driver API" 章节](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#cuda-driver-api) — 参考了 Driver API 的设计
+- [CUDA C Programming Guide "Compatibility" 段](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html) — 参考了 Runtime/Driver 三种互操作模式与 context 共享机制
+- [CUDA Binary Utilities Guide "Fat Binary" 段](https://docs.nvidia.com/cuda/cuda-binary-utilities/index.html) — 参考了 fatbin 容器格式与 magic 0xBA55ED50
+- [NVIDIA H100 Architecture Whitepaper](https://resources.nvidia.com/en-us-hopper-architecture/hopper-architecture-whitepaper-paper) — 参考了 VMM 与 cuMemMap IPC 实现的硬件基础推断依据
 
 ***
 

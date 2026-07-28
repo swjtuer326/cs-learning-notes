@@ -232,7 +232,7 @@ flowchart TD
 
 ### 3.2 编译选项
 
-**JIT 编译选项**（参考 CUDA Driver API Reference §3.17）：
+**JIT 编译选项**（参考 CUDA Driver API Reference "Module Management" 章节中 `CUjit_option` 枚举说明）：
 
 | 选项 | 说明 | 用途 |
 |------|------|------|
@@ -770,7 +770,7 @@ cuModuleLoadData(&module, cubin);
 ## 参考资料
 
 - [PTX ISA Reference](https://docs.nvidia.com/cuda/parallel-thread-execution/) — 参考了 PTX 指令集、寄存器声明、地址空间
-- [CUDA Driver API Reference §3.17. Module Management](https://docs.nvidia.com/cuda/cuda-driver-api/group__CUDA__MODULE.html) — 参考了模块加载和 JIT 编译 API
+- [CUDA Driver API Reference "Module Management" 章节](https://docs.nvidia.com/cuda/cuda-driver-api/group__CUDA__MODULE.html) — 参考了模块加载和 JIT 编译 API（`CUjit_option` 枚举、`cuModuleLoadData` / `cuModuleLoadDataEx` 等）
 - [CUDA Binary Utilities](https://docs.nvidia.com/cuda/cuda-binary-utilities/) — 参考了 cuobjdump、nvdisasm 工具
 - [NVRTC Documentation](https://docs.nvidia.com/cuda/nvrtc/) — 参考了运行时编译库
 
