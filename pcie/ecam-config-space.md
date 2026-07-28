@@ -31,11 +31,23 @@ ECAM (Enhanced Configuration Access Mechanism) 在 PCIe 软件栈中是 CPU 访�
 - ECAM 基址由固件描述:ACPI 系统通过 MCFG 表,DT 系统通过 `ranges` 属性
 - DWC (DesignWare) 控制器有两条路径:硬件 ECAM 译码器(标准路径)或 iATU 出向窗口(非 ECAM 路径);RC 自身配置空间则通过 DBI 直访,不生成 TLP
 
+**PCIe Controller / Root Complex / Segment 映射关系**:
+
+| 概念 | 本质 | 对应 Linux 结构 | 映射关系 |
+|------|------|----------------|----------|
+| **PCIe Controller** | 实现 PCIe 协议栈的物理 IP 硬核（DWC、Cadence 等） | 驱动 probe 的对象，一个 `struct dw_pcie` | 一个 Controller 可以独立成一个 RC，或者多个 Controller 合入一个 RC |
+| **Root Complex (RC)** | 包含 Controller + 地址转发/DMA/中断汇聚的拓扑实体 | `struct pci_host_bridge` | 一个 RC 可以包含 1 个或多个 Controller（多端口 RC）；一个 RC 可以独立成一个 Segment，也可以与其他 RC 共享 Segment |
+| **PCIe Segment (域)** | 独立的总线号空间（Bus 0–255），由固件分配 | `pci_domain_nr()`，ACPI MCFG Entry / DT `linux,pci-domain` | 一个 Segment 包含 1 个 RC（典型）或 多个 RC（如 SynQuacer 10 个 controller 共享 1 个 Segment） |
+
+**核心原则**:Segment 的边界是**总线号空间隔离**。两个 RC 共享 bus 0–255 → 同一 Segment；各自独立 → 不同 Segment。嵌入式 1:1:1 是特例，不是定义。
+
 **跨实现/跨架构对比**:
 
 - 通用 ECAM (`pci-host-ecam-generic`):硬件直接译码 `Bus<<20 + Dev<<15 + Func<<12`,1 次 MMIO 完成访问
 - DWC iATU (`native_ecam=true`):每次 BDF 变化需重写 iATU 寄存器,再 1 次 MMIO 访问;不要求 256MB 对齐
 - SG2046 实例:`config` 区域虽为 256MB,但 `native_ecam=true` 强制走 iATU 路径,体现 SoC 设计取舍
+
+> **说明**:`native_ecam` 是 DWC 驱动结构体 `struct dw_pcie_rp` 的 bool 字段（不是宏或 DT 属性）,由 glue driver（如 `pcie-al.c`、`pcie-sophgo.c`）在 probe 时设置。`native_ecam=true` 的实际效果是**禁用**硬件 ECAM 译码器,强制走 iATU 出站窗口——命名有误导性,`false` 时才是标准 ECAM 路径。
 
 ```mermaid
 %%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%

@@ -1027,6 +1027,8 @@ if (ctrl & (PCI_ACS_RR | PCI_ACS_CR | PCI_ACS_EC))
 
 > **核心要点**：P2P DMA 是 GPU Direct RDMA、NVMe P2P 等高性能场景的关键。启用 P2P 需要：(1) 设备在同一 Switch 下；(2) ACS 不阻止 P2P；(3) 驱动使用 `pci_p2pdma_*` API。服务器 BIOS 通常有 "ACS Support" 选项可关闭。
 
+> **机制详见**：P2P DMA 的规范机制(ACS 真值表、ATS Direct Translated P2P)、Linux 内核实现(`calc_map_type_and_dist()` 三段式决策、`pci_p2pdma_add_resource()` 用 ZONE_DEVICE 把 MMIO 包装为 `struct page`)、NTB 跨 Host 互联、CXL.mem 内存池化,详见 [P2P DMA 与多芯级联](./p2p-multi-chip-interconnect.md) §1-2、§6.3 故障表。
+
 ---
 
 ## 10. RISC-V / SG2046 特定问题

@@ -43,6 +43,7 @@
 | 5   | 热插拔  | [Hot-Plug机制与pciehp驱动](./hotplug-mechanism.md) | Slot寄存器、pciehp状态机、中断处理、DPC交互 | 3h |
 | 6   | 虚拟化  | [SR-IOV虚拟化](./sriov-virtualization.md)   | PF/VF架构、ATS缓存、ACS隔离、VFIO    | 4h |
 | 7   | 工程实践 | [PCIe工程实践：常见问题与踩坑指南](./pcie-engineering-pitfalls.md) | 链路训练/ECAM/枚举/BAR/中断/热插拔/SR-IOV/DMA 的故障现象→根因→排查→修复,SG2046/RISC-V 特定问题 | 6h |
+| 8   | 高级主题 | [P2P DMA 与多芯级联](./p2p-multi-chip-interconnect.md) | P2P/NTB/CXL.mem 三种跨设备/跨 Host 直传机制,规范机制+内核实现+应用场景+跨实现对比 | 5h |
 
 ### 官方文档
 
@@ -69,6 +70,9 @@
 | linux-common | `drivers/pci/msi/msi.c` | `__pci_write_msi_msg()` / `pci_msix_write_vector_ctrl()` | MSI/MSI-X 核心,消息写入与 Per-Vector Mask | [MSI/MSI-X 中断](./msi-interrupt.md) |
 | linux-common | `drivers/pci/hotplug/pciehp_hpc.c` | `pciehp_ist()` / `pciehp_ignore_link_change()` | pciehp 热插拔中断处理,DPC 虚假链路事件过滤 | [Hot-Plug 机制](./hotplug-mechanism.md) · [工程踩坑](./pcie-engineering-pitfalls.md) §6 |
 | linux-common | `drivers/pci/pcie/dpc.c` | `dpc_handler()` | DPC 触发与恢复处理 | [工程踩坑](./pcie-engineering-pitfalls.md) §8 |
+| linux-common | `drivers/pci/p2pdma.c` | `calc_map_type_and_dist()` / `pci_p2pdma_add_resource()` / `pci_alloc_p2pmem()` | P2P DMA 核心,映射类型判定/ZONE_DEVICE 资源/内存池 | [P2P DMA 与多芯级联](./p2p-multi-chip-interconnect.md) §2 · [工程踩坑](./pcie-engineering-pitfalls.md) §9.2 |
+| linux-common | `drivers/ntb/ntb.c` / `drivers/ntb/hw/*` | `ntb_dev_ops` / `ntb_register_device()` | NTB 硬件抽象层与厂商驱动,跨 Host 互联 | [P2P DMA 与多芯级联](./p2p-multi-chip-interconnect.md) §4 |
+| linux-common | `drivers/pci/endpoint/functions/pci-epf-ntb.c` | `epf_ntb_epc_init()` / `epf_ntb_write_mw()` | EPF 软件模拟 NTB,用两个 EP Controller 互路由 | [P2P DMA 与多芯级联](./p2p-multi-chip-interconnect.md) §4.3 |
 
 ***
 
@@ -1088,6 +1092,8 @@ static void dpc_handler(struct irq_desc *desc)
 **场景**：GPU Direct RDMA · NVMe P2P (SSD ↔ GPU)
 
 **Linux**：`pci_p2pdma_add_resource()` · `CONFIG_PCI_P2PDMA`
+
+> **深入**：P2P DMA 的规范机制(ACS 真值表、ATS Direct Translated P2P)、Linux 内核实现(`calc_map_type_and_dist()` 三段式决策、ZONE_DEVICE 包装 MMIO)、以及 NTB 跨 Host 互联、CXL.mem 内存池化,详见 [P2P DMA 与多芯级联](./p2p-multi-chip-interconnect.md)。
 
 ### 8.2 Resizable BAR —— 大显存映射
 
