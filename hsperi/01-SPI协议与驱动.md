@@ -5,36 +5,40 @@
 
 ### 关键术语
 
-| 缩写 | 全称 | 含义 |
-|------|------|------|
-| SPI | Serial Peripheral Interface | 串行外设接口，同步主从总线 |
-| SSI | Synchronous Serial Interface | 同步串行接口，Synopsys DW IP 名称 |
-| SCK | Serial Clock | 串行时钟线 |
-| MOSI | Master Out Slave In | 主出从入数据线 |
-| MISO | Master In Slave Out | 主入从出数据线 |
-| CS | Chip Select | 片选信号线 |
-| CPOL | Clock Polarity | 时钟极性，决定空闲电平 |
-| CPHA | Clock Phase | 时钟相位，决定采样边沿 |
-| DW | DesignWare | Synopsys 公司的 IP 核系列 |
-| PSSI | DW APB SSI | DesignWare APB 总线接口 SSI（旧版 IP） |
-| HSSI | DWC SSI | DesignWare AHB/AXI 接口 SSI（新版 IP） |
-| FIFO | First In First Out | 先进先出缓冲队列 |
-| ISR | Interrupt Service Routine | 中断服务程序 |
-| DMA | Direct Memory Access | 直接内存访问 |
-| SG | Scatter-Gather | 散列-聚集，DMA 描述符链表组织方式 |
-| RTIO | Runtime I/O | Zephyr 的异步 I/O 提交框架 |
-| DTS | Device Tree Source | 设备树源文件 |
-| DFS | Data Frame Size | 数据帧宽度字段 |
-| TMOD | Transfer Mode | 传输模式字段 |
-| NDF | Number of Data Frames | 数据帧数字段（EEPROM-read 模式用） |
+
+| 缩写   | 全称                           | 含义                               |
+| ---- | ---------------------------- | -------------------------------- |
+| SPI  | Serial Peripheral Interface  | 串行外设接口，同步主从总线                    |
+| SSI  | Synchronous Serial Interface | 同步串行接口，Synopsys DW IP 名称         |
+| SCK  | Serial Clock                 | 串行时钟线                            |
+| MOSI | Master Out Slave In          | 主出从入数据线                          |
+| MISO | Master In Slave Out          | 主入从出数据线                          |
+| CS   | Chip Select                  | 片选信号线                            |
+| CPOL | Clock Polarity               | 时钟极性，决定空闲电平                      |
+| CPHA | Clock Phase                  | 时钟相位，决定采样边沿                      |
+| DW   | DesignWare                   | Synopsys 公司的 IP 核系列              |
+| PSSI | DW APB SSI                   | DesignWare APB 总线接口 SSI（旧版 IP）   |
+| HSSI | DWC SSI                      | DesignWare AHB/AXI 接口 SSI（新版 IP） |
+| FIFO | First In First Out           | 先进先出缓冲队列                         |
+| ISR  | Interrupt Service Routine    | 中断服务程序                           |
+| DMA  | Direct Memory Access         | 直接内存访问                           |
+| SG   | Scatter-Gather               | 散列-聚集，DMA 描述符链表组织方式              |
+| RTIO | Runtime I/O                  | Zephyr 的异步 I/O 提交框架              |
+| DTS  | Device Tree Source           | 设备树源文件                           |
+| DFS  | Data Frame Size              | 数据帧宽度字段                          |
+| TMOD | Transfer Mode                | 传输模式字段                           |
+| NDF  | Number of Data Frames        | 数据帧数字段（EEPROM-read 模式用）          |
+
 
 ### 前置知识
 
-| 需要了解 | 参考文档 |
-|----------|----------|
-| 五种通信协议的共性与定位 | [00-通信协议总览.md](./00-通信协议总览.md) |
+
+| 需要了解                  | 参考文档                                                    |
+| --------------------- | ------------------------------------------------------- |
+| 五种通信协议的共性与定位          | [00-通信协议总览.md](./00-通信协议总览.md)                          |
 | Linux 驱动模型（probe、设备树） | [zephyr-rtos/13-设备驱动模型.md](../zephyr-rtos/13-设备驱动模型.md) |
-| 设备树基础语法 | [zephyr-rtos/03-设备树详解.md](../zephyr-rtos/03-设备树详解.md) |
+| 设备树基础语法               | [zephyr-rtos/03-设备树详解.md](../zephyr-rtos/03-设备树详解.md)   |
+
 
 ---
 
@@ -56,16 +60,18 @@ CS    ‾‾‾‾\______________________________/‾‾‾‾  拉低期间传�
 
 逐周期分析（每个上升沿主从各锁存一位）：
 
-| 周期 | MOSI（主→从） | MISO（从→主） | 主设备移位寄存器（发送前 → 接收后） |
-|------|---------------|---------------|----------------------------------------|
-| 0    | 1             | 0             | `10100101` → `_0100101` + 接收位 0    |
-| 1    | 0             | 0             | `_0100101` → `__100101` + 接收位 0    |
-| 2    | 1             | 1             | `__100101` → `___00101` + 接收位 1    |
-| 3    | 0             | 1             | `___00101` → `____0101` + 接收位 1    |
-| 4    | 0             | 1             | `____0101` → `_____101` + 接收位 1    |
-| 5    | 1             | 1             | `_____101` → `______01` + 接收位 1    |
-| 6    | 0             | 0             | `______01` → `_______1` + 接收位 0    |
-| 7    | 1             | 0             | `_______1` → `________` + 接收位 0    |
+
+| 周期  | MOSI（主→从） | MISO（从→主） | 主设备移位寄存器（发送前 → 接收后）             |
+| --- | --------- | --------- | ------------------------------- |
+| 0   | 1         | 0         | `10100101` → `_0100101` + 接收位 0 |
+| 1   | 0         | 0         | `_0100101` → `__100101` + 接收位 0 |
+| 2   | 1         | 1         | `__100101` → `___00101` + 接收位 1 |
+| 3   | 0         | 1         | `___00101` → `____0101` + 接收位 1 |
+| 4   | 0         | 1         | `____0101` → `_____101` + 接收位 1 |
+| 5   | 1         | 1         | `_____101` → `______01` + 接收位 1 |
+| 6   | 0         | 0         | `______01` → `_______1` + 接收位 0 |
+| 7   | 1         | 0         | `_______1` → `________` + 接收位 0 |
+
 
 8 个周期后，主设备 TX 移位寄存器中的 `0xA5` 已被推入从设备，从设备的 `0x3C` 已被推入主设备。**主设备没有 "只读不写" 的操作**——如果要读从设备的状态寄存器，必须发一个 dummy 字节（如 `0x00`）以产生时钟。
 
@@ -110,14 +116,26 @@ $$
 
 ### 2.1 四线信号职责
 
-| 信号 | 方向 | 作用 | 推挽/开漏 |
-|------|------|------|-----------|
-| **SCK** | 主→从 | 串行时钟，驱动移位 | 推挽 |
-| **MOSI** | 主→从 | 主出从入数据线 | 推挽 |
-| **MISO** | 从→主 | 主入从出数据线 | 推挽 |
-| **CS** | 主→从 | 片选，拉低（默认）选中从设备 | 推挽 |
 
-多从设备采用星型拓扑：SCK/MOSI/MISO 三线共享，每个从设备独占一根 CS。主设备要和谁通信，就拉低谁的 CS，其余保持高电平（未选中）。未选中从设备的 MISO 必须呈现高阻态（Hi-Z），否则会与被选中从设备的 MISO 电气冲突——这是 SPI 从设备数据手册中 "MISO output goes Hi-Z when CS is high" 的由来。
+| 信号       | 方向  | 作用             | 推挽/开漏 |
+| -------- | --- | -------------- | ----- |
+| **SCK**  | 主→从 | 串行时钟，驱动移位      | 推挽    |
+| **MOSI** | 主→从 | 主出从入数据线        | 推挽    |
+| **MISO** | 从→主 | 主入从出数据线        | 推挽    |
+| **CS**   | 主→从 | 片选，拉低（默认）选中从设备 | 推挽    |
+
+
+多从设备采用星型拓扑：SCK/MOSI/MISO 三线共享，每个从设备独占一根 CS。主设备要和谁通信，就拉低谁的 CS，其余保持高电平（未选中）。
+
+被选中的从设备把 MISO 驱动成推挽输出：它在 SCK 驱动下不停翻转 MISO（高/低电平），给主设备回传数据。
+
+问题是 MISO 线上有**两个以上从设备的输出引脚**接在一起（电气上叫"线与"），如果未选中的从设备也主动输出高低电平，会出现：
+
+- 选中设备想拉高 → PMOS 导通，输出高电平
+- 未选中设备想拉低 → NMOS 导通，输出低电平
+- 两个 push-pull 输出短接 → **电流从 VDD 直通 GND**，烧毁管脚
+
+所以未选中从设备的 MISO 必须进入**高阻态（Hi-Z）**——相当于把输出级的 PMOS 和 NMOS 都关断，引脚从总线上断开，就像"把输出引脚拔掉"一样，让选中设备的信号不受干扰。这就是 SPI 从设备数据手册中 "MISO output goes Hi-Z when CS is high" 的由来。
 
 ### 2.2 推挽电气：为什么 SPI 能跑到 100MHz
 
@@ -125,14 +143,16 @@ SPI 采用推挽（push-pull）驱动：输出级由一个 PMOS + 一个 NMOS �
 
 对比 I2C 的开漏（open-drain）+ 上拉电阻：开漏只能拉低，恢复高电平靠 $RC$ 充电，时间常数 $\tau = R_{\text{pullup}} \cdot C_{\text{bus}}$。400kHz I2C 用 4.7kΩ 上拉、总线电容 100pF 时 $\tau = 470\,\text{ns}$，上升沿已经接近 1μs，再提速就被 $RC$ 限制死。
 
-| 电气特性 | SPI（推挽） | I2C（开漏） |
-|----------|-------------|-------------|
-| 主动拉高 | ✓（PMOS） | ✗（靠上拉） |
-| 主动拉低 | ✓（NMOS） | ✓（NMOS） |
-| 边沿速度 | <1ns（@100MHz） | ~1μs（@400kHz） |
-| 最大速率 | 100MHz+ | 3.4MHz（Hs） |
-| 多主能力 | ✗ | ✓（线与仲裁） |
-| 引脚数 | 4+N（N 个从） | 2（共享） |
+
+| 电气特性 | SPI（推挽）          | I2C（开漏）       |
+| ---- | ---------------- | ------------- |
+| 主动拉高 | ✓（PMOS）          | ✗（靠上拉）        |
+| 主动拉低 | ✓（NMOS）          | ✓（NMOS）       |
+| 边沿速度 | &lt;1ns（@100MHz） | ~1μs（@400kHz） |
+| 最大速率 | 100MHz+          | 3.4MHz（Hs）    |
+| 多主能力 | ✗                | ✓（线与仲裁）       |
+| 引脚数  | 4+N（N 个从）        | 2（共享）         |
+
 
 > **核心要点**：SPI 用推挽电气换速度、用引脚数换带宽。这是 SPI 能跑 100MHz、I2C 普遍只有 400kHz~3.4MHz 的根本原因。
 
@@ -140,12 +160,14 @@ SPI 采用推挽（push-pull）驱动：输出级由一个 PMOS + 一个 NMOS �
 
 CPOL 决定空闲电平，CPHA 决定采样边沿，组合出四种模式：
 
-| 模式 | CPOL | CPHA | 空闲电平 | 采样边沿 | 移位边沿 |
-|------|------|------|----------|----------|----------|
-| **0** | 0 | 0 | 低 | 上升沿 | 下降沿 |
-| **1** | 0 | 1 | 低 | 下降沿 | 上升沿 |
-| **2** | 1 | 0 | 高 | 下降沿 | 上升沿 |
-| **3** | 1 | 1 | 高 | 上升沿 | 下降沿 |
+
+| 模式    | CPOL | CPHA | 空闲电平 | 采样边沿 | 移位边沿 |
+| ----- | ---- | ---- | ---- | ---- | ---- |
+| **0** | 0    | 0    | 低    | 上升沿  | 下降沿  |
+| **1** | 0    | 1    | 低    | 下降沿  | 上升沿  |
+| **2** | 1    | 0    | 高    | 下降沿  | 上升沿  |
+| **3** | 1    | 1    | 高    | 上升沿  | 下降沿  |
+
 
 > **如何读这张表**：Mode 0 和 Mode 3 的采样边沿都是上升沿，差别仅在于空闲电平。Mode 0 空闲低、上升沿采样；Mode 3 空闲高，下降沿移位、上升沿采样——两者采样时刻相同，只是 CS 拉低后到第一个时钟边沿间的过渡不同。这就是为什么很多 Flash 同时支持 Mode 0 和 Mode 3。
 
@@ -164,18 +186,28 @@ CS  ‾‾‾‾\________________________________/‾‾        CS  ‾‾‾‾
 
 CS 时序不是 "拉低就开始"，从设备对 CS 拉低到第一个 SCK 边沿之间有最小建立时间要求，CS 拉高前最后一个 SCK 边沿也有最小保持时间：
 
-| 参数 | 含义 | 典型值（SPI NOR Flash） |
-|------|------|--------------------------|
-| $t_{\text{CSS}}$ | CS 拉低到第一个 SCK 边沿 | 5~20 ns |
-| $t_{\text{CSH}}$ | 最后一个 SCK 边沿到 CS 拉高 | 5~20 ns |
-| $t_{\text{CS}}$ | CS 高电平持续时间（两次访问间隔） | 50~100 ns |
+
+| 参数               | 含义                 | 典型值（SPI NOR Flash） |
+| ---------------- | ------------------ | ------------------ |
+| $t_{\text{CSS}}$ | CS 拉低到第一个 SCK 边沿   | 5~20 ns            |
+| $t_{\text{CSH}}$ | 最后一个 SCK 边沿到 CS 拉高 | 5~20 ns            |
+| $t_{\text{CS}}$  | CS 高电平持续时间（两次访问间隔） | 50~100 ns          |
+
 
 这些参数决定了高速 SPI 不能 "拉低 CS 立刻出时钟"，控制器必须在 CS 拉低后插入延迟。Linux 用 `spi_transfer.delay` 与 `spi_transfer.cs_change_delay` 描述这些间隔，DW 驱动通过 `spi_delay_exec` 执行。
 
-**DW 控制器的隐藏陷阱**：DW APB SSI 在 TX FIFO 空时会**自动撤销 CS**，无论软件是否愿意。这意味着：
+**DW 控制器的隐藏陷阱**：DW APB SSI 在 TX FIFO 空时会**自动撤销 CS**，无论软件是否愿意。
 
-1. 单次 `spi_transfer` 内部如果 CPU 填 FIFO 不够快，TX FIFO 见底，CS 会被拉高
+底层机制是：DW 控制器没有 "手动拉低 CS" 的寄存器，CS 由 **TX FIFO 水位**隐式控制——FIFO 非空则拉低 CS 并启动 SCK，FIFO 见底则拉高 CS 停止 SCK。
+
+以 SPI Flash 读操作为例，驱动按序填 FIFO：`CMD → ADDR[0] → ADDR[1] → ADDR[2] → DUMMY`。前 4 个字节都没填完时，只要 CMD 入队（FIFO 深度 &gt; 0），硬件就立刻拉低 CS 开始移出。但此时整笔帧（CMD+ADDR+DUMMY+数据）还未就绪——CS 的拉低条件（FIFO 非空）远**松于**一帧完整的条件。
+
+这意味着：
+
+1. 单次 `spi_transfer` 内部如果 CPU 填 FIFO 不够快（被中断/调度抢占），TX FIFO 见底，CS 被拉高，帧中断
 2. 多段 `spi_message` 之间如果 TX FIFO 清空，CS 也会被拉高，破坏 "命令+地址+数据" 的原子性
+
+对于 SPI NOR Flash 的 `Read Quad I/O (0xEB)` 这类要求 `CMD+ADDR+Mode+Dummy+Data` 连续完成的命令，中间任何时刻 FIFO 见底都导致 Flash 内部状态机紊乱，整笔事务报废——不是"可能丢一个字节"，是**整帧作废**。
 
 源码 `spi-dw-core.c` 的 `dw_spi_exec_mem_op` 函数注释（L711-L738）专门讨论了这个坑：
 
@@ -205,11 +237,13 @@ CS 时序不是 "拉低就开始"，从设备对 CS 拉低到第一个 SCK 边�
 
 ### 2.5 多从拓扑与寻址
 
-| 拓扑 | 接线方式 | 适用场景 |
-|------|----------|----------|
-| **独立 CS** | SCK/MOSI/MISO 共享，每从一根 CS | 最常见，寻址 O(1) |
-| **菊花链** | 主 MOSI→从1→从1 MISO→从2 MOSI→...→从N MISO→主 MISO | LED 灯带、移位寄存器，所有从共享一个 CS |
-| **CS+GPIO 扩展** | 用 GPIO 扩展芯片（如 74HC138）多路译码 | 从设备多（>8）且 CS 引脚紧张 |
+
+| 拓扑             | 接线方式                                         | 适用场景                    |
+| -------------- | -------------------------------------------- | ----------------------- |
+| **独立 CS**      | SCK/MOSI/MISO 共享，每从一根 CS                     | 最常见，寻址 O(1)             |
+| **菊花链**        | 主 MOSI→从1→从1 MISO→从2 MOSI→...→从N MISO→主 MISO | LED 灯带、移位寄存器，所有从共享一个 CS |
+| **CS+GPIO 扩展** | 用 GPIO 扩展芯片（如 74HC138）多路译码                   | 从设备多（&gt;8）且 CS 引脚紧张    |
+
 
 菊花链模式下，主设备要写 N 个从设备，必须发 N×帧长 bit，前 N-1 帧数据被从设备依次 "传" 给下游，最后一帧留在最远端。读时反向，类似移位寄存器级联。
 
@@ -221,41 +255,77 @@ CS 时序不是 "拉低就开始"，从设备对 CS 拉低到第一个 SCK 边�
 
 标准 SPI 用 1 根 MOSI + 1 根 MISO。为提升 Flash 读取吞吐，业界扩展出复用数据线模式：
 
-| 模式 | 数据线数 | 命令/地址阶段 | 数据阶段 | 典型吞吐(@50MHz) | 引脚数 |
-|------|----------|---------------|----------|-------------------|--------|
-| **Standard** | 1+1 | 1 线 | 1 线 | 6.25 MB/s | 4 |
-| **Dual** | 1+1 → 2 | 1 线 | 2 线 | 12.5 MB/s | 4（复用 IO0/IO1） |
-| **Quad** | 1+1 → 4 | 1 线 | 4 线 | 25 MB/s | 6（IO0~IO3） |
-| **Octal** | 8 | 8 线 | 8 线 | 50 MB/s | 11（IO0~IO7） |
-| **QPI** | 4 | 4 线 | 4 线 | 25 MB/s | 6 |
-| **OSPI** | 8 | 8 线 | 8 线 | 50 MB/s | 11 |
+
+| 模式           | 数据线数    | 命令/地址阶段 | 数据阶段 | 典型吞吐(@50MHz) | 引脚数           |
+| ------------ | ------- | ------- | ---- | ------------ | ------------- |
+| **Standard** | 1+1     | 1 线     | 1 线  | 6.25 MB/s    | 4             |
+| **Dual**     | 1+1 → 2 | 1 线     | 2 线  | 12.5 MB/s    | 4（复用 IO0/IO1） |
+| **Quad**     | 1+1 → 4 | 1 线     | 4 线  | 25 MB/s      | 6（IO0~IO3）    |
+| **Octal**    | 8       | 8 线     | 8 线  | 50 MB/s      | 11（IO0~IO7）   |
+| **QPI**      | 4       | 4 线     | 4 线  | 25 MB/s      | 6             |
+| **OSPI**     | 8       | 8 线     | 8 线  | 50 MB/s      | 11            |
+
 
 > **如何读这张表**：提速倍数等于数据阶段线数。Quad SPI 把 MOSI/MISO 复用为 IO0~IO3，数据阶段 4 位并行传输，吞吐 4 倍。命令和地址阶段通常仍为单线（为兼容旧协议），所以实际加速比略低于 4。QPI/OSPI 模式连命令地址也走多线，进一步降低开销，但要求 Flash 进入特殊模式。
 
 DW APB SSI 不支持 Dual/Quad/Octal——它是 "经典 SPI" 控制器。多线模式需要 DWC SSI（HSSI）或专门的 QSPI 控制器（如 Zynq MPSoC 的 GQSPI）。Linux 用 `spi-mem` 框架的 `spi_mem_op` 结构描述多线操作，控制器驱动根据自身能力决定走硬件多线还是回退到 1 线。
 
-### 3.2 三线 SPI（3-wire）
+> **进阶阅读**：Quad/Octal 多线传输只是 QSPI 的入口。要把带宽真正跑满，还需要解决一连串工程问题——SPI NOR Flash 的命令集（QIOR 0xEB、QE 位使能、4 字节寻址）、JEDEC SFDP 参数自动发现、QSPI 控制器的 STIG/Indirect/Direct Mapping 三种执行模式、AHB 内存映射下的 XIP 与 Cache 一致性、Octal/xSPI 的 DTR 双沿采样与 8-8-8 协议。这些问题在 [11-QSPI协议与驱动](./11-QSPI协议与驱动.md) 中有完整论述，本篇聚焦经典 SPI，QSPI 作为独立的进阶章节。
 
-三线 SPI 把 MOSI 和 MISO 合并为一根 IO 线，半双工工作：
+### 3.2 三线 SPI（3-wire / SIO）
 
-| 接线 | SCK | IO | CS |
-|------|-----|----|----|
-| 标准 SPI | 1 | MOSI+MISO=2 | 1 |
-| 三线 SPI | 1 | 1（双向） | 1 |
+三线 SPI 把 MOSI 和 MISO 合并为一根双向 IO 线，**引脚数从 4 降到 3**（SCK + IO + CS），代价是半双工。
 
-适用场景：引脚紧张的传感器（如 MPU9250 加速度计）、ADC。Linux 用 `SPI_3WIRE` 标志启用，DW 控制器 CTRLR0 的 SLV_OE 位控制 MISO 输出使能。
+
+| 接线     | SCK | IO          | CS  |
+| ------ | --- | ----------- | --- |
+| 标准 SPI | 1   | MOSI+MISO=2 | 1   |
+| 三线 SPI | 1   | 1（双向）       | 1   |
+
+
+**是分时复用吗？是也不是。**
+
+方向是按**传输阶段**切换的，不是每个 bit 都切换。以读为例：
+
+```
+时间 →
+CS ────────────────────────────────────────────────────────────
+IO  [ 命令阶段(master→slave) ][ 地址阶段(master→slave) ][← 击穿期 →][ 数据阶段(slave→master) ]
+SCK ▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁
+驱动方:   master                    master                     高阻         slave
+```
+
+1. **命令+地址阶段**（写方向）：主设备驱动 IO 线，发送 CMD + ADDR
+2. **击穿期（turn-around）**：主设备释放 IO 线（输出高阻），从设备准备接管；通常需要 1/2 个 SCK 周期的空闲，避免双方同时驱动冲突
+3. **数据阶段**（读方向）：从设备驱动 IO 线，发送数据回主设备
+4. 写操作没有击穿期：主设备全程驱动 IO，从设备始终监听
+
+**关键硬件机制——SLV_OE 位**：
+
+DW HSSI 控制器 `CTRLR0` 寄存器中的 `SLV_OE`（Slave Output Enable）位控制主设备在 IO 线上的输出使能：
+
+- `SLV_OE = 0`：主设备输出使能，驱动 IO 线（命令/地址/写数据阶段）
+- `SLV_OE = 1`：主设备输出**高阻**，释放 IO 线给从设备驱动（读数据阶段）
+
+软件在构造三线 SPI 消息时，必须明确切换 SLV_OE——Linux 的 `SPI_3WIRE` 标志告知控制器使用三线模式；对于不支持硬自动切换的控制器，驱动需要在 spi_message 的每个 transfer 之间手动控制 SLV_OE。
+
+**一个源自半双工的限制**：三线 SPI 不支持全双工（不能同时发收），因为 IO 线同一时刻只有一个驱动源。MPU9250 这类传感器用三线 SPI 正是利用了"写命令→读数据"天然是半双工的特性，正好省一根引脚。
+
+适用场景：引脚紧张的传感器（MPU9250 加速度计）、ADC、EEPROM。
 
 ### 3.3 SPI 从模式（target mode）
 
 SPI 通常主设备是 SoC、从设备是外设，但有时 SoC 也要做从设备（如作为协处理器被主 SoC 控制）。SPI 从模式的关键差异：
 
-| 维度 | 主模式 | 从模式 |
-|------|--------|--------|
-| 时钟产生 | 主产生 SCK | 等待主设备 SCK |
-| 传输发起 | 主动 | 被动响应 |
-| CS 控制 | 主拉低 CS | 等待主拉低 CS |
-| FIFO 阈值 | 动态调整 | 通常固定 |
-| 速度 | 主动设频率 | 被动跟随主 |
+
+| 维度      | 主模式     | 从模式       |
+| ------- | ------- | --------- |
+| 时钟产生    | 主产生 SCK | 等待主设备 SCK |
+| 传输发起    | 主动      | 被动响应      |
+| CS 控制   | 主拉低 CS  | 等待主拉低 CS  |
+| FIFO 阈值 | 动态调整    | 通常固定      |
+| 速度      | 主动设频率   | 被动跟随主     |
+
 
 Linux 5.x 后将 "slave" 改名 "target"（`SPI_CONTROLLER_TARGET`）。DW 驱动在 `dw_spi_hw_init` 中检测从模式：
 
@@ -297,12 +367,14 @@ SPI 协议本身没有：
 
 Linux SPI 子系统用四层结构表达一次传输，定义在 `linux/include/linux/spi/spi.h`：
 
-| 层级 | 结构体 | 行号 | 职责 |
-|------|--------|------|------|
-| 控制器 | `spi_controller` | L573 | 描述控制器硬件（bus_num、num_chipselect、回调函数表） |
-| 从设备 | `spi_device` | L194 | 描述总线上的从设备（max_speed_hz、mode、chip_select） |
-| 事务 | `spi_message` | L1195 | 原子事务，含多个 transfer 链表 |
-| 段 | `spi_transfer` | L1104 | 事务中的一段（tx_buf/rx_buf/len/speed_hz） |
+
+| 层级  | 结构体              | 行号    | 职责                                       |
+| --- | ---------------- | ----- | ---------------------------------------- |
+| 控制器 | `spi_controller` | L573  | 描述控制器硬件（bus_num、num_chipselect、回调函数表）    |
+| 从设备 | `spi_device`     | L194  | 描述总线上的从设备（max_speed_hz、mode、chip_select） |
+| 事务  | `spi_message`    | L1195 | 原子事务，含多个 transfer 链表                     |
+| 段   | `spi_transfer`   | L1104 | 事务中的一段（tx_buf/rx_buf/len/speed_hz）       |
+
 
 四层关系如下：
 
@@ -409,11 +481,13 @@ struct spi_message {
 
 ### 4.2 spi_sync / spi_async 执行流
 
-| 接口 | 阻塞 | 完成通知 | 适用场景 |
-|------|------|----------|----------|
-| **spi_sync** | 是 | 函数返回即完成 | 简单场景、进程上下文 |
-| **spi_async** | 否 | 回调 `message.complete` | 高吞吐、需并行处理 |
-| **spi_sync_locked** | 是 | 函数返回即完成 | 已持有总线锁 |
+
+| 接口                  | 阻塞  | 完成通知                  | 适用场景       |
+| ------------------- | --- | --------------------- | ---------- |
+| **spi_sync**        | 是   | 函数返回即完成               | 简单场景、进程上下文 |
+| **spi_async**       | 否   | 回调 `message.complete` | 高吞吐、需并行处理  |
+| **spi_sync_locked** | 是   | 函数返回即完成               | 已持有总线锁     |
+
 
 `spi_async` 提交后立即返回，控制器驱动在完成后调用 `spi_message.complete` 回调。`spi_sync` 本质是 `spi_async` + 等待 `completion`：
 
@@ -508,18 +582,20 @@ struct spi_controller_mem_ops {
 
 Synopsys DW SSI 有两个主要 IP 变体，差异在寄存器字段位定义：
 
-| 维度 | PSSI（DW APB SSI） | HSSI（DWC SSI） |
-|------|--------------------|-----------------|
-| 总线接口 | APB | AHB/AXI |
-| compatible | `snps,dw-apb-ssi` | `snps,dwc-ssi-1.01a` |
-| DFS 字段 | CTRLR0[3:0] 或 [20:16]（32-bit 模式） | CTRLR0[4:0] |
-| FRF 字段 | CTRLR0[5:4] | CTRLR0[7:6] |
-| SCPH 位 | bit 6 | bit 8 |
-| SCPOL 位 | bit 7 | bit 9 |
-| TMOD 字段 | CTRLR0[9:8] | CTRLR0[11:10] |
-| SRL 位 | bit 11 | bit 13 |
-| MST 位 | 无 | bit 31（HSSI 102A+） |
-| 最大位宽 | 16（标准）/ 32（DFS32 扩展） | 32 |
+
+| 维度         | PSSI（DW APB SSI）                 | HSSI（DWC SSI）        |
+| ---------- | -------------------------------- | -------------------- |
+| 总线接口       | APB                              | AHB/AXI              |
+| compatible | `snps,dw-apb-ssi`                | `snps,dwc-ssi-1.01a` |
+| DFS 字段     | CTRLR0[3:0] 或 [20:16]（32-bit 模式） | CTRLR0[4:0]          |
+| FRF 字段     | CTRLR0[5:4]                      | CTRLR0[7:6]          |
+| SCPH 位     | bit 6                            | bit 8                |
+| SCPOL 位    | bit 7                            | bit 9                |
+| TMOD 字段    | CTRLR0[9:8]                      | CTRLR0[11:10]        |
+| SRL 位      | bit 11                           | bit 13               |
+| MST 位      | 无                                | bit 31（HSSI 102A+）   |
+| 最大位宽       | 16（标准）/ 32（DFS32 扩展）             | 32                   |
+
 
 驱动用宏 `dw_spi_ip_is(dws, PSSI)` / `dw_spi_ip_is(dws, HSSI)` 区分（spi-dw.h:L22-L23）：
 
@@ -571,58 +647,64 @@ static u32 dw_spi_prepare_cr0(struct dw_spi *dws, struct spi_device *spi)
 
 DW SSI 寄存器偏移（spi-dw.h:L36-L63），PSSI 与 HSSI 共用：
 
-| 偏移 | 寄存器 | 全称 | 作用 |
-|------|--------|------|------|
-| 0x00 | CTRLR0 | Control Register 0 | 模式配置（DFS/FRF/SCPH/SCPOL/TMOD） |
-| 0x04 | CTRLR1 | Control Register 1 | NDF：EEPROM-read 模式数据帧数 |
-| 0x08 | SSIENR | SSI Enable Register | 全局使能（0=禁用，1=使能） |
-| 0x0c | MWCR | Microwire Control Register | Microwire 模式专用 |
-| 0x10 | SER | Slave Enable Register | CS 使能（每 bit 对应一个 CS） |
-| 0x14 | BAUDR | Baud Rate Select | 时钟分频（偶数，2~65534） |
-| 0x18 | TXFTLR | TX FIFO Threshold | TX FIFO 阈值（低于此触发中断） |
-| 0x1c | RXFTLR | RX FIFO Threshold | RX FIFO 阈值（高于此触发中断） |
-| 0x20 | TXFLR | TX FIFO Level | 当前 TX FIFO 数据数（只读） |
-| 0x24 | RXFLR | RX FIFO Level | 当前 RX FIFO 数据数（只读） |
-| 0x28 | SR | Status Register | 状态（BUSY/TF_EMPT/RF_NOT_EMPT...） |
-| 0x2c | IMR | Interrupt Mask | 中断屏蔽 |
-| 0x30 | ISR | Interrupt Status | 中断状态（读后清） |
-| 0x34 | RISR | Raw Interrupt Status | 原始中断状态（未屏蔽） |
-| 0x38 | TXOICR | TX Overflow IRQ Clear | TX 溢出清除（读后清） |
-| 0x3c | RXOICR | RX Overflow IRQ Clear | RX 溢出清除 |
-| 0x40 | RXUICR | RX Underflow IRQ Clear | RX 下溢清除 |
-| 0x44 | MSTICR | Multi-Master IRQ Clear | 多主冲突清除 |
-| 0x48 | ICR | IRQ Clear | 清除所有中断 |
-| 0x4c | DMACR | DMA Control | DMA 使能（RDMAE/TDMAE） |
-| 0x50 | DMATDLR | DMA TX Data Level | TX DMA 触发阈值 |
-| 0x54 | DMARDLR | DMA RX Data Level | RX DMA 触发阈值 |
-| 0x58 | IDR | Identification Register | IP 标识 |
-| 0x5c | VERSION | Version | Synopsys 版本编码 |
-| 0x60 | DR | Data Register | 数据寄存器（写=TX，读=RX） |
-| 0xf0 | RX_SAMPLE_DLY | RX Sample Delay | RX 采样延迟（纳秒单位） |
-| 0xf4 | CS_OVERRIDE | CS Override | 强制 CS 控制（厂商扩展） |
+
+| 偏移   | 寄存器           | 全称                         | 作用                              |
+| ---- | ------------- | -------------------------- | ------------------------------- |
+| 0x00 | CTRLR0        | Control Register 0         | 模式配置（DFS/FRF/SCPH/SCPOL/TMOD）   |
+| 0x04 | CTRLR1        | Control Register 1         | NDF：EEPROM-read 模式数据帧数          |
+| 0x08 | SSIENR        | SSI Enable Register        | 全局使能（0=禁用，1=使能）                 |
+| 0x0c | MWCR          | Microwire Control Register | Microwire 模式专用                  |
+| 0x10 | SER           | Slave Enable Register      | CS 使能（每 bit 对应一个 CS）            |
+| 0x14 | BAUDR         | Baud Rate Select           | 时钟分频（偶数，2~65534）                |
+| 0x18 | TXFTLR        | TX FIFO Threshold          | TX FIFO 阈值（低于此触发中断）             |
+| 0x1c | RXFTLR        | RX FIFO Threshold          | RX FIFO 阈值（高于此触发中断）             |
+| 0x20 | TXFLR         | TX FIFO Level              | 当前 TX FIFO 数据数（只读）              |
+| 0x24 | RXFLR         | RX FIFO Level              | 当前 RX FIFO 数据数（只读）              |
+| 0x28 | SR            | Status Register            | 状态（BUSY/TF_EMPT/RF_NOT_EMPT...） |
+| 0x2c | IMR           | Interrupt Mask             | 中断屏蔽                            |
+| 0x30 | ISR           | Interrupt Status           | 中断状态（读后清）                       |
+| 0x34 | RISR          | Raw Interrupt Status       | 原始中断状态（未屏蔽）                     |
+| 0x38 | TXOICR        | TX Overflow IRQ Clear      | TX 溢出清除（读后清）                    |
+| 0x3c | RXOICR        | RX Overflow IRQ Clear      | RX 溢出清除                         |
+| 0x40 | RXUICR        | RX Underflow IRQ Clear     | RX 下溢清除                         |
+| 0x44 | MSTICR        | Multi-Master IRQ Clear     | 多主冲突清除                          |
+| 0x48 | ICR           | IRQ Clear                  | 清除所有中断                          |
+| 0x4c | DMACR         | DMA Control                | DMA 使能（RDMAE/TDMAE）             |
+| 0x50 | DMATDLR       | DMA TX Data Level          | TX DMA 触发阈值                     |
+| 0x54 | DMARDLR       | DMA RX Data Level          | RX DMA 触发阈值                     |
+| 0x58 | IDR           | Identification Register    | IP 标识                           |
+| 0x5c | VERSION       | Version                    | Synopsys 版本编码                   |
+| 0x60 | DR            | Data Register              | 数据寄存器（写=TX，读=RX）                |
+| 0xf0 | RX_SAMPLE_DLY | RX Sample Delay            | RX 采样延迟（纳秒单位）                   |
+| 0xf4 | CS_OVERRIDE   | CS Override                | 强制 CS 控制（厂商扩展）                  |
+
 
 SR（状态寄存器）位定义（spi-dw.h:L102-L109）：
 
-| 位 | 名称 | 含义 |
-|----|------|------|
-| 0 | BUSY | 正在传输 |
-| 1 | TF_NOT_FULL | TX FIFO 未满 |
-| 2 | TF_EMPT | TX FIFO 空 |
-| 3 | RF_NOT_EMPT | RX FIFO 非空 |
-| 4 | RF_FULL | RX FIFO 满 |
-| 5 | TX_ERR | TX 错误 |
-| 6 | DCOL | 数据冲突 |
+
+| 位   | 名称          | 含义         |
+| --- | ----------- | ---------- |
+| 0   | BUSY        | 正在传输       |
+| 1   | TF_NOT_FULL | TX FIFO 未满 |
+| 2   | TF_EMPT     | TX FIFO 空  |
+| 3   | RF_NOT_EMPT | RX FIFO 非空 |
+| 4   | RF_FULL     | RX FIFO 满  |
+| 5   | TX_ERR      | TX 错误      |
+| 6   | DCOL        | 数据冲突       |
+
 
 中断位（spi-dw.h:L112-L118）：
 
-| 位 | 名称 | 含义 |
-|----|------|------|
-| 0 | TXEI | TX FIFO 空（低于 TXFTLR） |
-| 1 | TXOI | TX FIFO 溢出 |
-| 2 | RXUI | RX FIFO 下溢（读空 FIFO 后再读） |
-| 3 | RXOI | RX FIFO 溢出 |
-| 4 | RXFI | RX FIFO 达到 RXFTLR |
-| 5 | MSTI | 多主冲突 |
+
+| 位   | 名称   | 含义                      |
+| --- | ---- | ----------------------- |
+| 0   | TXEI | TX FIFO 空（低于 TXFTLR）    |
+| 1   | TXOI | TX FIFO 溢出              |
+| 2   | RXUI | RX FIFO 下溢（读空 FIFO 后再读） |
+| 3   | RXOI | RX FIFO 溢出              |
+| 4   | RXFI | RX FIFO 达到 RXFTLR       |
+| 5   | MSTI | 多主冲突                    |
+
 
 ### 5.3 probe 完整流程
 
@@ -898,11 +980,13 @@ static int dw_spi_transfer_one(struct spi_controller *ctlr,
 
 三种模式对比：
 
-| 模式 | 触发条件 | CPU 占用 | 延迟 | 适用场景 |
-|------|----------|----------|------|----------|
-| **Poll** | `irq == IRQ_NOTCONNECTED` | 100%（忙等 SR） | 最低 | 无中断线、短传输 |
-| **IRQ** | 默认 | 低（中断驱动） | 中 | 大多数场景 |
-| **DMA** | `dma_mapped` 为真 | 最低 | 较高（setup 开销） | 大块传输 |
+
+| 模式       | 触发条件                      | CPU 占用      | 延迟           | 适用场景     |
+| -------- | ------------------------- | ----------- | ------------ | -------- |
+| **Poll** | `irq == IRQ_NOTCONNECTED` | 100%（忙等 SR） | 最低           | 无中断线、短传输 |
+| **IRQ**  | 默认                        | 低（中断驱动）     | 中            | 大多数场景    |
+| **DMA**  | `dma_mapped` 为真           | 最低          | 较高（setup 开销） | 大块传输     |
+
 
 ### 5.6 中断处理与 FIFO 阈值动态调整
 
@@ -936,8 +1020,8 @@ static void dw_spi_irq_setup(struct dw_spi *dws)
 举例：fifo_len=32，tx_len=128（待发 128 字）。
 
 - `level = min(16, 128) = 16`
-- TXFTLR=16：TX FIFO 数据 <= 16 时触发 TXEI（"该补充了"）
-- RXFTLR=15：RX FIFO 数据 >= 16 时触发 RXFI（"该读走了"）
+- TXFTLR=16：TX FIFO 数据 &lt;= 16 时触发 TXEI（"该补充了"）
+- RXFTLR=15：RX FIFO 数据 &gt;= 16 时触发 RXFI（"该读走了"）
 
 这样每次中断处理 ~16 字，中断频率 = 总字数 / 16，平衡了中断开销与延迟。
 
@@ -1021,11 +1105,13 @@ int dw_spi_check_status(struct dw_spi *dws, bool raw)
 
 错误原因分析：
 
-| 错误 | 触发原因 | 后果 |
-|------|----------|------|
-| **RXOI**（RX 溢出） | RX FIFO 满了又来新数据，旧数据被覆盖 | 数据丢失 |
-| **RXUI**（RX 下溢） | RX FIFO 空了还读 DR | 读出垃圾数据 |
-| **TXOI**（TX 溢出） | TX FIFO 满了还写 DR | 写入被丢弃 |
+
+| 错误              | 触发原因                   | 后果     |
+| --------------- | ---------------------- | ------ |
+| **RXOI**（RX 溢出） | RX FIFO 满了又来新数据，旧数据被覆盖 | 数据丢失   |
+| **RXUI**（RX 下溢） | RX FIFO 空了还读 DR        | 读出垃圾数据 |
+| **TXOI**（TX 溢出） | TX FIFO 满了还写 DR        | 写入被丢弃  |
+
 
 任何错误都触发 `dw_spi_reset_chip`（spi-dw.h:L272-L279）：禁用控制器、清中断、清 CS、重新使能。这是 "硬复位" 策略，因为 SPI 错误后从设备状态可能已乱，继续传只会得到更多错误。
 
@@ -1365,14 +1451,16 @@ struct spi_context {
 
 对比 Linux `spi_message`：
 
-| 维度 | Linux `spi_message` | Zephyr `spi_context` |
-|------|---------------------|----------------------|
-| 事务模型 | 多段 transfer 链表 | `spi_buf_set` 数组 |
-| 完成同步 | `completion` + 回调 | `k_sem` + 回调（异步） |
-| 锁机制 | `io_mutex` + `bus_lock` | `k_sem lock` |
-| 异步支持 | `spi_async` + `complete` 回调 | `CONFIG_SPI_ASYNC` + callback |
-| DMA 集成 | `dmaengine` + scatterlist | `spi_dma` 可选 |
-| 配置传递 | `spi_transfer` 逐段覆盖 | `spi_config` 一次性 |
+
+| 维度     | Linux `spi_message`         | Zephyr `spi_context`          |
+| ------ | --------------------------- | ----------------------------- |
+| 事务模型   | 多段 transfer 链表              | `spi_buf_set` 数组              |
+| 完成同步   | `completion` + 回调           | `k_sem` + 回调（异步）              |
+| 锁机制    | `io_mutex` + `bus_lock`     | `k_sem lock`                  |
+| 异步支持   | `spi_async` + `complete` 回调 | `CONFIG_SPI_ASYNC` + callback |
+| DMA 集成 | `dmaengine` + scatterlist   | `spi_dma` 可选                  |
+| 配置传递   | `spi_transfer` 逐段覆盖         | `spi_config` 一次性              |
+
 
 ### 7.2 spi_dw_transceive 执行流
 
@@ -1568,19 +1656,21 @@ out:
 
 `linux/Documentation/devicetree/bindings/spi/snps,dw-apb-ssi.yaml` 定义规范：
 
-| 属性 | 类型 | 含义 | 默认值 |
-|------|------|------|--------|
-| `compatible` | string | 匹配驱动 | 必填 |
-| `reg` | array | 寄存器基址与大小 | 必填 |
-| `interrupts` | array | 中断号 | 必填 |
-| `clocks` | phandle | 参考时钟 | 必填 |
-| `clock-names` | string | 时钟名（"ssi_clk"、"pclk"） | - |
-| `num-cs` | u32 | 片选线数量 | 自动检测 |
-| `reg-io-width` | u32 | 寄存器 IO 宽度（2/4） | 4 |
-| `dmas` | phandle | DMA 通道 | - |
-| `dma-names` | string | "tx"/"rx" | - |
-| `rx-sample-delay-ns` | u32 | RX 采样延迟（ns） | 0 |
-| `resets` | phandle | 复位控制 | - |
+
+| 属性                   | 类型      | 含义                    | 默认值  |
+| -------------------- | ------- | --------------------- | ---- |
+| `compatible`         | string  | 匹配驱动                  | 必填   |
+| `reg`                | array   | 寄存器基址与大小              | 必填   |
+| `interrupts`         | array   | 中断号                   | 必填   |
+| `clocks`             | phandle | 参考时钟                  | 必填   |
+| `clock-names`        | string  | 时钟名（"ssi_clk"、"pclk"） | -    |
+| `num-cs`             | u32     | 片选线数量                 | 自动检测 |
+| `reg-io-width`       | u32     | 寄存器 IO 宽度（2/4）        | 4    |
+| `dmas`               | phandle | DMA 通道                | -    |
+| `dma-names`          | string  | "tx"/"rx"             | -    |
+| `rx-sample-delay-ns` | u32     | RX 采样延迟（ns）           | 0    |
+| `resets`             | phandle | 复位控制                  | -    |
+
 
 ### 8.2 DTS 示例
 
@@ -1611,19 +1701,21 @@ spi@fff00000 {
 
 ### 8.3 从设备属性
 
-| 属性 | 含义 |
-|------|------|
-| `spi-max-frequency` | 该从设备允许的最大 SCK 频率 |
-| `spi-cpol` | 存在则 CPOL=1，否则 CPOL=0 |
-| `spi-cpha` | 存在则 CPHA=1，否则 CPHA=0 |
-| `spi-cs-high` | CS 高电平有效（默认低有效） |
-| `spi-3wire` | 三线模式（MOSI/MISO 共用） |
-| `spi-lsb-first` | LSB 优先（默认 MSB first） |
-| `rx-sample-delay-ns` | 该从设备专属的 RX 采样延迟 |
+
+| 属性                   | 含义                   |
+| -------------------- | -------------------- |
+| `spi-max-frequency`  | 该从设备允许的最大 SCK 频率     |
+| `spi-cpol`           | 存在则 CPOL=1，否则 CPOL=0 |
+| `spi-cpha`           | 存在则 CPHA=1，否则 CPHA=0 |
+| `spi-cs-high`        | CS 高电平有效（默认低有效）      |
+| `spi-3wire`          | 三线模式（MOSI/MISO 共用）   |
+| `spi-lsb-first`      | LSB 优先（默认 MSB first） |
+| `rx-sample-delay-ns` | 该从设备专属的 RX 采样延迟      |
+
 
 Zephyr 的 DT overlay 语法与 Linux 一致，但用 `DT_INST_FOREACH` 宏实例化驱动（spi_dw.c:L671-L710），CS 控制通过 `spi_cs_control` 结构体描述。
 
-> **核心要点**：`rx-sample-delay-ns` 是 DW 控制器特色——允许在默认采样点后延迟若干纳秒再采样 MISO，补偿 PCB 走线延迟。高速 SPI（>50MHz）时对信号完整性至关重要，可写在控制器节点（默认值）或从设备节点（覆盖）。
+> **核心要点**：`rx-sample-delay-ns` 是 DW 控制器特色——允许在默认采样点后延迟若干纳秒再采样 MISO，补偿 PCB 走线延迟。高速 SPI（&gt;50MHz）时对信号完整性至关重要，可写在控制器节点（默认值）或从设备节点（覆盖）。
 
 ---
 
@@ -1631,21 +1723,23 @@ Zephyr 的 DT overlay 语法与 Linux 一致，但用 `DT_INST_FOREACH` 宏实�
 
 ### 9.1 信号完整性要点
 
-高速 SPI（>25MHz）的信号完整性是产品化阶段最大的坑：
+高速 SPI（&gt;25MHz）的信号完整性是产品化阶段最大的坑：
 
-| 问题 | 现象 | 解决方法 |
-|------|------|----------|
+
+| 问题            | 现象                     | 解决方法                                |
+| ------------- | ---------------------- | ----------------------------------- |
 | **MISO 边沿退化** | 高频时 MISO 上升沿变缓，采样到错误数据 | 调 `rx-sample-delay-ns` 把采样点移到数据眼图中心 |
-| **SCK 过冲/振铃** | SCK 边沿有过冲，从设备误触发 | 串 22~50Ω 端接电阻，PCB 走线加阻抗控制 |
-| **CS 反弹** | CS 边沿有毛刺，从设备误以为传输开始/结束 | CS 信号加 0.1μF 滤波电容，或用施密特触发 GPIO |
-| **串扰** | SCK 跳变耦合到 MISO，造成数据错乱 | PCB 上 SCK 与数据线间距 ≥3 倍线宽 |
-| **不匹配阻抗** | 长走线（>15cm）反射导致边沿畸变 | 端接电阻匹配 PCB 特征阻抗（典型 50Ω） |
+| **SCK 过冲/振铃** | SCK 边沿有过冲，从设备误触发       | 串 22~50Ω 端接电阻，PCB 走线加阻抗控制           |
+| **CS 反弹**     | CS 边沿有毛刺，从设备误以为传输开始/结束 | CS 信号加 0.1μF 滤波电容，或用施密特触发 GPIO      |
+| **串扰**        | SCK 跳变耦合到 MISO，造成数据错乱  | PCB 上 SCK 与数据线间距 ≥3 倍线宽             |
+| **不匹配阻抗**     | 长走线（&gt;15cm）反射导致边沿畸变  | 端接电阻匹配 PCB 特征阻抗（典型 50Ω）             |
+
 
 PCB 走线规则：
 
 1. SCK 优先走最短路径，避免过孔
 2. SCK 与 MOSI/MISO/CS 间距 ≥3W（W=线宽）
-3. 同一 SPI 总线的所有信号线等长（差<5mil）
+3. 同一 SPI 总线的所有信号线等长（差&lt;5mil）
 4. 避免 SCK 走晶体/电源下方
 
 ### 9.2 寄存器级调试
@@ -1678,7 +1772,7 @@ RX_SAMPLE_DLY: 0x00000001   # 1 个时钟周期延迟
 调试技巧：
 
 - **SR.BUSY 卡 1**：传输卡死，通常是 CS 时序问题或从设备无响应
-- **ISR.RXOI=1**：RX FIFO 溢出，说明 CPU/DMA 跟不上，降频或增大 FIFO 阈值
+- **ISR.RXOI=1**：RX FIFO 溢出，说明 CPU/DMA 跟不上，降频或**降低** RX 阈值（ISR/DMA 更早触发，防止 FIFO 积满）
 - **ISR.TXOI=1**：TX FIFO 溢出，说明 DMA 配置错误（不应写超过 FIFO 容量）
 
 ### 9.3 spidev_test 工具
@@ -1700,16 +1794,18 @@ spidev_test -D /dev/spidev0.0 -s 500000 -O -H -b 8 -p "\xAA"
 
 ### 9.4 常见问题排查表
 
-| 现象 | 可能原因 | 排查方法 |
-|------|----------|----------|
-| **全 0x00 或 0xFF** | CPOL/CPHA 错配 | 改 mode 重试，看示波器空闲电平 |
-| **CS 未拉低** | `cs-gpios` 未配 / GPIO 号错 | `gpioget` 验证；查 DTS |
-| **MOSI/MISO 接反** | 原理图标错 | 示波器看 MOSI 有无主设备数据 |
-| **偶发数据错乱** | 速度过快、信号完整性差 | 降频测试；调 `rx-sample-delay-ns` |
-| **传输卡死 / CS 中途拉高** | 中断未注册 / DMA 冲突 / DW 自动撤 CS | `dmesg` 看错误；改 GPIO CS；增大 TXFTLR |
-| **RX FIFO overflow** | CPU 跟不上 / DMA 配置错 | 降频；检查 DMA burst 配置 |
-| **TX FIFO overflow** | DMA 写过快 | 检查 DMATDLR；用 `dw_spi_dma_maxburst_init` 默认值 |
-| **最后几字丢失** | RXFTLR 未动态调整 | 确认 `dw_spi_transfer_handler` 路径正确执行 |
+
+| 现象                   | 可能原因                       | 排查方法                                        |
+| -------------------- | -------------------------- | ------------------------------------------- |
+| **全 0x00 或 0xFF**    | CPOL/CPHA 错配               | 改 mode 重试，看示波器空闲电平                          |
+| **CS 未拉低**           | `cs-gpios` 未配 / GPIO 号错    | `gpioget` 验证；查 DTS                          |
+| **MOSI/MISO 接反**     | 原理图标错                      | 示波器看 MOSI 有无主设备数据                           |
+| **偶发数据错乱**           | 速度过快、信号完整性差                | 降频测试；调 `rx-sample-delay-ns`                 |
+| **传输卡死 / CS 中途拉高**   | 中断未注册 / DMA 冲突 / DW 自动撤 CS | `dmesg` 看错误；改 GPIO CS；增大 TXFTLR             |
+| **RX FIFO overflow** | CPU 跟不上 / DMA 配置错          | 降频；检查 DMA burst 配置                          |
+| **TX FIFO overflow** | DMA 写过快                    | 检查 DMATDLR；用 `dw_spi_dma_maxburst_init` 默认值 |
+| **最后几字丢失**           | RXFTLR 未动态调整               | 确认 `dw_spi_transfer_handler` 路径正确执行         |
+
 
 > **核心要点**：SPI 调试遵循 "先看波形再读代码"。九成的 CPOL/CPHA 错配、CS 时序问题、信号完整性问题，用逻辑分析仪一眼就能定位，远比读驱动代码高效。
 
@@ -1719,19 +1815,21 @@ spidev_test -D /dev/spidev0.0 -s 500000 -O -H -b 8 -p "\xAA"
 
 > 本篇讲了 SPI 的全部细节。下一篇将讲 I2C——另一种同步串行总线。两者经常被对比，这里先给出关键差异。
 
-| 维度 | SPI | I2C |
-|------|-----|-----|
-| **拓扑** | 主从 + 星型（每从一根 CS） | 多主 + 共享总线（地址寻址） |
-| **引脚数** | 4 + N（每从一根 CS） | 2（SCL/SDA 共享） |
-| **电气** | 推挽 | 开漏 + 上拉 |
-| **双工** | 全双工 | 半双工 |
-| **速率** | 100MHz+ | 100kHz / 400kHz / 1MHz / 3.4MHz |
-| **寻址** | 硬件 CS | 7-bit / 10-bit 软地址 |
-| **应答** | 无 | 每字节 ACK/NACK |
-| **校验** | 无 | 无（靠 ACK） |
-| **多主** | 不支持 | 支持（线与仲裁） |
-| **典型用途** | Flash、传感器、ADC | EEPROM、传感器、PMIC |
-| **驱动复杂度** | 简单（无协议层状态机） | 复杂（START/STOP/ACK 状态机） |
+
+| 维度        | SPI              | I2C                             |
+| --------- | ---------------- | ------------------------------- |
+| **拓扑**    | 主从 + 星型（每从一根 CS） | 多主 + 共享总线（地址寻址）                 |
+| **引脚数**   | 4 + N（每从一根 CS）   | 2（SCL/SDA 共享）                   |
+| **电气**    | 推挽               | 开漏 + 上拉                         |
+| **双工**    | 全双工              | 半双工                             |
+| **速率**    | 100MHz+          | 100kHz / 400kHz / 1MHz / 3.4MHz |
+| **寻址**    | 硬件 CS            | 7-bit / 10-bit 软地址              |
+| **应答**    | 无                | 每字节 ACK/NACK                    |
+| **校验**    | 无                | 无（靠 ACK）                        |
+| **多主**    | 不支持              | 支持（线与仲裁）                        |
+| **典型用途**  | Flash、传感器、ADC    | EEPROM、传感器、PMIC                 |
+| **驱动复杂度** | 简单（无协议层状态机）      | 复杂（START/STOP/ACK 状态机）          |
+
 
 > **核心要点**：SPI 与 I2C 是 "速度 vs 复杂度" 的两端。SPI 用引脚和推挽电气换最高速度，无协议层开销；I2C 用 2 线和开漏电气换引脚省，但牺牲速度和带宽。选型时：要速度选 SPI，要省引脚选 I2C，要可靠多主选 I2C。
 

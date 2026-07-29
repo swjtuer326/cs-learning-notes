@@ -31,6 +31,12 @@
 | DLL | Delay Locked Loop | 延迟锁相环，用于训练相位 |
 | DS | Data Strobe | eMMC HS400 模式下由卡驱动的选通信号 |
 | FTL | Flash Translation Layer | Flash 翻换层，将块设备映射到物理 Flash |
+| VCC | Voltage Core Supply | eMMC Flash 核心电源（2.7-3.6V） |
+| VCCQ | Voltage I/O Supply | eMMC IO 电源（1.7-1.95V 或 2.7-3.6V） |
+| VDD | Voltage Drain Drain | SD 卡主电源（2.7-3.6V，含核心与 IO） |
+| PMIC | Power Management IC | 电源管理芯片，输出多路电压 |
+| LDO | Low Dropout Regulator | 低压差线性稳压器 |
+| pwrseq | Power Sequence | 上电/断电时序控制框架 |
 
 ### 前置知识
 
@@ -152,14 +158,336 @@ $$BW = \frac{200 \times 10^6 \times 8 \times 1}{8} = 200 \text{ MB/s}$$
 
 $$BW = \frac{52 \times 10^6 \times 8 \times 2}{8} = 104 \times 10^6 \text{ B/s} = 104 \text{ MB/s}$$
 
-### 2.4 电压切换
+### 2.4 电压切换与电源设计
 
-默认 3.3V 信号电压。进入 HS200/HS400 前必须切换到 1.8V，因为 200MHz 时钟下 3.3V 信号完整性无法保证（边沿过渡时间过长导致眼图闭合）。切换通过 CMD11（VOLTAGE_SWITCH）触发：
+默认 3.3V 信号电压。进入 HS200/HS400 前必须切换到 1.8V，因为 200MHz 时钟下 3.3V 信号完整性无法保证——3.3V CMOS 驱动的边沿过渡时间（$t_r \approx 0.35 \times R_{\text{drive}} \times C_{\text{load}}$）在 200MHz 周期 5ns 内占比过高，眼图水平方向几乎闭合。1.8V 信号边沿过渡更快（电压摆幅小、驱动电流小），眼图裕度恢复。
 
-1. Host 通过 `vqmmc-supply` regulator 把 IO 电压切到 1.8V
-2. Host 发 CMD11，卡检测到电压切换请求
-3. 卡拉低 DAT0 表示正在切换
-4. 切换完成后 DAT0 释放，Host 重新使能时钟
+但"电压切换"在硬件上远不止改一个寄存器——它涉及 **eMMC 双电源架构、SD 卡单电源架构、控制器独立 IO 电源域、PMIC 多路输出、上电时序** 五个层面。这一节从电源架构出发，讲清"谁给谁供电、为什么需要多路电源、上电顺序怎么排"。
+
+#### 2.4.1 eMMC 的双电源架构：VCC 与 VCCQ
+
+eMMC 芯片有两组独立的电源引脚，这是理解 eMMC 硬件设计的基础：
+
+| 电源引脚 | 电压范围 | 供电对象 | 典型值 | 是否可切换 |
+|----------|----------|----------|--------|-----------|
+| **VCC** | 2.7V - 3.6V | Flash 核心阵列（NAND 读写、擦除高压） | 3.3V 固定 | 否（始终 3.3V） |
+| **VCCQ** | 1.7V - 1.95V 或 2.7V - 3.6V | IO 缓冲（CMD/DAT/CLK 接口逻辑） | 1.8V 或 3.3V | 是（CMD11 切换） |
+| **VSS** | 0V | VCC 地 | — | — |
+| **VSSi** | 0V | VCCQ 地（独立地，减少核心噪声耦合到 IO） | — | — |
+
+> **为什么 Flash 核心需要 3.3V 而 IO 可以 1.8V？** NAND Flash 的编程（写）操作需要高压——内部电荷泵把 VCC 升到 15-20V 驱动浮栅隧道氧化层。如果 VCC 低于 2.7V，电荷泵效率急剧下降，编程时间从 200μs 飙升到毫秒级，擦除更是无法完成。而 IO 缓冲只是 CMOS 推挽驱动，1.8V 足够可靠翻转电平，且功耗更低、信号边沿更快。这就是 VCC 和 VCCQ 分开供电的根本原因——核心要"够高的电压维持电荷泵"，IO 要"够低的电压降功耗提速"。
+
+> **为什么 VSS 和 VSSi 分开？** Flash 核心阵列在编程/擦除时产生大电流尖峰（数十 mA），如果与 IO 共地，地弹噪声会耦合到 CMD/DAT 信号导致误码。独立地引脚让核心电流回路与 IO 电流回路物理隔离。
+
+**典型 eMMC 硬件供电方案**：
+
+| 设计类型 | VCC | VCCQ | 适用场景 | DTS 配置 |
+|----------|-----|------|----------|----------|
+| **固定 1.8V VCCQ** | 3.3V LDO | 1.8V LDO | 仅用 HS200/HS400 的现代 SoC | `vqmmc-supply` 指向固定 1.8V regulator |
+| **可切换 VCCQ** | 3.3V LDO | 可切换 LDO（3.3V↔1.8V） | 需兼容 DS/HS 3.3V 模式的设备 | `vqmmc-supply` 指向可切换 regulator |
+| **直连 SoC IO 域** | 3.3V LDO | SoC IO 电源域（1.8V 固定） | SoC IO 域固定 1.8V 的设计 | 无 `vqmmc-supply`，驱动用 `FLAG_IO_FIXED_1V8` |
+
+#### 2.4.2 SD 卡的单电源架构与信号电压切换
+
+SD 卡（含 UHS-I/II/III）与 eMMC 不同——它只有一路主电源 VDD：
+
+| 电源引脚 | 电压范围 | 供电对象 | 典型值 |
+|----------|----------|----------|--------|
+| **VDD** | 2.7V - 3.6V | 卡内核心逻辑 + IO 缓冲（共用） | 3.3V |
+
+SD 卡的"电压切换"只切 **信号电压**（signal voltage），不切 VDD——VDD 始终 3.3V。CMD11 命令让卡内部的 IO 缓冲从 3.3V 模式切到 1.8V 模式，但卡的 Flash 核心和内部逻辑仍由 VDD 3.3V 供电。这与 eMMC 的 VCCQ 切换本质不同：
+
+| 对比维度 | eMMC VCCQ 切换 | SD 卡信号电压切换 |
+|----------|----------------|------------------|
+| **切什么** | 外部 IO 电源引脚电压 | 卡内部 IO 缓冲工作模式 |
+| **VCC/VDD 变不变** | VCC 不变（3.3V） | VDD 不变（3.3V） |
+| **需要外部 regulator 吗** | 是（vqmmc-supply 切电压） | 是（vqmmc-supply 切电压，给 Host IO 用） |
+| **卡的 IO 电压由谁决定** | VCCQ 引脚电压 | 卡内部 LDO（从 VDD 降压，切到 1.8V 模式） |
+| **Host IO 电压谁切** | 与 VCCQ 同源（外部 regulator） | Host 端 vqmmc-supply 独立切 |
+
+> **核心要点**：eMMC 的 VCCQ 是外部供电引脚，切电压就是切外部 regulator；SD 卡的信号电压切换是卡内部行为，但 Host 端的 IO 也必须同步切到 1.8V——这就是 `vqmmc-supply` 在两种场景下都存在的原因，但它驱动的对象不同：eMMC 驱动卡的 VCCQ 引脚 + Host IO，SD 卡只驱动 Host IO（卡自己处理内部切换）。
+
+#### 2.4.3 控制器供电：独立的 IO 电源域
+
+SoC 内部的 SDHCI/DWC_mshc 控制器有自己的 IO 电源域，与卡的电源是**独立的两组供电**：
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
+flowchart LR
+    subgraph "SoC 侧"
+        Ctrl["DWC_mshc 控制器<br/>寄存器 + DMA"]
+        CtrlIO["控制器 IO 电源域<br/>1.8V 或 3.3V"]
+    end
+
+    subgraph "板级电源"
+        PMIC["PMIC / LDO<br/>多路输出"]
+    end
+
+    subgraph "设备侧"
+        eMMC["eMMC 芯片"]
+        VCC["VCC 引脚<br/>3.3V Flash 核心"]
+        VCCQ["VCCQ 引脚<br/>1.8V IO 缓冲"]
+    end
+
+    PMIC -->|"vmmc-supply<br/>3.3V"| VCC
+    PMIC -->|"vqmmc-supply<br/>1.8V 或可切换"| VCCQ
+    PMIC -->|"控制器 IO 域供电<br/>1.8V 或 3.3V"| CtrlIO
+    CtrlIO -.->|"同一电压域<br/>才能通信"| VCCQ
+
+    Ctrl -->|"CMD/DAT/CLK<br/>信号线"| eMMC
+```
+
+**关键区分**：
+
+- **`vmmc-supply`**：给卡的 Flash 核心供电（eMMC VCC / SD 卡 VDD），3.3V 固定，对应 `mmc->supply.vmmc`
+- **`vqmmc-supply`**：给卡的 IO 供电（eMMC VCCQ）或给 Host IO 域供电（SD 卡场景），可切换 3.3V/1.8V，对应 `mmc->supply.vqmmc`
+- **控制器自身 IO 电源**：SoC 内部电源域，通常由 SoC 的 IO 电源框架管理（如 Rockchip 的 `io-domains`），**不走 mmc 子系统的 regulator**
+
+当 SoC 控制器的 IO 域固定为 1.8V 时，驱动设置 `FLAG_IO_FIXED_1V8` 标志，跳过 `vqmmc` regulator 切换——因为控制器自己已经跑在 1.8V 上了，只需让卡切到 1.8V：
+
+```c
+/* 摘自 linux/drivers/mmc/host/sdhci-of-dwcmshc.c 的 probe 流程 */
+if (of_property_read_bool(dev->of_node, "rockchip,io-fixed-1v8"))
+    priv->flags |= FLAG_IO_FIXED_1V8;
+```
+
+后续在 `dwcmshc_set_uhs_signaling` 中（[sdhci-of-dwcmshc.c:1020](file:///home/pbw/2042f/linux/drivers/mmc/host/sdhci-of-dwcmshc.c#L1020)）：
+
+```c
+if (priv->flags & FLAG_IO_FIXED_1V8)
+    ctrl_2 |= SDHCI_CTRL_VDD_180;   /* 直接告知控制器：IO 已在 1.8V */
+```
+
+#### 2.4.4 多路电源输入与 PMIC 设计
+
+一个典型的 eMMC + SD 卡双接口 SoC 系统，PMIC 需要输出至少 4-5 路独立电源：
+
+| 电源轨 | 电压 | 供电对象 | PMIC 输出 | 是否可切换 |
+|--------|------|----------|-----------|-----------|
+| **VCC_eMMC** | 3.3V | eMMC Flash 核心 | Buck/LDO 1 | 否 |
+| **VCCQ_eMMC** | 1.8V | eMMC IO + SoC eMMC 控制器 IO 域 | LDO 2 | 否（固定 1.8V）或是（兼容模式） |
+| **VDD_SD** | 3.3V | SD 卡主电源 | LDO 3 | 否 |
+| **VQ_SD** | 3.3V↔1.8V | SD 控制器 IO 域 + SD 卡信号电压 | 可切换 LDO 4 | **是**（CMD11 触发） |
+| **VCC_SOCSPI** | 1.8V/3.3V | SoC 其他外设 IO 域 | Buck/LDO 5 | 取决于设计 |
+
+> **为什么 SD 卡的 vqmmc 必须可切换而 eMMC 的 VCCQ 可以固定？** SD 卡要兼容旧的 3.3V DS/HS 模式（插老卡也要能读），初始化阶段必须 3.3V，检测到 UHS 支持后才切 1.8V。eMMC 焊在板上不换卡，如果设计只跑 HS400，VCCQ 直接固定 1.8V 即可——省掉可切换 LDO 的成本和切换延迟。
+
+**PMIC 典型设计**（以 Rockchip RK3568 + RK817 PMIC 为例）：
+
+```dts
+/* PMIC 输出多路电源 */
+&rk817 {
+    regulators {
+        /* eMMC Flash 核心电源 */
+        vcc3v3_emmc: DCDC_REG1 {
+            regulator-name = "vcc3v3_emmc";
+            regulator-min-microvolt = <3300000>;
+            regulator-max-microvolt = <3300000>;
+        };
+        /* eMMC IO 电源（固定 1.8V） */
+        vcc_1v8_emmc: LDO_REG1 {
+            regulator-name = "vcc_1v8_emmc";
+            regulator-min-microvolt = <1800000>;
+            regulator-max-microvolt = <1800000>;
+        };
+        /* SD 卡主电源 */
+        vcc3v3_sd: LDO_REG2 {
+            regulator-name = "vcc3v3_sd";
+            regulator-min-microvolt = <3300000>;
+            regulator-max-microvolt = <3300000>;
+        };
+        /* SD 卡 IO 电源（可切换 3.3V/1.8V） */
+        vccio_sd: LDO_REG3 {
+            regulator-name = "vccio_sd";
+            regulator-min-microvolt = <1800000>;
+            regulator-max-microvolt = <3300000>;
+        };
+    };
+};
+
+/* eMMC 控制器节点 */
+&sdhci {
+    vmmc-supply = <&vcc3v3_emmc>;       /* VCC: 3.3V 固定 */
+    vqmmc-supply = <&vcc_1v8_emmc>;     /* VCCQ: 1.8V 固定 */
+    mmc-hs400-1_8v;                      /* 声明 HS400 用 1.8V */
+};
+
+/* SD 卡控制器节点 */
+&sdmmc {
+    vmmc-supply = <&vcc3v3_sd>;          /* VDD: 3.3V 固定 */
+    vqmmc-supply = <&vccio_sd>;          /* IO: 可切换 3.3V/1.8V */
+    /* UHS 模式运行时由驱动自动切到 1.8V */
+};
+```
+
+**Linux regulator 框架的对应关系**（[linux/drivers/mmc/core/regulator.c:L357-L359](file:///home/pbw/2042f/linux/drivers/mmc/core/regulator.c#L357-L359)）：
+
+```c
+mmc->supply.vmmc  = devm_regulator_get_optional(dev, "vmmc");   /* 卡核心电源 */
+mmc->supply.vqmmc = devm_regulator_get_optional(dev, "vqmmc");  /* 卡 IO 电源 */
+mmc->supply.vqmmc2 = devm_regulator_get_optional(dev, "vqmmc2"); /* PHY 电源（可选） */
+```
+
+`mmc_supply` 结构体（[linux/include/linux/mmc/host.h:L342-L347](file:///home/pbw/2042f/linux/include/linux/mmc/host.h#L342-L347)）显式区分了三路电源：
+
+```c
+struct mmc_supply {
+    struct regulator *vmmc;     /* Card power supply */
+    struct regulator *vqmmc;    /* Optional Vccq supply */
+    struct regulator *vqmmc2;   /* Optional supply for phy */
+    struct notifier_block vmmc_nb;  /* Notifier for vmmc */
+};
+```
+
+#### 2.4.5 上电时序与 pwrseq 框架
+
+多路电源不能同时上电——eMMC 和 SD 卡的电气规范对上电时序有明确要求，错序会导致芯片损坏或启动失败。
+
+**eMMC 上电时序要求**（JEDEC JESD84-B51 §6.3）：
+
+1. VCC 先上电（或与 VCCQ 同时），VCC 上升时间 $t_{VCC} < 70\mu s$
+2. VCCQ 在 VCC 之后上电（或同时），间隔无严格要求但不能早于 VCC
+3. VCC 和 VCCQ 稳定后，等待 $t_{PU} > 200\mu s$ 才开始发命令
+4. 上电期间 CMD 和 DAT 线必须保持高阻（上拉），避免误触发命令
+
+**为什么 VCC 必须先于 VCCQ？** 如果 VCCQ 先上电而 VCC 未上电，IO 缓冲已通电但 Flash 核心未通电——卡可能将 IO 线上的噪声误解析为命令，进入未定义状态。VCC 先上电保证核心逻辑就绪后 IO 才开始响应。
+
+**SD 卡上电时序要求**（SD Physical Layer Spec §6.4）：
+
+1. VDD 上电，上升时间 $t_{VDD} < 250\mu s$
+2. VDD 稳定后等待至少 74 个 CLK 周期（约 1ms @ 400kHz）才发第一条命令
+3. 上电期间 CMD 和 DAT 必须上拉到 VDD
+
+**Linux pwrseq 框架**将上电时序抽象为 `pre_power_on` / `post_power_on` / `power_off` 三个回调（[linux/drivers/mmc/core/core.c:L1337-L1369](file:///home/pbw/2042f/linux/drivers/mmc/core/core.c#L1337-L1369)）：
+
+```c
+void mmc_power_up(struct mmc_host *host, u32 ocr)
+{
+    mmc_pwrseq_pre_power_on(host);     /* 1. 拉低 reset / 断电 */
+    host->ios.power_mode = MMC_POWER_UP;
+    mmc_set_initial_state(host);
+    mmc_set_initial_signal_voltage(host);  /* 2. 设置初始信号电压 */
+    mmc_delay(host->ios.power_delay_ms);   /* 3. 等待电源稳定 */
+    mmc_pwrseq_post_power_on(host);    /* 4. 释放 reset / 上电完成 */
+    host->ios.clock = host->f_init;    /* 5. 开始给时钟 */
+    host->ios.power_mode = MMC_POWER_ON;
+    mmc_set_ios(host);
+    mmc_delay(host->ios.power_delay_ms);   /* 6. 等待 74+ 时钟周期 */
+}
+```
+
+Linux 提供两种 pwrseq 实现：
+
+| pwrseq 类型 | compatible | 用途 | 关键操作 |
+|-------------|-----------|------|----------|
+| **mmc-pwrseq-emmc** | `"mmc-pwrseq-emmc"` | eMMC 硬件复位 | 拉 reset GPIO 1μs → 释放 → 等 200μs；注册 reboot notifier 确保紧急重启时也能复位 eMMC |
+| **mmc-pwrseq-simple** | `"mmc-pwrseq-simple"` | SD/WiFi 模块复位 | 多路 reset GPIO + 可选外部时钟 + 可配 `post-power-on-delay-ms` / `power-off-delay-us` |
+
+eMMC reset 的 pwrseq 实现（[linux/drivers/mmc/core/pwrseq_emmc.c:L32-L40](file:///home/pbw/2042f/linux/drivers/mmc/core/pwrseq_emmc.c#L32-L40)）：
+
+```c
+static void mmc_pwrseq_emmc_reset(struct mmc_host *host)
+{
+    struct mmc_pwrseq_emmc *pwrseq = to_pwrseq_emmc(host->pwrseq);
+    gpiod_set_value_cansleep(pwrseq->reset_gpio, 1);  /* 拉低 reset */
+    udelay(1);                                         /* 保持 1μs */
+    gpiod_set_value_cansleep(pwrseq->reset_gpio, 0);  /* 释放 reset */
+    udelay(200);                                       /* 等 200μs 复位完成 */
+}
+```
+
+这段代码体现了 eMMC 复位时序的硬性要求——reset 脉冲至少 1μs，释放后至少等 200μs 才能开始通信。pwrseq_emmc 还注册了 `restart_handler`（优先级 255，最高），确保系统紧急重启（如 kernel panic）时也能复位 eMMC，避免下次启动时 eMMC 处于异常状态。
+
+#### 2.4.6 vqmmc regulator 切换的软件流程
+
+电压切换的完整软件流程（以 SD 卡 UHS 切到 1.8V 为例）：
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
+sequenceDiagram
+    participant U as User/FS
+    participant M as mmc_core
+    participant S as sdhci
+    participant R as vqmmc regulator
+    participant C as Card (eMMC/SD)
+
+    U->>M: 触发 UHS 探测/HS200 切换
+    M->>M: mmc_set_signal_voltage(180)
+    M->>S: start_signal_voltage_switch(180)
+    S->>R: mmc_regulator_set_vqmmc(1.8V)
+    R-->>S: regulator 输出切到 1.8V
+    Note over S: 写 SDHCI_CTRL_VDD_180 位
+    S->>S: 等待 5ms regulator 稳定
+    S->>S: 读回 SDHCI_CTRL_VDD_180 确认
+    M->>C: 发 CMD11 (VOLTAGE_SWITCH)
+    C->>C: 卡内部切 IO 缓冲到 1.8V
+    C-->>M: DAT0 拉低表示切换中
+    Note over M: 停止 CLK，等待 DAT0 释放
+    C-->>M: DAT0 释放，切换完成
+    M->>M: 重新使能 CLK，开始高速模式通信
+```
+
+SDHCI 通用框架的 `start_signal_voltage_switch`（[linux/drivers/mmc/host/sdhci.c:L2636-L2728](file:///home/pbw/2042f/linux/drivers/mmc/host/sdhci.c#L2636-L2728)）核心逻辑：
+
+```c
+case MMC_SIGNAL_VOLTAGE_180:
+    if (!(host->flags & SDHCI_SIGNALING_180))
+        return -EINVAL;
+    /* 1. 先切外部 regulator */
+    if (!IS_ERR(mmc->supply.vqmmc)) {
+        ret = mmc_regulator_set_vqmmc(mmc, ios);
+        if (ret < 0) return -EIO;
+    }
+    /* 2. 再写控制器寄存器 */
+    ctrl |= SDHCI_CTRL_VDD_180;
+    sdhci_writew(host, ctrl, SDHCI_HOST_CONTROL2);
+    /* 3. 厂商自定义后处理（如 PHY 调整） */
+    if (host->ops->voltage_switch)
+        host->ops->voltage_switch(host);
+    /* 4. 等 5ms 确认稳定 */
+    ctrl = sdhci_readw(host, SDHCI_HOST_CONTROL2);
+    if (ctrl & SDHCI_CTRL_VDD_180) return 0;
+    return -EAGAIN;  /* 切换失败，需要重试 */
+```
+
+`mmc_regulator_set_vqmmc`（[linux/drivers/mmc/core/regulator.c:L183-L228](file:///home/pbw/2042f/linux/drivers/mmc/core/regulator.c#L183-L228)）根据目标电压设置 regulator 输出：
+
+```c
+switch (ios->signal_voltage) {
+case MMC_SIGNAL_VOLTAGE_180:
+    /* 1.8V 信号：regulator 输出 1.70-1.95V */
+    return mmc_regulator_set_voltage_if_supported(mmc->supply.vqmmc,
+                                        1700000, 1800000, 1950000);
+case MMC_SIGNAL_VOLTAGE_330:
+    /* 3.3V 信号：regulator 输出尽量匹配 VMMC，范围 2.7-3.6V */
+    /* 先尝试 ±0.3V 容差，再退回全范围 */
+    ret = mmc_regulator_set_voltage_if_supported(mmc->supply.vqmmc,
+                                        min_uV, volt, max_uV);
+    if (ret >= 0) return ret;
+    return mmc_regulator_set_voltage_if_supported(mmc->supply.vqmmc,
+                                        2700000, volt, 3600000);
+}
+```
+
+> **核心要点**：电压切换是"软件发命令 → 外部 regulator 切电压 → 控制器寄存器确认 → 卡内部切换"的协同过程。硬件设计必须保证：(1) `vqmmc-supply` regulator 能在 5ms 内完成 3.3V↔1.8V 切换并稳定；(2) eMMC 的 VCC 和 VCCQ 分走独立 LDO，且 VCC 先于 VCCQ 上电；(3) pwrseq 框架的 reset GPIO 时序符合芯片 datasheet 要求。
+
+#### 2.4.7 硬件设计检查清单
+
+| 检查项 | eMMC 设计要求 | SD 卡设计要求 | 常见错误 |
+|--------|--------------|--------------|----------|
+| **VCC/VDD 电源** | 3.3V LDO，纹波 < 50mV | 3.3V LDO，支持热插拔浪涌电流 | 用 DC-DC 直接供（纹波过大导致写失败） |
+| **VCCQ/IO 电源** | 1.8V 固定 LDO 或可切换 LDO | 可切换 LDO（3.3V↔1.8V） | 用固定 3.3V LDO 却想跑 HS400 |
+| **上电时序** | VCC 先于 VCCQ，间隔无严格要求但不能反向 | VDD 单路上电，等 74 CLK | VCCQ 先于 VCC 上电导致卡进入未定义状态 |
+| **reset 引脚** | eMMC RST_n 接 GPIO（pwrseq-emmc） | 不需要（SD 卡无 reset 引脚） | RST_n 悬空（上电时随机复位导致启动失败） |
+| **上拉电阻** | CMD/DAT 上拉到 VCCQ（10kΩ-47kΩ） | CMD/DAT 上拉到 VDD（10kΩ-47kΩ） | 上拉到错误电源域（3.3V 上拉却跑 1.8V IO） |
+| **去耦电容** | VCC 和 VCCQ 各 0.1μF + 4.7μF，靠近引脚 | VDD 0.1μF + 10μF | 去耦电容离引脚太远（高速模式电源噪声） |
+| **信号完整性** | DAT0-7 + CMD + CLK + DS 等长 < 50mil | DAT0-3 + CMD + CLK 等长 < 100mil | CLK 与 DAT 长度差过大（采样窗口偏移） |
+| **串阻** | DAT/CMD/CLK 串 22-33Ω | DAT/CMD/CLK 串 22-33Ω | 无串阻（高速模式反射导致误码） |
+| **vqmmc regulator** | 固定 1.8V 或可切换，5ms 内稳定 | 必须可切换，5ms 内稳定 | regulator 切换太慢（>5ms 导致 sdhci 报 -EAGAIN） |
+| **PMIC 负载能力** | VCC > 300mA（写峰值），VCCQ > 100mA | VDD > 500mA（热插拔浪涌） | LDO 负载能力不足（写入时电压跌落） |
+| **IO 域匹配** | SoC IO 域电压必须与 VCCQ 一致 | SoC IO 域必须能跟随 vqmmc 切换 | SoC IO 域固定 3.3V 却想跑 1.8V（电平不匹配） |
+
+> **如何读这张表**：这张表按"电源→时序→信号→器件"的层次组织，每一行都是一个独立的硬件设计决策点。最常见的工程错误集中在三类：(1) 电源域不匹配（VCCQ 用固定 3.3V 却想跑 HS400）；(2) 上拉电阻接错电源域（3.3V 上拉配 1.8V IO）；(3) regulator 切换太慢（LDO 响应时间 > 5ms 导致软件超时重试）。硬件设计评审时逐项打勾，能避免大部分 eMMC/SD 调试问题。
 
 ### 2.5 DDR 采样与 Data Strobe
 
@@ -1908,12 +2236,14 @@ mmc_data_end: bytes_xfered=512
 | ADMA 错误 | DMA 地址跨 128MB 边界、sg 项过多 | 检查 `dwcmshc_adma_write_desc` 的边界拆分日志；降低 `max_sectors` |
 | CRC 错误 | 信号完整性差、时钟抖动、电压不稳 | 降速到 HS 测试；检查 `vqmmc-supply` 稳定性；示波器看 DAT 信号眼图 |
 | 卡检测抖动 | `cd-gpios` 去抖时间不足 | 增加 `cd-debounce-delay-ms`；检查 GPIO 中断配置 |
-| 1.8V 切换失败 | `vqmmc-supply` 未配置、`no-1-8-v` 误设 | 检查设备树与 regulator 状态；`dmesg | grep voltage` |
-| CMD1 超时 | eMMC 未响应、电压不匹配、复位未完成 | 检查 `vmmc-supply`；检查 BootROM 是否释放 eMMC；示波器看 CMD 信号 |
+| 1.8V 切换失败 | `vqmmc-supply` 未配置、`no-1-8-v` 误设、regulator 响应太慢 | 检查设备树与 regulator 状态（`cat /sys/class/regulator/*/microvolts`）；`dmesg | grep voltage`；确认 LDO 切换时间 < 5ms（见 §2.4.6） |
+| VCCQ/VDD 电压不匹配 | 硬件用固定 3.3V LDO 却想跑 HS400、SoC IO 域未切到 1.8V | 万用表测 VCCQ 引脚实际电压；检查 SoC IO 域配置（如 Rockchip `io-domains`）；对照 §2.4.7 检查清单逐项排查 |
+| CMD1 超时 | eMMC 未响应、电压不匹配、复位未完成、上电时序错 | 检查 `vmmc-supply`；确认 VCC 先于 VCCQ 上电（§2.4.5）；检查 BootROM 是否释放 eMMC；示波器看 CMD 信号 |
 | 初始化后无法读写 | 块设备未注册、分区表损坏 | `lsblk` 检查块设备；`fdisk -l` 检查分区；`dmesg | grep mmcblk` |
 | HS400es 切换失败 | `ENHANCED_STROBE` 位未置位 | 检查 `dwcmshc_hs400_enhanced_strobe` 是否被调用；读 `DWCMSHC_EMMC_CONTROL` 寄存器 |
 | CQE 启用失败 | EXT_CSD `CMDQ_EN` 未置位、驱动不支持 | `mmc extcsd read | grep CMDQ`；检查设备树 `supports-cqe` |
-| 热重启后 eMMC 异常 | 上次断电时写入未完成、FTL 损坏 | `mmc hwreset reset /dev/mmcblk0`；检查 `vmmc-supply` 时序 |
+| 热重启后 eMMC 异常 | 上次断电时写入未完成、FTL 损坏、reset 未触发 | `mmc hwreset reset /dev/mmcblk0`；检查 pwrseq-emmc 的 reset GPIO 是否接好；确认 `mmc_pwrseq_emmc_reset` 被调用 |
+| 上拉电阻接错电源域 | CMD/DAT 上拉到 3.3V 但 IO 跑 1.8V | 示波器看 CMD 静态电平（1.8V IO 应为 1.8V 不是 3.3V）；对照 §2.4.7 检查上拉电阻连接的电源轨 |
 
 ### 12.6 文件系统挂载失败排查路径
 
@@ -1921,8 +2251,9 @@ mmc_data_end: bytes_xfered=512
 
 1. **硬件层**：
    - 示波器看 CLK/CMD 信号（应有 400kHz 时钟）
-   - 万用表测 VDD（3.3V）和 VQMMC（3.3V 或 1.8V）
-   - 检查设备树 pinmux/power 配置
+   - 万用表测 VDD（3.3V）和 VQMMC/VCCQ（3.3V 或 1.8V，对照 §2.4 电压切换要求）
+   - 检查上电时序：VCC 先于 VCCQ（eMMC）、VDD 稳定后等 74 CLK（SD 卡）
+   - 检查设备树 pinmux/power 配置（`vmmc-supply`、`vqmmc-supply`、pwrseq）
 
 2. **协议初始化**：
    - `dmesg` 看 CMD1-CMD7 响应（每条命令应有响应）
@@ -1970,9 +2301,9 @@ mmc_data_end: bytes_xfered=512
 ## 参考资料
 
 ### 协议规范
-- [SD Host Controller Standard Specification](https://www.sdcard.org/) — SDHCI 寄存器标准定义
-- [JEDEC Standard No. 84-B51](https://www.jedec.org/) — eMMC 5.1 电气与协议规范
-- [SD Physical Layer Simplified Specification](https://www.sdcard.org/) — SD 卡物理层规范
+- [SD Host Controller Standard Specification](https://www.sdcard.org/) — SDHCI 寄存器标准定义，参考了 §3 信号电压切换流程
+- [JEDEC Standard No. 84-B51](https://www.jedec.org/) — eMMC 5.1 电气与协议规范，参考了 §6.3 电源时序、§6.6 VCC/VCCQ 电压定义
+- [SD Physical Layer Simplified Specification](https://www.sdcard.org/) — SD 卡物理层规范，参考了 §6.4 上电时序、§3.6 信号电压切换
 - [SDIO Simplified Specification](https://www.sdcard.org/) — SDIO 协议规范
 
 ### 厂商文档
@@ -1983,12 +2314,15 @@ mmc_data_end: bytes_xfered=512
 
 ### Linux 源码
 - [drivers/mmc/host/sdhci-of-dwcmshc.c](file:///home/pbw/2042f/linux/drivers/mmc/host/sdhci-of-dwcmshc.c) — DWC_mshc 厂商驱动
-- [drivers/mmc/host/sdhci.c](file:///home/pbw/2042f/linux/drivers/mmc/host/sdhci.c) — 通用 SDHCI 框架
+- [drivers/mmc/host/sdhci.c](file:///home/pbw/2042f/linux/drivers/mmc/host/sdhci.c) — 通用 SDHCI 框架，参考了 `sdhci_start_signal_voltage_switch` 电压切换流程
 - [drivers/mmc/host/sdhci.h](file:///home/pbw/2042f/linux/drivers/mmc/host/sdhci.h) — SDHCI 寄存器定义
 - [drivers/mmc/host/cqhci-core.c](file:///home/pbw/2042f/linux/drivers/mmc/host/cqhci-core.c) — CQE 命令队列引擎
-- [drivers/mmc/core/core.c](file:///home/pbw/2042f/linux/drivers/mmc/core/core.c) — MMC 协议核心
+- [drivers/mmc/core/core.c](file:///home/pbw/2042f/linux/drivers/mmc/core/core.c) — MMC 协议核心，参考了 `mmc_power_up` 上电时序
 - [drivers/mmc/core/mmc.c](file:///home/pbw/2042f/linux/drivers/mmc/core/mmc.c) — eMMC 协议实现
-- [include/linux/mmc/host.h](file:///home/pbw/2042f/linux/include/linux/mmc/host.h) — mmc_host 数据结构
+- [drivers/mmc/core/regulator.c](file:///home/pbw/2042f/linux/drivers/mmc/core/regulator.c) — MMC regulator 框架，参考了 `mmc_regulator_set_vqmmc` 电压切换
+- [drivers/mmc/core/pwrseq_emmc.c](file:///home/pbw/2042f/linux/drivers/mmc/core/pwrseq_emmc.c) — eMMC 硬件复位 pwrseq 实现
+- [drivers/mmc/core/pwrseq_simple.c](file:///home/pbw/2042f/linux/drivers/mmc/core/pwrseq_simple.c) — SD/WiFi 模块 pwrseq 实现
+- [include/linux/mmc/host.h](file:///home/pbw/2042f/linux/include/linux/mmc/host.h) — mmc_host / mmc_supply 数据结构
 - [include/linux/mmc/core.h](file:///home/pbw/2042f/linux/include/linux/mmc/core.h) — mmc_request 数据结构
 
 ### Zephyr 源码

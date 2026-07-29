@@ -15,13 +15,15 @@
 flowchart TD
     Start((开始学习)) --> C00[00: 通信协议总览<br/>1-2h]
     C00 --> C01[01: SPI 协议与驱动<br/>3-4h]
+    C01 --> C11[11: QSPI 协议与驱动<br/>3-4h]
     C00 --> C02[02: I2C 协议与驱动<br/>3-4h]
     C00 --> C03[03: CAN 协议与驱动<br/>3-4h]
     C02 --> C04[04: USB 协议与驱动<br/>4-5h]
     C01 --> C04
     C00 --> C05[05: SDIO/eMMC 协议与驱动<br/>3-4h]
     C01 --> C05
-    C04 --> C06[06: 协议对比与选型<br/>1-2h]
+    C11 --> C06[06: 协议对比与选型<br/>1-2h]
+    C04 --> C06
     C05 --> C06
     C03 --> C06
     C06 --> C07[07: 性能调优与 DMA 深入<br/>6-10h]
@@ -31,6 +33,7 @@ flowchart TD
     C08 --> Done((完成))
     C09 --> Done
     C10 --> Done
+    C11 --> Done
 ```
 
 ---
@@ -40,7 +43,8 @@ flowchart TD
 | 序号 | 文档 | 内容概要 | 建议用时 |
 |:----:|------|---------|:--------:|
 | 00 | [通信协议总览](./00-通信协议总览.md) | 五种协议一句话对比、共性维度（主从/同步/电气/拓扑）、嵌入式典型拓扑、选型引子 | 1-2h |
-| 01 | [SPI 协议与驱动](./01-SPI协议与驱动.md) | CPOL/CPHA 四模式、Linux `spi_controller`/`spi_message` 框架、DesignWare SPI 驱动深入、Zephyr 对照 | 3-4h |
+| 01 | [SPI 协议与驱动](./01-SPI协议与驱动.md) | CPOL/CPHA 四模式、Linux `spi_controller`/`spi_message` 框架、DesignWare SPI 驱动深入、Zephyr 对照（→ 进阶见 11） | 3-4h |
+| 11 | [QSPI 协议与驱动](./11-QSPI协议与驱动.md) | **01 进阶**：Quad/Octal 多线传输、SPI NOR 命令集与 QE 位、JEDEC SFDP、Linux `spi-mem`/`spi-nor` 子系统、Cadence QSPI 寄存器级、XIP、Octal/xSPI 演进 | 3-4h |
 | 02 | [I2C 协议与驱动](./02-I2C协议与驱动.md) | 开漏+上拉计算、START/STOP/ACK、DW_apb_i2c 寄存器、Linux `i2c-designware` 流程、Zephyr 对照 | 3-4h |
 | 03 | [CAN 协议与驱动](./03-CAN协议与驱动.md) | 差分仲裁、位时序计算、Bosch MCAN 寄存器、Linux SocketCAN + `m_can.c`、Zephyr 对照 | 3-4h |
 | 04 | [USB 协议与驱动](./04-USB协议与驱动.md) | NRZI/位填充、端点与传输类型、枚举流程、Linux URB 生命周期 + dwc2/dwc3、Zephyr UDC 对照 | 4-5h |
@@ -64,15 +68,17 @@ flowchart TD
 | `bosch_mcan_users_manual_v331.pdf` | 03-CAN | Bosch MCAN 控制器用户手册 v3.3.1 |
 | `DWC_mshc_databook(2.0a).pdf` | 05-SDIO/eMMC | Synopsys DesignWare Mobile Storage HC 数据手册 |
 | `DWC_mshc_user(2.0a).pdf` | 05-SDIO/eMMC | Synopsys DesignWare Mobile Storage HC 用户手册 |
+| `jedec-jesd216-sfdp.pdf` | 11-QSPI | JEDEC JESD216 SFDP 串行闪存可发现参数标准（需从 jedec.org 下载） |
+| `jedec-jesd251-xspi.pdf` | 11-QSPI | JEDEC JESD251 xSPI Profile 1.0 标准（需从 jedec.org 下载） |
 
-> **待补充**：USB 2.0/3.0 规范需从 [usb.org](https://www.usb.org/document-library) 手动下载（站点要求注册）；SPI 无单一官方规范，章节内引用 NXP/Microchip 公开应用笔记与 Synopsys DW_apb_ssi databook。
+> **待补充**：USB 2.0/3.0 规范需从 [usb.org](https://www.usb.org/document-library) 手动下载（站点要求注册）；SPI 无单一官方规范，章节内引用 NXP/Microchip 公开应用笔记与 Synopsys DW_apb_ssi databook；QSPI 的 JEDEC SFDP（JESD216）/xSPI（JESD251）标准与各 Flash 厂商数据手册（Macronix/Winbond/Micron）需从 jedec.org 与厂商站点手动下载。
 
 ### 驱动源码
 
 | 源码树 | 路径 | 用途 |
 |--------|------|------|
-| Linux | `/home/pbw/2042f/linux/` | 主线驱动深入分析（`drivers/spi/`、`drivers/i2c/busses/`、`drivers/net/can/m_can/`、`drivers/usb/dwc2|dwc3/`、`drivers/mmc/host/`） |
-| Zephyr | `zephyr-project/zephyr/` | 关键对照（`drivers/spi/spi_dw.c`、`drivers/i2c/i2c_dw.c`、`drivers/can/can_mcan.c`、`drivers/usb/udc/udc_dwc2.c`、`subsys/sd/`） |
+| Linux | `/home/pbw/2042f/linux/` | 主线驱动深入分析（`drivers/spi/`、`drivers/spi/spi-mem.c`、`drivers/spi/spi-cadence-quadspi.c`、`drivers/mtd/spi-nor/`、`drivers/i2c/busses/`、`drivers/net/can/m_can/`、`drivers/usb/dwc2|dwc3/`、`drivers/mmc/host/`） |
+| Zephyr | `zephyr-project/zephyr/` | 关键对照（`drivers/spi/spi_dw.c`、`drivers/flash/spi_nor.c`、`drivers/flash/flash_cadence_qspi_nor.c`、`drivers/i2c/i2c_dw.c`、`drivers/can/can_mcan.c`、`drivers/usb/udc/udc_dwc2.c`、`subsys/sd/`） |
 
 ---
 
@@ -83,10 +89,11 @@ flowchart TD
 关注协议规范、驱动框架、设备树配置、调试方法：
 
 ```
-00 总览 → 01 SPI → 02 I2C → 03 CAN → 05 SDIO/eMMC → 06 对比 → 07 调优与 DMA → 08 中断与延迟 → 09 电源 → 10 设备树
+00 总览 → 01 SPI → 11 QSPI → 02 I2C → 03 CAN → 05 SDIO/eMMC → 06 对比 → 07 调优与 DMA → 08 中断与延迟 → 09 电源 → 10 设备树
 ```
 
 - **01-03 是核心**：SPI/I2C/CAN 是 SoC 上最常见的外设接口，BSP 移植时几乎必涉及
+- **11 QSPI**：SPI 启动存储的进阶，调试 SPI NOR 启动、Quad/XIP、QE 位问题必备
 - **05 SDIO/eMMC**：存储启动路径的关键，调试 eMMC 启动问题必备
 - **04 USB** 可作为进阶，依赖对端点/URB 模型的理解
 - **07-10 横向专题**：性能调优、中断、电源、设备树——BSP 工程师进阶必备
@@ -132,6 +139,6 @@ flowchart TD
 
 ---
 
-**文档版本**：v1.3（02/07/08/10 Mermaid 图与系统上下文补充：07 新增 9 张图含错误恢复状态机与内部架构、02 新增 6 张含仲裁时序与中断状态机、08 补充系统上下文段、10 新增 phandle 树与 overlay 时序图）
-**最后更新**：2026-07-18
+**文档版本**：v1.4（新增 11-QSPI 协议与驱动：Quad/Octal 多线传输、SPI NOR 命令集与 QE 位、JEDEC SFDP、Linux `spi-mem`/`spi-nor` 子系统、Cadence QSPI 寄存器级、XIP、Octal/xSPI 演进；修正 Linux 源码路径为 `2042f/linux`）
+**最后更新**：2026-07-29
 **适用对象**：驱动工程师、BSP 工程师、嵌入式工程师、硬件工程师
