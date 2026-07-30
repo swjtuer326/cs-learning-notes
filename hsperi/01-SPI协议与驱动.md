@@ -1283,14 +1283,20 @@ static void dw_spi_dma_maxburst_init(struct dw_spi *dws)
     dws->txburst = min(max_burst, def_burst);
 
     /*
-     * 关键：TX DMA 阈值 = txburst（不是 txburst-1）
-     * 意图：让 TX DMA 服务慢于 RX DMA，给 RX 留缓冲
+     * 关键：TX 阈值 = txburst，RX 阈值 = rxburst - 1
+     * 意图：TX FIFO 永远不低于半满，防止 SPI 时钟因 TX 空而停止
+     *       RX 随到随读（> rxburst-1 即触发），容忍空状态
      */
     dw_writel(dws, DW_SPI_DMATDLR, dws->txburst);
 }
 ```
 
-注释（L60-L72）解释了为什么 TX 要 "故意慢"：如果 TX DMA 比 RX DMA 快，TX 持续推数据进 SPI，RX FIFO 来不及清就会溢出。让 TX 阈值高一点，TX DMA 推完一批就停，等 RX FIFO 清得差不多了再推下一批。
+阈值不对称的效果：
+
+- **TX**（DMATDLR = burst，即 16）：FIFO 剩 ≤ 16 时触发 DMA 填充 → FIFO 在 16~32 之间振荡，**永不低于半满**
+- **RX**（DMARDLR = burst - 1，即 15）：FIFO 积够 ≥ 16 时触发 DMA 读取 → FIFO 在 0~16 之间振荡
+
+TX 的阈值更高意味着 **TX DMA 更早补货**，让 TX FIFO 始终有数据，SPI 时钟不会因 TX 空而停止。RX 侧即使 FIFO 空了也不要紧——没有数据就不读，不会导致错误。这不是 "TX 慢于 RX"，而是 **TX 更保守，RX 更激进**，目的只有一个：**保 TX 不空，时钟不停**。
 
 ### 6.2 scatter-gather 同步问题
 
