@@ -55,6 +55,8 @@ flowchart TD
 | 08 | [中断处理与延迟优化](./08-中断处理与延迟优化.md) | 顶半部/底半部、NAPI、threaded IRQ、IRQ affinity、RT-Linux、延迟测量、各协议中断模式对比 | 3-4h |
 | 09 | [电源管理与功耗调优](./09-电源管理与功耗调优.md) | runtime PM、各协议低功耗状态、唤醒源、clock gating、regulator、功耗测量与优化 | 3-4h |
 | 10 | [设备树与绑定专题](./10-设备树与绑定专题.md) | DTS 语法、各协议 binding、of_match、属性解析、overlay、常见配置错误案例 | 2-3h |
+| **网络专题** | | | |
+| 12 | [以太网协议与驱动](./12-以太网协议与驱动.md) | 对等网络本质、MAC 帧/VLAN、PHY 自协商、Linux `net_device`/`sk_buff`/NAPI/phylink + MACB/GEM 驱动、Zephyr `net_if`/MDIO+PHY 对照、设备树与调试 | 5-7h |
 
 ---
 
@@ -73,12 +75,20 @@ flowchart TD
 
 > **待补充**：USB 2.0/3.0 规范需从 [usb.org](https://www.usb.org/document-library) 手动下载（站点要求注册）；SPI 无单一官方规范，章节内引用 NXP/Microchip 公开应用笔记与 Synopsys DW_apb_ssi databook；QSPI 的 JEDEC SFDP（JESD216）/xSPI（JESD251）标准与各 Flash 厂商数据手册（Macronix/Winbond/Micron）需从 jedec.org 与厂商站点手动下载。
 
+### 以太网官方规范（在线）
+
+| 文档 | 用途 | 建议阅读时机 |
+|------|------|------|
+| [IEEE 802.3 (Ethernet)](https://www.ieee802.org/3/) | 物理层与 MAC 帧、各速率标准（802.3u/ab/ae/bz）、PAUSE 流控 | 学完 12 §2-§3 后 |
+| [IEEE 802.1Q (VLAN)](https://www.ieee802.org/1/) | VLAN Q-TAG、PCP/DEI/VID、桥接 | 学完 12 §3.2 后 |
+| [IEEE 802.1Qbv / 802.1AS (TSN)](https://www.ieee802.org/1/) | 时间敏感网络门控调度与时间同步 | 深入实时以太网时 |
+
 ### 驱动源码
 
 | 源码树 | 路径 | 用途 |
 |--------|------|------|
-| Linux | `/home/pbw/2042f/linux/` | 主线驱动深入分析（`drivers/spi/`、`drivers/spi/spi-mem.c`、`drivers/spi/spi-cadence-quadspi.c`、`drivers/mtd/spi-nor/`、`drivers/i2c/busses/`、`drivers/net/can/m_can/`、`drivers/usb/dwc2|dwc3/`、`drivers/mmc/host/`） |
-| Zephyr | `zephyr-project/zephyr/` | 关键对照（`drivers/spi/spi_dw.c`、`drivers/flash/spi_nor.c`、`drivers/flash/flash_cadence_qspi_nor.c`、`drivers/i2c/i2c_dw.c`、`drivers/can/can_mcan.c`、`drivers/usb/udc/udc_dwc2.c`、`subsys/sd/`） |
+| Linux | `/home/pbw/2042f/linux/` | 主线驱动深入分析（`drivers/spi/`、`drivers/spi/spi-mem.c`、`drivers/spi/spi-cadence-quadspi.c`、`drivers/mtd/spi-nor/`、`drivers/i2c/busses/`、`drivers/net/can/m_can/`、`drivers/net/ethernet/cadence/macb_main.c`、`drivers/usb/dwc2|dwc3/`、`drivers/mmc/host/`） |
+| Zephyr | `zephyr-project/zephyr/` | 关键对照（`drivers/spi/spi_dw.c`、`drivers/flash/spi_nor.c`、`drivers/flash/flash_cadence_qspi_nor.c`、`drivers/i2c/i2c_dw.c`、`drivers/can/can_mcan.c`、`drivers/ethernet/eth_dwmac.c`、`drivers/usb/udc/udc_dwc2.c`、`subsys/sd/`） |
 
 ---
 
@@ -96,6 +106,7 @@ flowchart TD
 - **11 QSPI**：SPI 启动存储的进阶，调试 SPI NOR 启动、Quad/XIP、QE 位问题必备
 - **05 SDIO/eMMC**：存储启动路径的关键，调试 eMMC 启动问题必备
 - **04 USB** 可作为进阶，依赖对端点/URB 模型的理解
+- **12 以太网**：涉及 TCP/IP 与网络驱动时再深入，先掌握 NAPI/phylink/设备树三件事
 - **07-10 横向专题**：性能调优、中断、电源、设备树——BSP 工程师进阶必备
 
 ### 硬件工程师
