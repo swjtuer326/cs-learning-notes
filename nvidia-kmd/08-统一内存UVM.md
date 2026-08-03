@@ -63,7 +63,7 @@ flowchart TD
         VaSpace["uvm_va_space_t<br/>进程级 VA 空间"]
         VaBlock["uvm_va_block_t<br/>2MB VA 块(管理单元)"]
         VaRange["uvm_va_range_t<br/>Managed/External/Sparse"]
-        Fault["uvm_va_block<br/>缺页处理层"]
+        Fault["uvm_va_block_fault<br/>缺页处理"]
         Migrate["uvm_migrate<br/>主动迁移"]
     end
 
@@ -111,7 +111,7 @@ flowchart TD
     class GMMU,CE,CPU,HBM,DRAM hw
 ```
 
-> **如何读这张图**:UVM 是中间的蓝色块,上游接 UMD(黄色),下游接 RM(青色)借物理页和 CE channel,直接对接硬件(绿色)的 MMU/CE/CPU。两条缺页路径:① **GPU 侧**——GPU MMU 访问未映射 VA 触发 fault 中断 → 06 的中断路径 → UVM 的 `uvm_va_block` 层 → 借物理页建映射;② **CPU 侧**——CPU 访问 Managed Memory 触发 Linux 缺页 → VMA 的 `vm_ops->fault` = `uvm_vm_fault` → UVM 处理。主动迁移走 `UVM_MIGRATE` ioctl → 借 CE channel 做 DMA。
+> **如何读这张图**:UVM 是中间的蓝色块,上游接 UMD(黄色),下游接 RM(青色)借物理页和 CE channel,直接对接硬件(绿色)的 MMU/CE/CPU。两条缺页路径:① **GPU 侧**——GPU MMU 访问未映射 VA 触发 fault 中断 → 06 的中断路径 → UVM 的 `uvm_va_block_fault` → 借物理页建映射;② **CPU 侧**——CPU 访问 Managed Memory 触发 Linux 缺页 → VMA 的 `vm_ops->fault` = `uvm_vm_fault` → UVM 处理。主动迁移走 `UVM_MIGRATE` ioctl → 借 CE channel 做 DMA。
 
 > **核心要点**:UVM 是**与 RM 并行的独立子系统**——RM 管"显式分配"(常驻、UMD 主动管理),UVM 管"按需分页"(动态、KMD 自动管理)。两者通过 `VASPACE_FLAGS_IS_EXTERNALLY_OWNED` 切换页表所有权。UVM 不分物理页(借 RM 的 PMA)、不直接驱动硬件(借 RM 的 CE channel),只管"VA→物理映射 + 缺页处理 + 迁移决策"。
 
@@ -681,7 +681,7 @@ UVM 的缺页处理有两条路径,分别对应 GPU 和 CPU:
 | **GPU fault** | GPU MMU 访问未映射 VA | 06 §3.1 的 `rm_gpu_handle_mmu_faults` → UVM fault 处理 | 借物理页、建 GPU 页表 |
 | **CPU fault** | CPU 访问 Managed Memory | Linux 缺页 → VMA `vm_ops->fault` = `uvm_vm_fault` | 借物理页、建 CPU 页表 |
 
-两条路径最终都在 `uvm_va_block` 层处理(在 `uvm_va_block.c`),但入口不同:CPU 侧调 `uvm_va_block_cpu_fault`(`uvm_va_block.c:12424`),GPU 侧经 `uvm_gpu_replayable_faults.c` 的 `service_fault_batch_*` 系列函数。
+两条路径最终都调 `uvm_va_block_fault`(在 `uvm_va_block.c`),但入口和上下文不同。
 
 ### 5.2 GPU fault 路径:中断驱动
 
@@ -690,12 +690,12 @@ GPU fault 路径的关键已在 06 §3.1 讲过——`nvidia_isr` 调 `rm_gpu_ha
 1. **GPU MMU 触发 fault**:SM 访问 VA `0x1234` 没有有效 PTE,MMU 硬件写 fault buffer(一块 RM 预分配的内存)
 2. **fault buffer 满或定时器到**:触发 MSI 中断
 3. **`nvidia_isr` top-half**:`rm_gpu_handle_mmu_faults` 读 fault buffer,把 fault 信息(地址、引擎、访问类型)转入 UVM 队列
-4. **UVM bottom-half**:调度 GPU fault 服务函数(在 `uvm_gpu_replayable_faults.c`)处理每个 fault
+4. **UVM bottom-half**:调度 `uvm_va_block_fault` 处理每个 fault
 5. **fault 处理**:查 `va_space` 找到 VA 对应的 `va_block`,检查 `resident` 掩码——若某处理器已有物理副本,迁移过来;否则分配新物理页
 6. **建映射**:通过 `uvm_gpu_va_space_t` 操作 GPU 页表,建立 VA→PA 映射
 7. **重放指令**:GPU 硬件重放 fault 指令,这次命中 PTE,继续执行
 
-fault buffer 是关键数据结构——GPU 硬件把每个 fault 信息(32 字节,即 `NVC369_BUF_SIZE`,含 VA、引擎、访问类型、时间戳)写入 buffer,KMD 批量读取。这避免了"一个 fault 一个中断"的开销。
+fault buffer 是关键数据结构——GPU 硬件把每个 fault 信息(8-16 字节,含 VA、引擎、访问类型、时间戳)写入 buffer,KMD 批量读取。这避免了"一个 fault 一个中断"的开销。
 
 ### 5.3 CPU fault 路径:vm_ops->fault
 
@@ -735,7 +735,7 @@ CPU 缺页时,Linux mm 子系统调 `vma->vm_ops->fault`(`uvm_vm_fault` 定义�
 
 关键设计:**block 锁粒度**——以 2MB block 为单位加锁,不同 block 的缺页可并发处理(多 CPU/多 GPU 同时 fault)。这是 UVM 高并发的关键。
 
-> **核心要点**:UVM 缺页有两条路径——GPU fault(中断驱动,fault buffer 批量上报,经 06 的中断路径转 UVM)和 CPU fault(Linux mm 调 `vm_ops->fault`,同步处理)。两者最终都在 `uvm_va_block` 层处理,以 2MB block 为单位加锁,支持高并发。GPU 侧走 GMMU 页表 + PMA,CPU 侧走 Linux mm + buddy。
+> **核心要点**:UVM 缺页有两条路径——GPU fault(中断驱动,fault buffer 批量上报,经 06 的中断路径转 UVM)和 CPU fault(Linux mm 调 `vm_ops->fault`,同步处理)。两者最终都调 `uvm_va_block_fault`,以 2MB block 为单位加锁,支持高并发。GPU 侧走 GMMU 页表 + PMA,CPU 侧走 Linux mm + buddy。
 
 ---
 
@@ -915,7 +915,7 @@ sequenceDiagram
 
     Note over U,HW: 首次访问(触发缺页)
     HW->>K: GPU MMU fault(访问未映射 VA)
-    K->>K: uvm_va_block GPU fault 服务
+    K->>K: uvm_va_block_fault
     K->>R: 借物理页(NV_ESC_RM_ALLOC_MEMORY)
     R->>HW: PMA 分配 64KB 页
     K->>K: 建 GPU 页表(VA→PA)
@@ -996,14 +996,14 @@ UVM 不是独立完成所有工作,它从 RM 借三样关键资源:
 - **不设此 flag**(默认):RM 管页表,`cuMemAlloc` 时 RM 自动建 VA→PA 映射(见 07 §7)
 - **设此 flag**:UVM 管页表,RM 不建映射,只提供 VASpace 对象和 PMA 物理页
 
-同一个 GPU 上可以并存多个 VA Space——RM 管理显式分配的 VA Space(`cuMemAlloc` 路径),UVM 管理按需分页的 VA Space(`cudaMallocManaged` 路径)。`VASPACE_FLAGS_IS_EXTERNALLY_OWNED` 是 per-VASpace 的标志,同一个 CUDA context 可以同时使用两种分配方式。
+一个进程的 VA Space 只能有一个所有者——要么 RM 管(`cuMemAlloc` 路径),要么 UVM 管(`cudaMallocManaged` 路径)。CUDA context 创建时决定走哪条路:`cuCtxCreate` 默认 RM 管,`cuCtxCreate` with `CU_CTX_MAP_TYPE` 标志走 UVM。
 
 ### 8.3 UVM 的中断路径(回顾 06)
 
 UVM 的中断处理已在 06 §3.1 讲过——`nvidia_isr` 调 `nv_uvm_event_interrupt` 把 UVM 相关中断转交 UVM:
 
 ```c
-/* 摘自 [kernel-open/nvidia/nv.c](./src/open-gpu-kernel-modules/kernel-open/nvidia/nv.c) 第 2904-2905 行 */
+/* 摘自 [kernel-open/nvidia/nv.c](./src/open-gpu-kernel-modules/kernel-open/nvidia/nv.c) 第 2889-2892 行 */
     if (nv_uvm_event_interrupt(nv_get_cached_uuid(nv)) == NV_OK)
         uvm_handled = NV_TRUE;
 ```

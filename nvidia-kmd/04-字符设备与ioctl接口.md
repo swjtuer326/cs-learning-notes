@@ -309,7 +309,7 @@ UMD 发出的 ioctl 要穿过三层 switch 才到达最终的 RM 操作:
 ```mermaid
 %%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 flowchart TD
-    Entry["nvidia_unlocked_ioctl<br/>VFS 入口"]
+    Entry["nvidia_unlocked_ioctl<br/VFS 入口"]
     Entry --> NvIoctl["nvidia_ioctl<br/>第 1 层:OS 层"]
     NvIoctl --> Validate["nv_validate_ioctls<br/>参数大小校验"]
     Validate -->|"校验失败 -EINVAL"| Fail((失败))
@@ -406,8 +406,8 @@ int nvidia_ioctl(struct inode *inode, struct file *file,
 | `NV_ESC_CHECK_VERSION_STR` | 210 | UMD/KMD 版本协商 | 仅控制设备 |
 | `NV_ESC_ATTACH_GPUS_TO_FD` | 212 | 把 GPU 绑定到当前 fd(多卡) | 仅控制设备 |
 | `NV_ESC_SYS_PARAMS` | 214 | 设置 NUMA memblock 大小 | 仅控制设备 |
-| `NV_ESC_NUMA_INFO` | 215 | 查询 GPU NUMA 拓扑 | 仅实际设备 |
-| `NV_ESC_SET_NUMA_STATUS` | 216 | NUMA 联/脱机 | 仅实际设备 |
+| `NV_ESC_NUMA_INFO` | — | 查询 GPU NUMA 拓扑 | 仅实际设备 |
+| `NV_ESC_SET_NUMA_STATUS` | — | NUMA 联/脱机 | 仅实际设备 |
 | `NV_ESC_QUERY_DEVICE_INTR` | 213 | 查询设备中断状态(轮询) | 仅实际设备 |
 | `NV_ESC_EXPORT_TO_DMABUF_FD` | 217 | 导出显存为 DMA-BUF fd(跨进程/驱动共享) | 仅实际设备 |
 | `NV_ESC_WAIT_OPEN_COMPLETE` | 218 | 等待设备打开完成 | 两者皆可 |
@@ -544,7 +544,7 @@ NVIDIA 的 ioctl 编号分两套,分别定义在两个头文件:
 | `NV_ESC_RM_UNMAP_MEMORY` | 0x4F | `NVOS34_PARAMETERS` | 解除映射 | — |
 | `NV_ESC_RM_VID_HEAP_CONTROL` | 0x4A | `NVOS32_PARAMETERS` | 显存堆操作(保留/释放/信息) | 显存碎片管理 |
 | `NV_ESC_RM_IDLE_CHANNELS` | 0x41 | `NVOS30_PARAMETERS` | 等待 channel 空闲 | `cudaStreamSynchronize` 落点 |
-| `NV_ESC_RM_GET_EVENT_DATA` | 0x52 | `NVOS41_PARAMETERS` | 读取已触发的事件 | fence/event 等待(见 06) |
+| `NV_ESC_RM_GET_EVENT_DATA` | 0x52 | `NVOS53_PARAMETERS` | 读取已触发的事件 | fence/event 等待(见 06) |
 | `NV_ESC_ALLOC_OS_EVENT` | 206 | `nv_ioctl_alloc_os_event_t` | 注册 OS event | event 机制初始化(见 06) |
 | `NV_ESC_RM_DUP_OBJECT` | 0x34 | `NVOS55_PARAMETERS` | 跨 client 复制对象 | 多进程共享显存 |
 | `NV_ESC_RM_EXPORT_OBJECT_TO_FD` | 0x5C | — | 导出对象到 fd(跨进程) | 进程间共享 |
@@ -755,10 +755,11 @@ UMD 启动序列(简化):
 |----------|:--:|------|--------|
 | `NV01_ROOT_CLIENT` | 0x41 | client 根对象 | 树根 |
 | `NV01_DEVICE_0` | 0x80 | GPU 设备对象 | client 下 |
+| `NV20_DEVICE_0` | 0x90 | 现代 GPU 设备对象 | client 下 |
 | `KEPLER_CHANNEL_GPFIFO_A` | 0xA06F | Kepler 架构 channel | device 下 |
-| `TURING_CHANNEL_GPFIFO_A` | 0xC46F | Turing 架构 channel | device 下 |
+| `TURING_CHANNEL_GPFIFO_A` | 0xC36F | Turing 架构 channel | device 下 |
 | `AMPERE_CHANNEL_GPFIFO_A` | 0xC56F | Ampere 架构 channel | device 下 |
-| `NV01_MEMORY_LOCAL_USER` | 0x40 | 显存(用户映射) | client/device 下 |
+| `NV01_MEMORY_LOCAL_USER` | 0x1E | 显存(用户映射) | client/device 下 |
 | `NV01_MEMORY_SYSTEM` | 0x3E | 系统内存 | client 下 |
 | `NV01_EVENT` | 0x5 | 事件对象 | channel/client 下 |
 
@@ -770,6 +771,8 @@ RM 对象通过 `hObjectParent` 组织成树。这棵树的形状反映了 GPU �
 %%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 flowchart TD
     Client["hClient<br/>NV01_ROOT_CLIENT<br/>0xbeef0000"]
+    Dev0["hDevice<br/>NV20_DEVICE_0<br/>0xbeef0001"]
+    Dev1["hDevice1<br/>NV20_DEVICE_0<br/>0xbeef0002"]
     Ch0["hChannel<br/>TURING_CHANNEL_GPFIFO_A<br/>0xbeef0010"]
     Ch1["hChannel1<br/>TURING_CHANNEL_GPFIFO_A<br/>0xbeef0011"]
     Mem0["hMemory<br/>NV01_MEMORY_LOCAL_USER<br/>0xbeef0020"]

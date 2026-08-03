@@ -53,7 +53,7 @@
 **软硬件耦合点**:本章聚焦五个耦合点:
 
 1. **模块依赖链**:`nvidia-peermem.ko` 依赖 `nvidia.ko` 的 `nvidia_p2p_*` 符号(`EXPORT_SYMBOL`)与 IB 核心的 `ib_register_peer_memory_client` 符号。**加载顺序敏感**——如果 IB 驱动先于 nvidia 加载,或 peermem 没加载,IB 注册 GPU 显存的 MR 会失败,NCCL 跨节点通信降级为 `cudaMemcpy`(经 CPU 中转)。
-2. **`peer_memory_client` 回调契约**:IB 核心定义了 `acquire`/`get_pages`/`dma_map`/`dma_unmap`/`put_pages`/`release`/`get_page_size` 七个回调,peermem 实现它们,把 IB 的请求翻译为 `nvidia_p2p_*` 调用。这是两个子系统的边界。
+2. **`peer_memory_client` 回调契约**:IB 核心定义了 `acquire`/`get_pages`/`dma_map`/`dma_unmap`/`put_pages`/`release` 六个回调,peermem 实现它们,把 IB 的请求翻译为 `nvidia_p2p_*` 调用。这是两个子系统的边界。
 3. **`invalidate_peer_memory` 回调**:IB 核心向 peermem 注册一个 `invalidate` 回调,当 GPU 显存被释放(`cuMemFree`)触发 `nvidia_p2p` 的 `free_callback` 时,peermem 调 IB 的 `invalidate` 通知 IB 失效相关 MR。这是 GDR 生命周期的关键。
 4. **legacy vs nc(non-coherent)两套 client**:peermem 注册两个 client——legacy 用非持久 `nvidia_p2p_get_pages`(带 callback),nc 用持久 `nvidia_p2p_get_pages_persistent`(无 callback,显存 pin 住)。这是新旧两种 MR 注册策略的并存。
 5. **DMA-BUF 现代 path**:Linux 5.x 推荐用 DMA-BUF 替代 peer memory client。NVIDIA 在 `nv-dmabuf.c` 实现 `dma_buf_export`,提供更标准的显存导出。但 IB 驱动对 DMA-BUF 的支持仍在演进,peermem 仍是主流。
@@ -233,7 +233,7 @@ static struct peer_memory_client nv_mem_client_nc = {
 };
 ```
 
-**七个回调的职责**(`get_page_size` 在新 IB 核心版本已基本废弃,IB 直接用 `page_size` 字段,但 peermem 仍保留实现):
+**六个回调的职责**:
 
 | 回调 | 作用 | 调用时机 | peermem 实现 |
 |------|------|----------|-------------|
@@ -294,7 +294,7 @@ static int nv_mem_legacy_client_init(void)
 **这段代码的设计**:
 
 1. **version 字节的"标志位"技巧**——`version[IB_PEER_MEMORY_VER_MAX-1] = 1` 用版本字符串的最后一个字节作为"新 client 类型"标志。这是个 ABI 兼容性 hack——老 IB 核心不读这个字节,新 IB 核心读它判断是否支持 `ex_size`/`flags` 字段。这种"在字符串尾部藏标志"的做法是为了向前兼容(老核心仍能加载新模块)。
-2. **`PEER_MEM_INVALIDATE_UNMAPS` flag**——告诉 IB 核心"peermem 自己处理 unmap/put_pages,你不要在 invalidate 回调里调"。这是为了防止 IB 核心在 invalidation 回调中调 `nv_dma_unmap` → `nvidia_p2p_dma_unmap_pages`,与 peermem 在 `nv_get_p2p_free_callback` 里的清理逻辑冲突(见 §6.3 的 `callback_task` 并发控制)。这是责任划分的显式声明——peermem 负责失效路径上的清理,IB 核心不要重复介入。
+2. **`PEER_MEM_INVALIDATE_UNMAPS` flag**——告诉 IB 核心"peermem 自己处理 unmap/put_pages,你不要在 invalidate 回调里调"。这是因为 peermem 在 `nv_get_p2p_free_callback` 里会自己调 `nvidia_p2p_free_dma_mapping`,如果 IB 核心也调会重复释放。这是责任划分的显式声明。
 3. **`mem_invalidate_callback` 出参**——`ib_register_peer_memory_client` 的第二参数是出参,IB 核心填入它的 `invalidate_peer_memory` 函数指针。peermem 保存这个指针,在 GPU 显存失效时调它通知 IB。
 
 ### 3.3 nc client 注册
@@ -326,7 +326,7 @@ static int nv_mem_nc_client_init(void)
 }
 ```
 
-**命名策略的设计**:默认情况下 nc client 名字是 `nv_mem`(与 legacy 同名)——这样用户态库(如 NCCL)与 Mellanox 的 `nv_peer_mem` 内核模块(本模块的前身,MLNX_OFED 提供)按名字查找时,优先匹配到 nc client(因为 nc 后注册,排在 client 链表前面)。只有强制 legacy 模式时,nc 改名 `nv_mem_nc`,让 legacy 独占 `nv_mem` 名字。这是从 legacy 向 persistent 迁移的平滑过渡——默认用 nc,需要兼容老行为时强制 legacy。
+**命名策略的设计**:默认情况下 nc client 名字是 `nv_mem`(与 legacy 同名)——这样用户态库(如 NCCL、Mellanox 的 `nv_peer_mem` 用户态辅助)按名字查找时,优先匹配到 nc client(因为 nc 后注册,排在 client 链表前面)。只有强制 legacy 模式时,nc 改名 `nv_mem_nc`,让 legacy 独占 `nv_mem` 名字。这是从 legacy 向 persistent 迁移的平滑过渡——默认用 nc,需要兼容老行为时强制 legacy。
 
 ---
 
@@ -456,7 +456,7 @@ static int nv_mem_get_pages(unsigned long addr,
 
 **关键差异 vs acquire**:`get_pages` 注册的是 `nv_get_p2p_free_callback`(真正的失效回调),不是 `nv_mem_dummy_callback`。因为此时已收到 IB 的 `core_context`(ticket),可以通知 IB 失效 MR。
 
-`nv_mem_get_pages_nc`(持久版本)的差异:用 `nvidia_p2p_get_pages_persistent`——该 API **没有 callback 参数**(签名是 `(va, size, page_table, flags)`),persistent mapping 把显存 pin 住,不会有失效通知。仅在编译时未定义 `NVIDIA_P2P_CAP_GET_PAGES_PERSISTENT_API` 的回退路径里,才退化为 `nvidia_p2p_get_pages(..., NULL, NULL)`(传 NULL callback)。
+`nv_mem_get_pages_nc`(持久版本)的差异:用 `nvidia_p2p_get_pages_persistent`,传 `NULL` 作为 callback——显存 pin 住,不会有失效通知。
 
 ### 5.2 nv_dma_map:建 DMA mapping 并填 sg_table
 
@@ -495,13 +495,6 @@ static int nv_dma_map(struct sg_table *sg_head, void *context,
         peer_err("error, incompatible dma mapping version 0x%08x\n",
                  dma_mapping->version);
         /* ... */
-    }
-
-    nv_mem_context->npages = dma_mapping->entries;          // 页数 = dma_mapping 条目数
-    ret = sg_alloc_table(sg_head, dma_mapping->entries, GFP_KERNEL);   // 分配 sg_table
-    if (ret) {
-        nvidia_p2p_dma_unmap_pages(pdev, page_table, dma_mapping);
-        return ret;
     }
 
     nv_mem_context->dma_mapping = dma_mapping;
@@ -577,11 +570,11 @@ static void nv_get_p2p_free_callback(void *data)
     (*mem_invalidate_callback) (reg_handle, nv_mem_context->core_context);   // 通知 IB 失效 MR
     nv_mem_context->callback_task = NULL;
 
-    ret = nvidia_p2p_free_dma_mapping(dma_mapping);   // no-op,实际清理由 RM cleanup path 完成
+    ret = nvidia_p2p_free_dma_mapping(dma_mapping);   // 释放 DMA mapping
     if (ret)
         peer_err("nv_get_p2p_free_callback -- error %d while calling nvidia_p2p_free_dma_mapping()\n", ret);
 
-    ret = nvidia_p2p_free_page_table(page_table);     // no-op,实际清理由 RM cleanup path 完成
+    ret = nvidia_p2p_free_page_table(page_table);     // 释放 page_table
     if (ret)
         peer_err("nv_get_p2p_free_callback -- error %d while calling nvidia_p2p_free_page_table()\n", ret);
 
@@ -597,8 +590,6 @@ out:
 2. **`NV_MEM_CONTEXT_CHECK_OK` 魔数校验**——检查 `nv_mem_context` 的 `pad1`/`pad2` 是否等于 `NV_MEM_CONTEXT_MAGIC`。这是防御性编程——如果 context 已被释放或损坏,魔数会变,跳过处理避免 use-after-free。
 3. **保存 `page_table` 到本地变量**——注释说"防止 `nv_mem_release` 内部调用时释放"。这是个并发场景——`mem_invalidate_callback` 可能触发 IB 核心调 `release`,而 `release` 会 `kfree(nv_mem_context)`。先把 `page_table` 指针保存到栈变量,即使 context 被释放,本地指针仍有效,可以继续调 `nvidia_p2p_free_*`。
 4. **`callback_task = current`**——记录当前任务是回调。后续 `nv_dma_unmap`/`nv_mem_put_pages` 检查这个字段,如果是回调任务发起的,跳过重复释放(因为回调已经释放了)。
-
-> **核心要点**:代码里的 `nvidia_p2p_free_dma_mapping(dma_mapping)` 和 `nvidia_p2p_free_page_table(page_table)` 在 nv-p2p.c(第 691-694 行 / 第 939-944 行)中**都是 no-op,直接 `return 0;`**。源码注释明确说明:"This function is a no-op... the missing functionality is provided by `nv_p2p_free_platform_data`, which is being called as part of the RM's cleanup path."——即真正的 page_table/dma_mapping 清理由 RM 在 cleanup path 调 `nv_p2p_free_platform_data` 完成,peermem 这里只是保留调用以维持 ABI 兼容。这意味着 peermem 的"释放"动作实际上是**通知 IB 失效 MR**(经 `invalidate_peer_memory`),真正的 NVIDIA P2P 资源回收由 RM 在 `cuMemFree` 的 cleanup 路径里统一完成。
 
 ### 6.2 失效流程的时序
 
@@ -620,15 +611,14 @@ sequenceDiagram
     IB->>NIC: 失效 MKey(停止 DMA)
     NIC-->>IB: 确认停止
     IB-->>Peer: invalidate 返回
-    Peer->>P2P: nvidia_p2p_free_dma_mapping(dma_mapping)  %% no-op
-    Peer->>P2P: nvidia_p2p_free_page_table(page_table)  %% no-op
-    Note over P2P: 实际清理由 RM cleanup path 的 nv_p2p_free_platform_data 完成
+    Peer->>P2P: nvidia_p2p_free_dma_mapping(dma_mapping)
+    Peer->>P2P: nvidia_p2p_free_page_table(page_table)
     Peer->>Peer: module_put
     Note over RM: 显存现在安全可释放
     RM->>UMD: cuMemFree 返回
 ```
 
-> **如何读这张图**:GPU 显存释放时,RM 触发 `nvidia_p2p` 的 `free_callback` → peermem 收到 → 通知 IB 核心 invalidate MR → IB 通知网卡停止 DMA → 网卡确认 → peermem 调 `nvidia_p2p_free_dma_mapping`/`nvidia_p2p_free_page_table`(两者均为 no-op,实际清理由 RM cleanup path 的 `nv_p2p_free_platform_data` 完成)→ 显存真正释放。**整个流程是同步的**——`cuMemFree` 阻塞直到 invalidate 完成,保证释放后不会有 in-flight DMA。这是 GDR 安全性的核心保证。
+> **如何读这张图**:GPU 显存释放时,RM 触发 `nvidia_p2p` 的 `free_callback` → peermem 收到 → 通知 IB 核心 invalidate MR → IB 通知网卡停止 DMA → 网卡确认 → peermem 释放 DMA mapping 和 page_table → 显存真正释放。**整个流程是同步的**——`cuMemFree` 阻塞直到 invalidate 完成,保证释放后不会有 in-flight DMA。这是 GDR 安全性的核心保证。
 
 ### 6.3 callback_task 的并发控制
 
@@ -656,7 +646,7 @@ out:
 }
 ```
 
-**为什么需要这个检查?** 因为失效回调里调 `invalidate_peer_memory`,IB 核心可能**同步**调回 `dma_unmap`/`put_pages`(尽管 `PEER_MEM_INVALIDATE_UNMAPS` flag 声明 peermem 自己管,IB 仍可能在某些路径上调)。如果不检查,IB 调 `dma_unmap` 会触发 `nvidia_p2p_dma_unmap_pages`——与回调路径的清理逻辑冲突(回调路径已通过 `nvidia_p2p_free_dma_mapping`/`nvidia_p2p_free_page_table` 走完清理流程,尽管这两个函数当前是 no-op,实际清理由 RM cleanup path 完成,但回调路径的语义是"已处理",IB 不应再介入)。
+**为什么需要这个检查?** 因为失效回调里调 `invalidate_peer_memory`,IB 核心可能**同步**调回 `dma_unmap`/`put_pages`(因为 `PEER_MEM_INVALIDATE_UNMAPS` flag 说 peermem 自己管,但 IB 仍可能调)。如果不检查,会重复释放:`nv_get_p2p_free_callback` 已调 `nvidia_p2p_free_dma_mapping`,IB 又调 `dma_unmap` 触发 `nvidia_p2p_dma_unmap_pages`——双重释放。
 
 `callback_task = current` 标记"我现在在回调里",后续 IB 同步调回的 `dma_unmap`/`put_pages` 看到这个标记就跳过,避免重复。这是 peermem 处理回调重入的精巧设计。
 
@@ -731,7 +721,7 @@ struct nv_mem_context {
 3. **`dma_map`**:调 `nvidia_p2p_dma_map_pages` 拿 `dma_mapping`,填 `sg_head`。
 4. **MR 存活期间**:IB 用 `sg_head` 里的 DMA 地址做 RDMA,peermem 不参与(被动等失效回调)。
 5. **`dma_unmap` + `put_pages`**:MR 释放时,调 `nvidia_p2p_dma_unmap_pages` + `nvidia_p2p_put_pages` 释放。
-6. **`release`**:`sg_free_table` + `kfree(nv_mem_context)` + `module_put`(对应 acquire 时的 `__module_get`,释放模块引用计数)。
+6. **`release`**:`sg_free_table` + `kfree(nv_mem_context)`。
 
 失效回调是异步触发的——可能在步骤 4 期间任意时刻发生(显存被释放),此时跳过步骤 5,直接在回调里释放。
 
@@ -804,7 +794,7 @@ NCCL 的 Net transport(见 [../nccl/08](../nccl/08-transport-layer.md) §4.3)在
 - **GDR 可用**(`nvidia-peermem.ko` 已加载):NCCL 调 `ibv_reg_mr` 注册 GPU 显存 MR,网卡直接 DMA GPU HBM 发送/接收。1MB 消息延迟约 5μs,带宽可达 100Gbps+。
 - **GDR 不可用**:NCCL 降级为 `cudaMemcpy`(GPU → CPU 内存)+ `ibv_reg_mr`(CPU 内存)+ 网卡 DMA CPU 内存。1MB 消息延迟约 25μs(多两次拷贝),带宽受 CPU 内存带宽限制。
 
-NCCL 启动日志的 `Channel 00 : 0[0] -> 8[8] via NET/IBV/0/GDRDMA` 表示 GDR 工作;若 GDR 不可用则走 `via NET/IBV/0`(无 GDRDMA 后缀,经 CPU 中转)或同节点降级为 `via SHM/direct`(同进程共享内存)。注意 `via P2P/4` 是节点内 GPU 间 P2P transport(走 NVLink/PCIe,非 GDR),不要与跨节点 GDR 混淆——见 [../nccl/08 §8.4](../nccl/08-transport-layer.md) 的 transport 判读表。
+NCCL 启动日志的 `Channel 00 : 0[0] -> net0:15#15 via P2P/IPC` vs `via SHM/Copy` 反映了这个决策——如果 GDR 可用,走 P2P 直接到网卡;否则经 CPU 中转。
 
 ### 9.2 大模型分布式训练
 
@@ -833,7 +823,7 @@ GDR 不工作时,按以下顺序排查:
 2. **`dmesg | grep peermem`**——看加载日志,是否有 "Unknown symbol" 错误(依赖缺失)。
 3. **`cat /proc/driver/nvidia/params`**——确认 `nvidia.ko` 已加载且支持 P2P。
 4. **`ibv_devinfo`**——确认 IB 设备正常,`transport` 应为 `InfiniBand` 或 `Ethernet`(RoCE)。
-5. **NCCL 启动日志**——看 `NCCL_DEBUG=INFO` 输出,`via NET/IBV/0/GDRDMA` 表示 GDR 工作;若为 `via NET/IBV/0`(无 GDRDMA 后缀)或 `via SHM/direct` 则 GDR 未生效(见 [../nccl/08 §8.4](../nccl/08-transport-layer.md))。注意 `via P2P/4` 是节点内 GPU 间 P2P,与跨节点 GDR 无关。
+5. **NCCL 启动日志**——看 `NCCL_DEBUG=INFO` 输出,`via P2P/IPC` 表示 GDR 工作,`via SHM/Copy` 表示不工作。
 6. **GPU 显存是否 pinned**——GDR 只支持 `cudaMalloc`(pinned),不支持 `cudaMallocManaged`(见 [10 §3.1](./10-多卡P2P-UVM-peer-mapping.md))。
 7. **ACS 是否阻断**——见 [10 §5](./10-多卡P2P-UVM-peer-mapping.md),`nvidia-smi topo -m` 看 GPU 与 NIC 的拓扑,`lspci -vvv | grep ACS` 检查。
 
@@ -873,7 +863,7 @@ GDR 不工作时,按以下顺序排查:
 
 ### 11.1 本章核心结论
 
-> **核心要点**:`nvidia-peermem.ko` 是个**胶水模块**——把 NVIDIA 的 `nvidia_p2p_get_pages` API(见 [10](./10-多卡P2P-UVM-peer-mapping.md))适配为 Linux IB 子系统的 `peer_memory_client` 接口,让 Mellanox 网卡能直接 DMA GPU 显存。它的核心是七个回调(`acquire`/`get_pages`/`dma_map`/`dma_unmap`/`put_pages`/`release`/`get_page_size`),把 IB 的 MR 注册请求翻译为 `nvidia_p2p_*` 调用。失效回调(`nv_get_p2p_free_callback` → `invalidate_peer_memory`)是 GDR 安全的核心——保证显存释放前先通知 IB 失效 MR,避免 in-flight DMA 读脏数据。
+> **核心要点**:`nvidia-peermem.ko` 是个**胶水模块**——把 NVIDIA 的 `nvidia_p2p_get_pages` API(见 [10](./10-多卡P2P-UVM-peer-mapping.md))适配为 Linux IB 子系统的 `peer_memory_client` 接口,让 Mellanox 网卡能直接 DMA GPU 显存。它的核心是六个回调(`acquire`/`get_pages`/`dma_map`/`dma_unmap`/`put_pages`/`release`),把 IB 的 MR 注册请求翻译为 `nvidia_p2p_*` 调用。失效回调(`nv_get_p2p_free_callback` → `invalidate_peer_memory`)是 GDR 安全的核心——保证显存释放前先通知 IB 失效 MR,避免 in-flight DMA 读脏数据。
 
 > **核心要点**:peermem 提供两套 client——legacy(非持久,带失效回调,显存可迁移)与 nc(持久,无回调,显存 pin 住)。默认用 nc(性能好,无失效开销),强制 legacy 时两者并存。这种"新旧并存 + 默认新"的渐进迁移模式,在 NVIDIA 驱动里很常见(对比 NVLink 的 ALI vs 非 ALI,见 [09 §5](./09-NVLink-KMD拓扑与训练.md))。
 

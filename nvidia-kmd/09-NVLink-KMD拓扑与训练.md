@@ -244,69 +244,26 @@ NVLink 核心库在 `src/common/nvlink/kernel/nvlink/` 下,分为 `core/` 与 `i
 
 **为什么 core/ 与 interface/ 分开?** 这是 NVIDIA 在 RM 之外另一处贯彻"接口与实现分离"的地方。`interface/` 是 entry 层(参数校验、锁获取、错误码包装),`core/` 是 implementation。这种分层的核心收益是 `core/` 函数可以被 RM 侧**直接调用**(进程内,不经字符设备),而 `interface/` 是给用户态 FM 经字符设备调用的。
 
-举例:`nvlink_core_train_intranode_conns_from_swcfg_to_active_non_ALI`(在 `core/nvlink_training.c`)是核心实现之一(NVLink 3.0+ 非 ALI 路径);`nvlink_lib_ctrl_train_intranode_conns_parallel`(在 `interface/` 包装)是给 ioctl 用的。RM 内部如果要触发训练,直接调 `nvlink_core_train_intranode_conns_from_swcfg_to_active_*` 系列(还有 `_ALT`、`_legacy` 等变体,按 NVLink 版本与 ALI 支持情况选择),不经 `interface/`。
+举例:`nvlink_core_train_intranode_conns`(在 `core/nvlink_training.c`)是核心实现;`nvlink_lib_ctrl_train_intranode_conns`(在 `interface/` 包装)是给 ioctl 用的。RM 内部如果要触发训练,直接调 `nvlink_core_train_intranode_conns`,不经 `interface/`。
 
 ### 2.3 全局上下文:nvlinkLibCtx
 
 核心库用一个全局单例 `nvlinkLibCtx` 持有整个系统的 NVLink 状态:
 
 ```c
-/* 摘自 [src/common/nvlink/kernel/nvlink/nvlink_ctx.h](./src/open-gpu-kernel-modules/src/common/nvlink/kernel/nvlink/nvlink_ctx.h) 第 36-85 行 */
-typedef struct
-{
-    /*
-     * Lock for all core lib structures except nvlink_link structures
-     */
-    void *topLevelLock;
+/* nvlinkLibCtx 的关键成员(综合 src/common/nvlink/kernel/nvlink/nvlink_ctx.h 与多个 .c 引用) */
+typedef struct {
+    nvlink_device    *nv_devicelist_head;       // 系统内所有 NVLink 设备(GPU + NVSwitch)链表头
+    nvlink_intranode_conn *nv_intraconn_head;   // 节点内连接链表头
+    nvlink_internode_conn *nv_interconn_head;   // 跨节点连接链表头
 
-    /*
-     * Head of the device-list
-     */
-    nvlink_device nv_devicelist_head;
-
-    /*
-     * Head of the established intranode nvlink connections list
-     */
-    nvlink_intranode_conn nv_intraconn_head;
-
-    /*
-     * Head of the added internode nvlink connections list
-     */
-    nvlink_internode_conn nv_interconn_head;
-
-    /*
-     * Topology information
-     *    registeredEndpoints  : #Endpoints registered in the core library
-     *    connectedEndpoints   : #Endpoints whose remote has been determined
-     *    notConnectedEndpoints: #Endpoints whose remote has not been determined
-     */
-    NvU32  registeredEndpoints;
-    NvU32  connectedEndpoints;
-    NvU32  notConnectedEndpoints;
-    NvBool bNewEndpoints;
-
-    /*
-     * Endpoint count in different link states
-     *    endpointsInSafe  : #Endpoints in SAFE state
-     *    endpointsInFail  : #Endpoints that failed to transition to ACTIVE
-     *    endpointsInActive: #Endpoints in ACTIVE
-     */
-    NvU32 endpointsInSafe;
-    NvU32 endpointsInFail;
-    NvU32 endpointsInActive;
-
-    /*
-     * Fabric node id set by ioctl interface. This id will be assigned to each
-     * nvlink device during registration and matched for endpoint look-up on
-     * ioctls, which operate on endpoints.
-     */
-    NvU16 nodeId;
-} nvlink_lib_context;
-
-extern nvlink_lib_context nvlinkLibCtx;
+    NvU32  registeredEndpoints;                  // 已注册端点数
+    NvU32  connectedEndpoints;                   // 已配对端点数
+    NvU32  notConnectedEndpoints;                // 未配对端点数
+    NvBool bNewEndpoints;                        // 是否有新端点待发现
+    NvU32  nodeId;                               // 节点 ID(跨节点 fabric 用)
+} nvlink_libctx_t;
 ```
-
-**几个易错点**:① 类型名是 `nvlink_lib_context`(下划线分词),不是 `nvlink_libctx_t`;全局变量名才是 `nvlinkLibCtx`(驼峰)。② `nv_devicelist_head`/`nv_intraconn_head`/`nv_interconn_head` 是**嵌入式链表头**(直接 `nvlink_device` 类型,非指针)——NVIDIA 在这里用 `nvListHead` 模式,链表节点嵌入到对象内部而非用指针串联。③ `nodeId` 是 `NvU16`(16 位),跨节点 fabric 的节点编号空间不大。④ `endpointsInSafe`/`endpointsInFail`/`endpointsInActive` 三个计数器用于在 ioctl 返回时快速报告系统状态,无需遍历链表。
 
 这个全局上下文的设计决策:**单例而非 per-GPU**。因为 NVLink 拓扑本质上是**系统级**的——一个 GPU 的 link 配对的是另一个 GPU 的 link,只能用全局链表 `nv_devicelist_head` 串起来。这与 UVM 的 `uvm_va_space`(per-fd,见 [08 §3](./08-统一内存UVM.md))形成对比——UVM 是 per-process 的,NVLink 是 system-wide 的。
 
@@ -454,10 +411,7 @@ knvlinkCoreAddDevice_IMPL
 | `set_tx_mode` / `set_rx_mode` | 设置 sublink TX/RX 模式 | RM HAL → GSP RPC |
 | `write_discovery_token` | 写 AN0 发现 token(NVLink 2.0) | RM HAL → GSP RPC |
 | `read_discovery_token` | 读 AN0 发现 token | RM HAL → GSP RPC |
-| `training_complete` | 训练完成通知(NVLink 3.0+) | RM HAL → GSP RPC |
-| `ali_training` | 触发 ALI 自适应训练(NVLink 4.0+) | RM HAL → GSP RPC |
-
-> **核心要点**:SID(`localSid`/`remoteSid`)不是回调,而是 `nvlink_link` 结构体的字段(见 `nvlink.h` L231-234),core 代码直接读 `link->localSid`/`link->remoteSid` 即可——因为 NVLink 3.0+ 的 Minion 微控制器在硬件协商阶段已把对端 SID 写入这两个字段,软件无需再回调 RM/GSP 读取。这与 AN0 token 不同:token 需要主动注入/读取(走 `write_discovery_token`/`read_discovery_token` 回调),SID 是硬件自动填好的软件可见字段。
+| `get_local_sid` / `get_remote_sid` | 读 SID(NVLink 3.0+) | RM HAL → GSP RPC |
 
 **为什么用回调表而不是直接调?** 因为 core 是 OS-agnostic,不能直接调 RM/GSP 的具体函数。`link_handlers` 是依赖注入(Dependency Injection)——RM 注册 link 时填入自己的实现,core 调用时通过函数指针间接调用。这与 `plat_psci_ops_t`(见 [02](./02-源码架构与RM分层设计.md) 跨实现对比)的模式完全一致:通用代码通过函数指针调用平台实现。
 
@@ -760,7 +714,7 @@ stateDiagram-v2
     OFF --> INITPHASE1 : nvlink_core_init_links_from_off_to_swcfg
     INITPHASE1 --> SAFE : RX detect + common mode + calibrate
 
-    SAFE --> HS : nvlink_core_train_intranode_conns_from_swcfg_to_active_legacy<br/>(NVLink < 3.0)
+    SAFE --> HS : nvlink_core_train_intranode_conns<br/>(NVLink < 3.0)
 
     SAFE --> INITNEGOTIATE : NVLink 3.0+ ALT
     INITNEGOTIATE --> INITOPTIMIZE : 协商成功
@@ -794,12 +748,12 @@ stateDiagram-v2
 
 > **如何读这张图**:从 OFF 到 HS 有三条路径——① NVLink 2.0 及以前:OFF→INITPHASE1→SAFE→HS(软件驱动每一步);② NVLink 3.0 ALT:SAFE→INITNEGOTIATE→INITOPTIMIZE→HS(软件发起,硬件协助);③ NVLink 4.0+ ALI:SAFE→ALI→HS(硬件主导,软件只等待)。HS 是数据传输态;SLEEP 是省电态(L2);FAULT 是故障态,可经 RECOVERY 恢复。**拓扑发现必须在 SAFE 完成**(见 §4)。
 
-### 5.3 训练入口:nvlink_core_train_internode_conns_from_swcfg_to_active
+### 5.3 训练入口:nvlink_core_train_intranode_conns
 
-`nvlink_core_train_internode_conns_from_swcfg_to_active` 把跨节点连接从 SAFE 训到 HS。注意:这是 **internode**(跨节点)训练函数,操作 `nvlink_internode_conn`(只有 `local_end` 是本地 `nvlink_link` 指针,远端是 `remote_end` 标识符);intranode(节点内)训练有独立的函数族 `nvlink_core_train_intranode_conns_from_swcfg_to_active_{non_ALI,ALT,legacy}`,操作 `nvlink_intranode_conn`(两端都是本地 `nvlink_link` 指针)。这里以 internode 函数为例,因为它清晰地展示了"前置状态校验 → master end 驱动 → 轮询等待"的训练三步。核心逻辑:
+`nvlink_core_train_intranode_conns` 把连接从 SAFE 训到 HS。核心逻辑:
 
 ```c
-/* 摘自 [src/common/nvlink/kernel/nvlink/core/nvlink_training.c](./src/open-gpu-kernel-modules/src/common/nvlink/kernel/nvlink/core/nvlink_training.c) 第 82-204 行(简化,函数 nvlink_core_train_internode_conns_from_swcfg_to_active) */
+/* 摘自 [src/common/nvlink/kernel/nvlink/core/nvlink_training.c](./src/open-gpu-kernel-modules/src/common/nvlink/kernel/nvlink/core/nvlink_training.c) 第 120-204 行(简化) */
     //
     // For NVLink version < 3.0, we can train link to ACTIVE only when link is
     // at SWCFG and sublink are at HS
@@ -868,52 +822,26 @@ stateDiagram-v2
 `nvlink_core_shutdown` 把链路从 ACTIVE/HS 退回 OFF 或 SLEEP(L2)。L2 是 NVLink 的低功耗状态,在 GPU 空闲时进入(配合 GPU 的 RTD3/FGC6 状态):
 
 ```c
-/* 摘自 [src/common/nvlink/kernel/nvlink/core/nvlink_shutdown.c](./src/open-gpu-kernel-modules/src/common/nvlink/kernel/nvlink/core/nvlink_shutdown.c)
-   L2 路径:nvlink_core_powerdown_intranode_conns_from_active_to_L2(第 43-406 行)
-   OFF 路径:nvlink_core_powerdown_intranode_conns_from_active_to_off(第 473-720 行)
-   以下综合两条路径的关键步骤(简化,省略 end1 与轮询) */
-    // STEP 0: Disable HeartBeat(仅 L2 路径,L105-122)
-    conns[i]->end0->link_handlers->set_dl_link_mode(conns[i]->end0,
-                                                    NVLINK_LINKSTATE_DISABLE_HEARTBEAT,
-                                                    flags);
+/* 摘自 [src/common/nvlink/kernel/nvlink/core/nvlink_shutdown.c](./src/open-gpu-kernel-modules/src/common/nvlink/kernel/nvlink/core/nvlink_shutdown.c) 第 70-130 行(简化) */
+    // 1. Disable PM (power management) first
+    nvlink_core_set_link_mode(conns[i]->local_end, NVLINK_LINKSTATE_DISABLE_PM, flags);
 
-    // STEP 1: Disable PM(L124-141 / L504-513)
-    conns[i]->end0->link_handlers->set_dl_link_mode(conns[i]->end0,
-                                                    NVLINK_LINKSTATE_DISABLE_PM,
-                                                    flags);
+    // 2. Transition link to SWCFG (SAFE)
+    nvlink_core_set_link_mode(conns[i]->local_end, NVLINK_LINKSTATE_SAFE, flags);
 
-    // STEP 2: Transition link to SWCFG(L190-203 / L515-524)
-    conns[i]->end0->link_handlers->set_dl_link_mode(conns[i]->end0,
-                                                    NVLINK_LINKSTATE_SAFE,
-                                                    flags);
-    /* ... nvlink_core_poll_link_state(NVLINK_LINKSTATE_SAFE, NVLINK_TRANSITION_SAFE_TIMEOUT) ... */
+    // 3. Disable error detection
+    nvlink_core_set_link_mode(conns[i]->local_end, NVLINK_LINKSTATE_DISABLE_ERR_DETECT, flags);
 
+    // 4. Disable/shutdown lanes (进入 L2 或 OFF)
     if (bEnterL2) {
-        // L2 路径:STEP 3 set sublink TX_SAFE → STEP 4 SAVE_STATE → STEP 5 SLEEP
-        // STEP 5 用 set_tl_link_mode(传输层),不是 set_dl_link_mode(L345-368)
-        conns[i]->end0->link_handlers->set_tl_link_mode(conns[i]->end0,
-                                                        NVLINK_LINKSTATE_SLEEP,
-                                                        NVLINK_STATE_CHANGE_SYNC);
+        nvlink_core_set_link_mode(conns[i]->local_end, NVLINK_LINKSTATE_SLEEP, flags);
     } else {
-        // OFF 路径:STEP 3 Disable error detection(L641-649)
-        conns[i]->end0->link_handlers->set_dl_link_mode(conns[i]->end0,
-                                                        NVLINK_LINKSTATE_DISABLE_ERR_DETECT,
-                                                        flags);
-        // STEP 4: LANE_DISABLE → LANE_SHUTDOWN(L654-701)
-        conns[i]->end0->link_handlers->set_dl_link_mode(conns[i]->end0,
-                                                        NVLINK_LINKSTATE_LANE_DISABLE,
-                                                        flags);
-        conns[i]->end0->link_handlers->set_dl_link_mode(conns[i]->end0,
-                                                        NVLINK_LINKSTATE_LANE_SHUTDOWN,
-                                                        flags);
-        // STEP 5: OFF(L703-708)
-        conns[i]->end0->link_handlers->set_dl_link_mode(conns[i]->end0,
-                                                        NVLINK_LINKSTATE_OFF,
-                                                        flags);
+        nvlink_core_set_link_mode(conns[i]->local_end, NVLINK_LINKSTATE_LANE_SHUTDOWN, flags);
+        nvlink_core_set_link_mode(conns[i]->local_end, NVLINK_LINKSTATE_OFF, flags);
     }
 ```
 
-**关闭顺序的设计**:① **STEP 0** 先关 HeartBeat(仅 L2 路径,避免进入低功耗时心跳超时误报错)→ ② **STEP 1** 关 PM(避免训练过程中被 PM 打断)→ ③ **STEP 2** 退到 SAFE(降低速率,准备关 lane)→ ④ L2 路径直接 `set_tl_link_mode(SLEEP)`(传输层命令,进入 L2);OFF 路径继续 `DISABLE_ERR_DETECT` → `LANE_DISABLE` → `LANE_SHUTDOWN` → `OFF`(数据链路层逐级关 lane)。这个顺序**不可逆**,每步都有物理意义——比如关 lane 前必须退到 SAFE,因为 HS 模式下关 lane 会触发 fault。注意所有命令都通过 `link_handlers->set_dl_link_mode` / `set_tl_link_mode` 回调下发,**没有** `nvlink_core_set_link_mode` 这个 API——core 层直接通过函数指针调用 RM/GSP 注册的实现,这与 §3.4 的 `link_handlers` 回调表设计一致。
+**关闭顺序的设计**:① 先关 PM(避免训练过程中被 PM 打断)→ ② 退到 SAFE(降低速率,准备关 lane)→ ③ 关错误检测(避免关 lane 时误报错)→ ④ 关 lane 进 L2 或 OFF。这个顺序**不可逆**,每步都有物理意义——比如关 lane 前必须退到 SAFE,因为 HS 模式下关 lane 会触发 fault。
 
 > **核心要点**:NVLink 训练状态机的核心是"软件下发命令 + 硬件完成训练 + 软件轮询确认"。软件只控制状态转换的编排顺序(OFF→SAFE→HS),真正的 PHY 训练(PLL 锁定、RX 校准、lane alignment)由硬件状态机自治完成。NVLink 4.0+ 的 ALI 进一步把"软件编排"也交给硬件(Adaptive Link Training),软件只等待最终结果——这是硬件/软件责任边界持续向硬件侧迁移的体现。
 
@@ -1023,16 +951,13 @@ stateDiagram-v2
 
 RM 侧的 `kernel_nvlinkapi.c` 实现了这些控制命令:
 
-| RM 控制命令(`NV2080_*` 命名空间) | 作用 |
+| RM 控制命令 | 作用 |
 |------------|------|
-| `NV2080_CTRL_CMD_NVLINK_GET_NVLINK_CAPS` | 查询本 GPU 的 NVLink 能力(版本、link 数、特性位) |
-| `NV2080_CTRL_CMD_NVLINK_GET_NVLINK_STATUS` | 查询每个 link 的当前状态(link state / sublink TX/RX state) |
-| `NV2080_CTRL_CMD_NVLINK_GET_LOCAL_DEVICE_INFO` | 查询本 GPU 的 NVLink device 信息(UUID / SID 等) |
-| `NV2080_CTRL_CMD_NVLINK_GET_ERR_INFO` | 查询 NVLink 错误信息 |
-| `NV2080_CTRL_CMD_NVLINK_GET_COUNTERS` | 查询 NVLink 流量计数器 |
-| `NV2080_CTRL_CMD_NVLINK_DIRECT_CONNECT_CHECK` | 检查直连 GPU 间的 NVLink bridge 数量与在位状态 |
-
-> **核心要点**:这里列出的都是 `NV2080_CTRL_CMD_NVLINK_*` 命名空间的 **RM 控制命令**(走 `/dev/nvidia*` 的 `NV_ESC_RM_CONTROL`)。查询"节点内连接列表"的命令 `CTRL_NVLINK_DEVICE_GET_INTRANODE_CONNS` 属于 **NVLink core ioctl 命名空间**(`CTRL_NVLINK_*`,走 `/dev/nvidia-nvlink`,见 §6.1),只对持 `fabric-mgmt` capability 的 FM 开放——普通 UMD 拿不到完整连接列表,只能通过 `NV2080_CTRL_CMD_NVLINK_GET_NVLINK_STATUS` 逐 link 查询状态来推断拓扑。NVSwitch proxy 状态则是 RM 内部函数 `knvlinkIsNvswitchProxyPresent`(非控制命令),UMD 不可直接查询。
+| `NV2080_CTRL_CMD_NVLINK_GET_LOCALDeviceInfo` | 查询本 GPU 的 NVLink device 信息 |
+| `NV2080_CTRL_CMD_NVLINK_GET_REMOTEDeviceInfo` | 查询远端 GPU 的 NVLink device 信息 |
+| `NV2080_CTRL_CMD_NVLINK_GET_LINK_STATE` | 查询 link 状态(OFF/SAFE/HS) |
+| `NV2080_CTRL_CMD_NVLINK_GET_INTRANODE_CONNS` | 查询节点内连接列表 |
+| `NV2080_CTRL_CMD_NVLINK_GET_NVSWITCH_PROXY details` | 查询 NVSwitch proxy 状态 |
 
 这些命令在 RM 内部最终调 `nvlink_lib_*` core API(进程内调用,不经字符设备)。所以 NVLink core 有**两个调用入口**:① 用户态 FM 经字符设备(需 capability);② RM 内部直接调(进程内)。这是 NVLink core 设计成 OS-agnostic 库(而非独立 .ko)的收益之一。
 
@@ -1050,7 +975,7 @@ GPU3    SYS     SYS     SYS      X      ...
 
 其中 `NV12` 表示 12 条 NVLink 连接,`SYS` 表示跨 NUMA 节点走 PCIe,`NODE` 表示同 NUMA 节点 PCIe。这张表的数据来源是:
 
-- `NV#` 标签:来自 RM 的 `NV2080_CTRL_CMD_NVLINK_GET_NVLINK_STATUS`(逐 link 查询状态)与 `NV2080_CTRL_CMD_NVLINK_DIRECT_CONNECT_CHECK`(检查直连 bridge 数),统计两个 GPU 间的 NVLink 连接数;
+- `NV#` 标签:来自 RM 的 `NV2080_CTRL_CMD_NVLINK_GET_INTRANODE_CONNS`,统计两个 GPU 间的 NVLink 连接数;
 - `SYS`/`NODE`/`PHB`:来自 PCIe 拓扑(`nv-pci.c` 的 `pci_get_domain_bus_slot` + NUMA 节点查询),与 NVLink 无关。
 
 NCCL 启动时打印的 `Channel 00/02 : 0[0] -> 1[0] via P2P/IPC` 就是基于这张表决策——如果 `NV#` > 0,优先走 NVLink P2P;否则走 PCIe P2P 或 SHM(见 [10](./10-多卡P2P-UVM-peer-mapping.md) 与 [../nccl/08](../nccl/08-transport-layer.md))。
@@ -1066,38 +991,25 @@ NCCL 启动时打印的 `Channel 00/02 : 0[0] -> 1[0] via P2P/IPC` 就是基于�
 `nvlink_caps.c` 在 procfs 下创建 capability 文件:
 
 ```c
-/* 摘自 [kernel-open/nvidia/nvlink_caps.c](./src/open-gpu-kernel-modules/kernel-open/nvidia/nvlink_caps.c) 第 29-122 行(简化) */
+/* 摘自 [kernel-open/nvidia/nvlink_caps.c](./src/open-gpu-kernel-modules/kernel-open/nvidia/nvlink_caps.c) 第 29-114 行(简化) */
 #define NVLINK_CAP_FABRIC_MGMT "fabric-mgmt"
 
-typedef struct
-{
+static struct {
     nv_cap_t *root;
     nv_cap_t *fabric_mgmt;
-} nvlink_caps_t;
-
-static nvlink_caps_t nvlink_caps = {0};
+} nvlink_caps;
 
 int nvlink_cap_init(const char *path)
 {
-    if (path == NULL) {
-        return -1;
-    }
+    /* 在 /proc/driver/nvidia-nvlink/ 下创建 cap 目录 */
+    nvlink_caps.root = nv_cap_create_directory(path, NV_CAP_MOUNT_FLAGS_DEFAULT);
+    /* ... */
 
-    /* 在 /proc/driver/nvidia-nvlink/ 下初始化 cap 根目录 */
-    nvlink_caps.root = nv_cap_init(path);
-    if (nvlink_caps.root == NULL) {
-        return -1;
-    }
-
-    /* 创建 /proc/driver/nvidia-nvlink/fabric-mgmt(权限 S_IRUSR:仅 owner 可读) */
+    /* 创建 /proc/driver/nvidia-nvlink/fabric-mgmt */
     nvlink_caps.fabric_mgmt = nv_cap_create_file_entry(nvlink_caps.root,
                                                        NVLINK_CAP_FABRIC_MGMT,
-                                                       S_IRUSR);
-    if (nvlink_caps.fabric_mgmt == NULL) {
-        nvlink_cap_exit();
-        return -1;
-    }
-    return 0;
+                                                       NV_CAP_PERMISSIONS_DEFAULT);
+    /* ... */
 }
 ```
 
@@ -1108,43 +1020,30 @@ capability 机制基于 Linux 的 `O_RDWR` 文件权限 + fd 传递:进程 A 打
 `nvlink_acquire_fabric_mgmt_cap` 在 ioctl 处理时被调用,校验调用者是否持有 capability:
 
 ```c
-/* 摘自 [kernel-open/nvidia/nvlink_linux.c](./src/open-gpu-kernel-modules/kernel-open/nvidia/nvlink_linux.c) 第 604-637 行(简化)
-   以及 [kernel-open/nvidia/nvlink_caps.c](./src/open-gpu-kernel-modules/kernel-open/nvidia/nvlink_caps.c) 第 39-69 行的 nvlink_cap_acquire */
+/* 摘自 [kernel-open/nvidia/nvlink_linux.c](./src/open-gpu-kernel-modules/kernel-open/nvidia/nvlink_linux.c) 第 604-637 行(简化) */
 NvlStatus nvlink_acquire_fabric_mgmt_cap(void *osPrivate, NvU64 capDescriptor)
 {
-    int dup_fd = -1;
     nvlink_file_private_t *private_data = (nvlink_file_private_t *)osPrivate;
+    int dup_fd = -1;
 
-    if (private_data == NULL)
-    {
-        return NVL_BAD_ARGS;
-    }
-
-    /* nvlink_cap_acquire 内部再调 nv_cap_validate_and_dup_fd 校验 fd */
-    dup_fd = nvlink_cap_acquire((int)capDescriptor,
-                                NVLINK_CAP_FABRIC_MANAGEMENT);
+    dup_fd = nv_cap_validate_and_dup_fd(nvlink_caps.fabric_mgmt, capDescriptor);
     if (dup_fd < 0)
-    {
-        return NVL_ERR_OPERATING_SYSTEM;
-    }
+        return NVL_BAD_PARAMETER;
 
     private_data->capability_fds.fabric_mgmt = dup_fd;
     return NVL_SUCCESS;
 }
 
-/* 返回值是 int(0/1),不是 NvBool */
-int nvlink_is_fabric_manager(void *osPrivate)
+NvBool nvlink_is_fabric_manager(void *osPrivate)
 {
     nvlink_file_private_t *private_data = (nvlink_file_private_t *)osPrivate;
 
-    /* Make sure that fabric mgmt capability fd is valid */
-    if ((private_data == NULL) ||
-        (private_data->capability_fds.fabric_mgmt < 0))
+    if ((private_data != NULL) &&
+        (private_data->capability_fds.fabric_mgmt >= 0))
     {
-        return 0;
+        return NV_TRUE;
     }
-
-    return 1;
+    return NV_FALSE;
 }
 ```
 
@@ -1227,7 +1126,7 @@ int nvlink_is_fabric_manager(void *osPrivate)
 |----|----------|-----------|
 | NVLink link 状态枚举 | `NVLINK_LINKSTATE_*` 宏开源(§5.1) | 状态转换的硬件时序 |
 | 拓扑发现机制 | AN0 token / SID 配对逻辑开源(§4.2) | AN0 包的物理格式、SID 协商的硬件握手 |
-| 训练顺序 | `nvlink_core_train_internode_conns_from_swcfg_to_active`(§5.3)与 intranode 训练函数族均开源 | `set_dl_link_mode` 在硬件里具体写哪些寄存器 |
+| 训练顺序 | `nvlink_core_train_intranode_conns` 开源(§5.3) | `set_dl_link_mode` 在硬件里具体写哪些寄存器 |
 | FM 编排逻辑 | FM 是闭源用户态进程(`nv-fabricmanager`) | FM 内部的训练编排算法 |
 
 ### 9.3 待确认
@@ -1253,7 +1152,7 @@ int nvlink_is_fabric_manager(void *osPrivate)
 
 本章内容在推理/训推场景下的体现:
 
-- **NCCL 启动拓扑探测**:NCCL 启动时调 `cuDeviceGetP2PAttribute` 查询 NVLink 连接数,走的就是 RM 的 `NV2080_CTRL_CMD_NVLINK_GET_NVLINK_STATUS` 路径(见 §6.3),逐 link 读取链路状态来推断拓扑。如果某个 link 停在 SAFE 没训到 HS,NCCL 会看到"NVLink 数量减少",降级走 PCIe P2P 或 SHM。
+- **NCCL 启动拓扑探测**:NCCL 启动时调 `cuDeviceGetP2PAttribute` 查询 NVLink 连接数,走的就是 RM 的 `NV2080_CTRL_CMD_NVLINK_GET_INTRANODE_CONNS` 路径(见 §6.3)。如果某个 link 停在 SAFE 没训到 HS,NCCL 会看到"NVLink 数量减少",降级走 PCIe P2P 或 SHM。
 - **TP(Tensor Parallel)切分**:TP 把权重切到多卡,AllReduce 走 NVLink。如果 NVLink 没训起来,AllReduce 走 PCIe,带宽降一个数量级(NVLink4 900GB/s vs PCIe5 128GB/s)。
 - **长跑稳定性**:NVLink fault 会触发 `NVLINK_LINKSTATE_FAULT` → `RECOVERY` → `HS` 自动恢复(见 §5.2)。如果恢复失败,link 进 `FAIL` 状态,NCCL 会重试或报错。Xid 79(NVLink 错误)就是这条路径上的事件(见 [06 §5](./06-中断同步与fence.md))。
 - **MNNVL 跨节点训练**:Hopper 的 MNNVL 允许跨节点 NVLink,FM 必须在每个节点运行,通过 `ADD_INTERNODE_CONN` ioctl 注册跨节点连接。这是 DGX H100 SuperPOD 等大规模训练集群的基础。
