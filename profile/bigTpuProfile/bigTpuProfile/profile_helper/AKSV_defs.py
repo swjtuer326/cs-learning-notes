@@ -1,0 +1,714 @@
+#!/usr/bin/python3
+# ==============================================================================
+#
+# Copyright (C) 2022 sophon Technologies Inc.  All rights reserved.
+#
+# TPU-MLIR is licensed under the 2-Clause BSD License except for the
+# third-party components.
+#
+# ==============================================================================
+
+import struct
+import ctypes as ct
+from profile_helper.bmprofile_common import dictStructure
+from profile_helper.binary import FixedItemWrapper
+from enum import Enum
+from debugger.target_common import get_target_context
+from debugger.target_common import DType
+
+ID_WIDTH = 20
+GDMA_FREQ = 1000
+BD_FREQ = 1000
+BYTE_PER_BEAT = 128
+CDMA_NUM = 10
+CORE_NUM = 4
+GDMACyclePeriod = 1.0 / GDMA_FREQ
+BDCyclePeriod = 1.0 / BD_FREQ
+PeriodFixed = False
+arch_name = "AKSV"
+bd_sys_code = 15
+dma_sys_code = 6
+cdma_sys_code = 7
+profile_sys_num = 2
+profile_init_cmd_num = 2
+profile_nop_num = 1
+# rvt
+rvt_max_id = 0x3ffff
+rvt_walkaround = False
+dma_trwr = {"des_tsk_type": 6, "des_tsk_eu_typ": 3}
+tiu_swr = {"des_tsk_type": 15, "des_tsk_eu_typ": 3}
+
+class DynRecordType(Enum):
+    FUNC = 0
+    NODE_SET = 1
+    NODE_WAIT = 2
+    CDMA = 3
+    GDE = 4
+    SORT = 5
+    NMS = 6
+    VSDMA = 7
+    DES_TIU = 8
+    DES_GDMA = 9
+    DES_SDMA = 10
+    DES_CDMA = 11
+    ID_RESET = 12
+    RVT_NODE_SET = 13
+    BATCH_IDX  = 14
+    FUNC_END = 15
+    CUSTOM = 100
+    UNKNOWN = 127 # -1
+
+class EngineType(Enum):
+    BD = 0
+    GDMA = 1
+    SDMA = 2
+    CDMA = 3
+    VSDMA = 4
+
+class MEMTYPE(Enum):
+    LMEM = 0
+    DDR = 1
+
+class TagType(Enum):
+    TAG_USERS = 0
+    TAG_WEIGHT = 1
+    TAG_ACTIVATION = 2
+    TAG_GLOBAL = 3
+    TAG_L2M = 30
+    TAG_LMEM = 31
+
+    def __eq__(self, other):
+        if isinstance(other, int):
+            return self.value == other
+        return super().__eq__(other)
+
+class DATATYPE(Enum):
+    INT8 = 0
+    FP16 = 1
+    FP32 = 2
+    INT16 = 3
+    INT32 = 4
+    BFP16 = 5
+    INT4 = 6
+    FP8 = 7
+    FP20 = 8
+    TF32 = 9
+
+    def prec(self):
+        if self.value == 0 or self.value == 7:
+            return 1
+        elif self.value == 1 or self.value == 3 or self.value == 5:
+            return 2
+        elif self.value == 2 or self.value == 4 or self.value == 9:
+            return 4
+        elif self.value == 6:
+            return 0.5
+        elif self.value == 8:
+            return 2.5
+
+def dma_addr(H, L):
+    addr = H * 2**32 + L
+    tag = (addr >> 40) & 0x1f
+    if tag == 0x0 :     # for workround
+        addr =  addr | (0x1 << 40)
+    return addr
+
+class BDProfileFormat(dictStructure):
+    _pack_ = 1
+    _fields_ = [
+        ("inst_start_time", ct.c_uint32),
+        ("inst_end_time", ct.c_uint32),
+        ("inst_id", ct.c_uint32),
+        ("thread_id_and_bank_conflict", ct.c_uint32),
+    ]
+
+class GDMAProfileFormat(dictStructure):
+    _pack_ = 1
+    _fields_ = [
+        # 32 bit align
+        # H0
+        ("inst_start_time", ct.c_uint32),      ("inst_end_time", ct.c_uint32),
+        ("inst_id", ct.c_uint32),              ("thread_id", ct.c_uint32, 1),
+        ("ar_latency_cnt", ct.c_uint32, 19),   ("rip_valid_latency", ct.c_uint32, 12),
+        # H1
+        ("gif_wr_rd_stall_cntr", ct.c_uint32), ("axi_d0_w_cntr", ct.c_uint32),
+        ("axi_d0_ar_cntr", ct.c_uint32),       ("axi_d0_aw_cntr", ct.c_uint32),
+        # H2
+        ("axi_d0_wr_stall_cntr", ct.c_uint32), ("axi_d0_rd_stall_cntr", ct.c_uint32),
+        ("gif_mem_w_cntr", ct.c_uint32),       ("gif_mem_ar_cntr", ct.c_uint32),
+        # H3
+        ("axi_d0_wr_vaild_cntr", ct.c_uint32), ("axi_d0_rd_vaild_cntr", ct.c_uint32),
+        ("gif_wr_valid_cntr", ct.c_uint32),    ("gif_rd_valid_cntr", ct.c_uint32),
+    ]
+
+class CDMAProfileFormat(dictStructure):
+    _pack_ = 1
+    _fields_ = [
+        # 32 bit align
+        # H0
+        ("inst_start_time", ct.c_uint32),      ("inst_end_time", ct.c_uint32),
+        ("inst_id", ct.c_uint32, 24),           ("thread_id", ct.c_uint32, 1),
+        ("reserved0", ct.c_uint32, 7),           ("_reserved0", ct.c_uint32),
+        # H1
+        ("m0_data_aw_cntr", ct.c_uint32),   ("m0_data_wr_cntr", ct.c_uint32),
+        ("m0_data_ar_cntr", ct.c_uint32),   ("reserved1", ct.c_uint32),
+        # H2
+        ("m0_data_wr_valid_cntr", ct.c_uint32), ("m0_data_wr_stall_cntr", ct.c_uint32),
+        ("m0_data_rd_valid_cntr", ct.c_uint32),       ("m0_data_rd_stall_cntr", ct.c_uint32),
+        # H3
+        ("ati_data_valid_cntr", ct.c_uint32), ("ati_data_stall_cntr", ct.c_uint32),
+        ("ari_data_valid_cntr", ct.c_uint32),    ("ari_data_stall_cntr", ct.c_uint32),
+        # H4
+        ("ati_txfifo_stall_cntr", ct.c_uint32), ("replay_number", ct.c_uint32),
+        ("m0_data_b_st", ct.c_uint32),    ("m0_data_b_end", ct.c_uint32),
+        # H5
+        ("m0_data_ar_st", ct.c_uint32), ("m0_data_ar_end", ct.c_uint32),
+        ("m0_data_aw_st", ct.c_uint32),    ("m0_data_aw_end", ct.c_uint32),
+        # H6
+        ("m0_data_rd_st", ct.c_uint32), ("m0_data_rd_end", ct.c_uint32),
+        ("m0_data_wr_st", ct.c_uint32),    ("m0_data_wr_end", ct.c_uint32),
+        # H7
+        ("ati_data_st", ct.c_uint32), ("ati_data_end", ct.c_uint32),
+        ("ari_data_st", ct.c_uint32),   ("ari_data_end", ct.c_uint32),
+    ]
+
+class GDMACmdFormat(dictStructure):
+    _pack_ = 1
+    _fields_ = [
+        # 32 bit align
+        ("intr_en", ct.c_uint32, 1),           ("stride_enable", ct.c_uint32, 1),
+        ("nchw_copy", ct.c_uint32, 1),         ("cmd_short", ct.c_uint32, 1),
+        ("cache_en", ct.c_uint32, 1),          ("cache_flush", ct.c_uint32, 1),
+        # 32bit
+        ("reserved0", ct.c_uint32, 26),        ("cmd_type", ct.c_uint32, 5),
+        ("cmd_special_function", ct.c_uint32, 3), ("fill_constant_en", ct.c_uint32, 1),
+        ("src_data_format", ct.c_uint32, 4),   ("reserved1", ct.c_uint32, 3),
+        # 64 bit
+        ("reserved2", ct.c_uint32, 16),        ("cmd_id_dep", ct.c_uint32, 17),
+        ("reserved3", ct.c_uint32, 6),         ("break_point", ct.c_uint32, 1),
+        # 128 bit
+        ("reserved4", ct.c_uint32, 8),         ("constant_value", ct.c_uint32),
+        ("src_nstride", ct.c_uint32),        ("src_cstride", ct.c_uint32),
+        ("src_hstride", ct.c_uint32),        ("src_wstride", ct.c_uint32),
+        ("dst_nstride", ct.c_uint32),        ("dst_cstride", ct.c_uint32),
+        ("dst_hstride", ct.c_uint32),        ("dst_wstride", ct.c_uint32),
+        ("src_nsize", ct.c_uint32, 16),      ("src_csize", ct.c_uint32, 16),
+        ("src_hsize", ct.c_uint32, 16),      ("src_wsize", ct.c_uint32, 16),
+        ("dst_nsize", ct.c_uint32, 16),      ("dst_csize", ct.c_uint32, 16),
+        ("dst_hsize", ct.c_uint32, 16),      ("dst_wsize", ct.c_uint32, 16),
+        ("src_start_addr_l32", ct.c_uint32), ("src_start_addr_h13", ct.c_uint32, 13),
+        ("reserved5", ct.c_uint32, 19),
+        ("dst_start_addr_l32", ct.c_uint32), ("dst_start_addr_h13", ct.c_uint32, 13),
+        ("reserved6", ct.c_uint32, 19),      ("all_reduce_code", ct.c_uint32, 16),
+        ("reserved7", ct.c_uint32, 16),      ("reserved8", ct.c_uint32, 16),
+        ("reserved9", ct.c_uint32, 16),
+        ("localmem_mask_l32", ct.c_uint32),  ("localmem_mask_h32", ct.c_uint32),
+    ]
+
+class ProfileFormat(dictStructure):
+    '''
+    dyn node:
+        |0.....|7.......|10.............|15................|20...............................|32
+        | type | engine | bd_op/dma_op  | bd_func/dma_dir  | rsvd/dtype && mem_type sys_info |
+        | 7    |  3     | 5             | 5                | 12                              |
+        rsvd/dtype/sys_info:
+            bd: dtype (0xf, 4bits)
+            dma: (dst_mem_type << 6| src_mem_type << 4 | dtype) (0xff, 8bit)
+            cdma: (port << 8 | dst_mem_type << 6| src_mem_type << 4 | dtype) (0xfff, 12bit)
+            sys: rsvd(0) or send_cnt/ wait_cnt (0x7f 7bits)
+    des node:
+        |0.....|7.............................................................................|32.......|60....|64
+        | type | offset                                                                       | cmd_num | port |
+        | 7    |  25                                                                          |  28     |  4   |
+    id reset
+        |0.....|7.......|10............................................................|28 ...|32
+        | type | engine | rsvd                                                         | port |
+        | 7    |  3     |  18                                                          |  4   |
+        port: extra_info(20) >> 8
+    '''
+    _pack_ = 1
+    _fields_ = [
+        ("type", ct.c_uint32, 7), ("engine", ct.c_uint32, 3),
+        ("des_tsk_typ", ct.c_uint32, 5), ("des_tsk_eu_typ", ct.c_uint32, 5),
+        ("extra_info", ct.c_uint32, 12)
+    ]
+
+    @staticmethod
+    def raw_int(obj):
+        return (obj.type |
+                obj.engine << 7 |
+                obj.des_tsk_typ << 10 |
+                obj.des_tsk_eu_typ << 15 |
+                obj.extra_info << 20)
+
+    # for des node only
+    @staticmethod
+    def offset(obj):
+        if not hasattr(obj, 'offset'):
+            obj.offset = ProfileFormat.packed_num(obj)
+        return obj.offset
+
+    @staticmethod
+    def packed_num(obj):
+        return  ProfileFormat.raw_int(obj) >> 7
+
+    @staticmethod
+    def cmd_num(obj, cmd_num=None):
+        if not hasattr(obj, 'cmd_num'):
+            assert(cmd_num)
+            offset = ProfileFormat.offset(cmd_num)
+            obj.cmd_num = offset << 7  | cmd_num.type
+            if obj.type == DynRecordType.DES_CDMA.value:
+                obj.port = obj.cmd_num >> 28
+                obj.cmd_num = obj.cmd_num & 0xFFFFFFF
+        return obj.cmd_num
+
+    @staticmethod
+    def is_des(n_type):
+        _type = n_type if isinstance(n_type, DynRecordType) else DynRecordType(n_type)
+        if _type in [DynRecordType.DES_TIU, DynRecordType.DES_GDMA,
+                     DynRecordType.DES_SDMA, DynRecordType.DES_CDMA]:
+            return True
+        return False
+    
+    @staticmethod
+    def nodes_to_string(nodes, byte_len):
+      data = bytearray()
+      for n in nodes:
+          data += struct.pack("<I", ProfileFormat.raw_int(n) & 0xFFFFFFFF)
+      return data[:byte_len].decode("utf-8", errors="replace")
+
+class BDCommandParser():
+    def __init__(self) -> None:
+        self.ctx = get_target_context("AKSV")
+
+    def parse(self, raw_data):
+        tmp = bytearray(raw_data)
+        return self.ctx.decoder.decode_tiu_cmds(tmp)
+
+class GDMACommandParser():
+    _byte_len_ = 256
+    def __init__(self) -> None:
+        self.ctx = get_target_context("AKSV")
+
+    def parse(self, raw_data):
+        tmp = bytearray(raw_data)
+        return self.ctx.decoder.decode_dma_cmds(tmp)
+
+class CDMACommandParser():
+    def __init__(self) -> None:
+        self.ctx = get_target_context("AKSV")
+
+    def parse(self, raw_data):
+        tmp = bytearray(raw_data)
+        return self.ctx.decoder.decode_cdma_cmds(tmp)
+
+DMA_ARCH = {
+    "Chip Arch": "AKSV",
+    "Platform": "ASIC",
+    "Core Num": 4,
+    "NPU Num": 64,
+    "TPU Lmem Size(MiB)": 16777216,
+    "Tpu Lmem Addr Width(bits)": 18,
+    "Tpu Bank Addr Width(bits)": 14,
+    "Execution Unit Number(int8)": 64,
+    "Bus Max Burst": 2,
+    "L2 Max Burst": 1,
+    "Bus Bandwidth": 128,
+    "DDR Frequency(GHz)": 8533,
+    "DDR Max BW(GB/s/Core)": 68.264,
+    "L2 Max BW(GB/s)": 128,
+    "Cube IC Align(8bits)": 64,
+    "Cube OHOW Align(8bits)": 4,
+    "Cube OHOW Align(16bits)": 4,
+    "Vector OHOW Align(8bits)": 64,
+    "TIU Frequency(MHz)": 1000,
+    "DMA Frequency(MHz)": 1000}
+
+TIU_ARCH = DMA_ARCH
+
+def get_src_dst_type(v):
+    def dtype(v):
+        if v == 0:
+            return "DDR"
+        elif v == 1:
+            return "L2M"
+        elif v == 2:
+            return "LMEM"
+        else:
+          raise ValueError(f"Unknow dma mem_type: {v}")
+    return dtype(v &0x3), dtype(v >> 2)
+
+def mem_type(v):
+    if v in range(30):
+        return "DDR"
+    if v == TagType.TAG_LMEM:
+        return "LMEM"
+    if v == TagType.TAG_L2M:
+        return "L2M"
+    raise ValueError(f"Unknow dma mem_type: {v}")
+
+def get_dma_info_dyn(monitor_info, reg_info, engine_id=1):
+    if reg_info is None:
+        reg_info = ProfileFormat()
+        if hasattr(monitor_info, 'sys'):
+            if engine_id == 4:
+                reg_info.des_tsk_typ = cdma_sys_code
+            else:
+                reg_info.des_tsk_typ = dma_sys_code
+            if monitor_info.sys == "send":
+                reg_info.des_tsk_eu_typ = 3
+            elif monitor_info.sys == "wait":
+                reg_info.des_tsk_eu_typ = 4
+        else:
+            reg_info.des_tsk_typ = -1
+    extra_info = reg_info.extra_info
+    dma_info = dict()
+    # step1 : get registor information from command
+    if (engine_id == 4 and reg_info.des_tsk_typ == cdma_sys_code) or reg_info.des_tsk_typ == dma_sys_code:
+        extra_info = 0
+    dtype = extra_info&0xF
+    data_type = DATATYPE(dtype)
+    src_type, dst_type = get_src_dst_type((extra_info >> 4) & 0xF)
+    # step2: get custom information
+    dma_info["Engine Id"] = engine_id
+    dma_info["Direction"] = "{}->{}".format(src_type, dst_type)
+    dma_info["from_addr"] = src_type
+    dma_info["to_addr"] = dst_type
+    dma_info["src_data_format"] = dtype
+    dma_info["cmd_type"] = reg_info.des_tsk_typ
+    dma_info["cmd_special_function"] = reg_info.des_tsk_eu_typ
+    parser = getDmaFunctionName
+    if engine_id == 4:
+        parser = getCdmaFunctionName
+    dma_info["Function Type"], dma_info["Function Name"] = parser(
+        reg_info.des_tsk_typ, reg_info.des_tsk_eu_typ, dma_info["Direction"])
+    dma_info["Start Cycle"] = monitor_info.inst_start_time
+    dma_info["End Cycle"] = monitor_info.inst_end_time
+    dma_info["Cmd Id"] = monitor_info.inst_id
+    dma_info["Data Type"] = data_type.name
+    dma_info["Asic Cycle"] = monitor_info.inst_end_time - monitor_info.inst_start_time + 1
+    if engine_id != 4:
+        dma_info["Cmd Id"] += 1
+        dma_info["Stall Cycle"] = monitor_info.gif_wr_rd_stall_cntr
+        xfer_bytes = monitor_info.gif_mem_w_cntr + monitor_info.axi_d0_w_cntr
+        dma_info["DMA data size(B)"] = xfer_bytes
+        dma_info["DDR Bandwidth(GB/s)"] = round(xfer_bytes / dma_info["Asic Cycle"], 4)
+        dma_info["gmem_xact_cnt"] = monitor_info.axi_d0_wr_vaild_cntr + monitor_info.axi_d0_rd_vaild_cntr
+    else:
+        # pcie <-> cdma + mac <-> cdma
+        # dma_info["Stall Cycle"] = monitor_info.m0_data_wr_stall_cntr + monitor_info.m0_data_rd_stall_cntr \
+        #                          + monitor_info.ari_data_stall_cntr + monitor_info.ati_data_stall_cntr
+        dma_info["Stall Cycle"] = 0
+        dma_info["DMA data size(B)"] = monitor_info.m0_data_aw_cntr # + monitor_info.m0_data_ar_cntr
+        dma_info["DDR Bandwidth(GB/s)"] =  round(dma_info["DMA data size(B)"] / dma_info["Asic Cycle"], 4)
+        # dma_info["lmem_xact_cnt"] = 1
+        dma_info["gmem_xact_cnt"] = monitor_info.ari_data_valid_cntr + monitor_info.ati_data_valid_cntr \
+                                    + monitor_info.m0_data_rd_valid_cntr + monitor_info.m0_data_wr_valid_cntr
+        dma_info["Direction"] = "DDR->DDR"
+    dma_info['L2M Bandwidth(GB/s)'] = 0
+    dma_info["dst_start_addr"] = 0
+    dma_info["src_start_addr"] = 0
+    return dma_info, None
+
+def get_dma_info(monitor_info, reg_info, engine_id=1):
+    reg_info = reg_info.reg
+    dma_info = dict()
+    # step1 : get registor information from command
+    field_trans = {
+        "dst_start_addr_h32": "dst_start_addr_l32",
+        "dst_start_addr_l8": "dst_start_addr_h8",
+        "src_start_addr_h32": "src_start_addr_l32",
+        "src_start_addr_l8": "src_start_addr_h8"
+    }
+
+    for key, value in dict(reg_info).items():
+        trans_key = field_trans.get(key, key)
+        dma_info[trans_key] = value
+    dma_info["mask_start_addr_h8"] = dma_info.get("mask_start_addr_h8", 0)
+    dma_info["mask_start_addr_l32"] = dma_info.get("mask_start_addr_l32", 0)
+    src_h13 = dma_info.get("src_start_addr_h13", 0)
+    dst_h13 = dma_info.get("dst_start_addr_h13", 0)
+    src_l32 = dma_info.get("src_start_addr_l32", 0)
+    dst_l32 = dma_info.get("dst_start_addr_l32", 0)
+    dma_info["dst_start_addr"] = (int(dst_h13) << 32) + int(dst_l32)
+    dma_info["src_start_addr"] = (int(src_h13) << 32) + int(src_l32)
+    # step2: get custom information
+    src_type = mem_type(src_h13 >> 8)
+    dst_type = mem_type(dst_h13 >> 8)
+    # src_type = mem_type(dma_info['src_start_addr'], core_id)
+    # dst_type = mem_type(dma_info['dst_start_addr'], core_id)
+    data_type = ''
+    if  hasattr(reg_info, 'src_data_format'):
+        data_type = DATATYPE(reg_info.src_data_format)
+
+    parser = getCdmaFunctionName if engine_id == 4 else getDmaFunctionName
+    dma_info["Engine Id"] = engine_id
+    dma_info["Direction"] = "{}->{}".format(src_type, dst_type)
+    dma_info["from_addr"] = src_type
+    dma_info["to_addr"] = dst_type
+    dma_info["Function Type"], dma_info["Function Name"] = parser(
+        reg_info.cmd_type, reg_info.cmd_special_function, dma_info["Direction"])
+    dma_info["Start Cycle"] = monitor_info.inst_start_time
+    dma_info["End Cycle"] = monitor_info.inst_end_time
+    dma_info["Cmd Id"] = monitor_info.inst_id
+    dma_info["Data Type"] = data_type.name if data_type else data_type
+    dma_info["Asic Cycle"] = monitor_info.inst_end_time - monitor_info.inst_start_time + 1
+    if engine_id != 4:
+        dma_info["Cmd Id"] += 1 # cdma pmu cmd_id start from 1, others from 0
+        dma_info["Stall Cycle"] = monitor_info.gif_wr_rd_stall_cntr
+        xfer_bytes = monitor_info.gif_mem_w_cntr + monitor_info.axi_d0_w_cntr
+        bandwidth = round(xfer_bytes / dma_info["Asic Cycle"], 4)
+        dma_info["DMA data size(B)"] = xfer_bytes
+        dma_info["gmem_xact_cnt"] = monitor_info.axi_d0_wr_vaild_cntr + monitor_info.axi_d0_rd_vaild_cntr
+    else:
+        dma_info["Stall Cycle"] = 0
+        bandwidth = 0
+        dma_info["DMA data size(B)"] = monitor_info.m0_data_aw_cntr # + monitor_info.m0_data_ar_cntr
+        gmem_bandwidth = round(dma_info["DMA data size(B)"] / dma_info["Asic Cycle"], 4)
+        bandwidth = gmem_bandwidth
+        dma_info["gmem_xact_cnt"] = monitor_info.ari_data_valid_cntr + monitor_info.ati_data_valid_cntr \
+                                    + monitor_info.m0_data_rd_valid_cntr + monitor_info.m0_data_wr_valid_cntr
+    if "DDR" in dma_info["Direction"]:
+        dma_info["DDR Bandwidth(GB/s)"] = bandwidth
+        dma_info['L2M Bandwidth(GB/s)'] = 0
+    elif "L2M" in dma_info["Direction"]:
+       dma_info["DDR Bandwidth(GB/s)"] = 0
+       dma_info['L2M Bandwidth(GB/s)'] = bandwidth
+    else:
+       dma_info["DDR Bandwidth(GB/s)"] = 0
+       dma_info['L2M Bandwidth(GB/s)'] = 0
+    # else:
+    #     raise ValueError(f"Unknow direction type: {dma_info['Direction']}")
+
+    return dma_info, None
+
+def get_tiu_info_dyn(monitor_info, reg_info):
+    tiu_info0, tiu_info1 = dict(), dict()
+    if reg_info is None:
+        reg_info = ProfileFormat()
+        if hasattr(monitor_info, 'sys'):
+            reg_info.des_tsk_typ = bd_sys_code
+            if monitor_info.sys == "send":
+                reg_info.des_tsk_eu_typ = 8
+            elif monitor_info.sys == "wait":
+                reg_info.des_tsk_eu_typ = 9
+        else:
+            reg_info.des_tsk_typ = -1
+    for key in reg_info._fields_:
+        if  isinstance(key, tuple):
+            key = key[0]
+        tiu_info1[key] = getattr(reg_info, key)
+    tiu_info0["Function Type"], tiu_info0["Function Name"] = getTiuFunctionName(
+        reg_info.des_tsk_typ, reg_info.des_tsk_eu_typ)
+    if tiu_info0["Function Type"] != 'sys':
+        tiu_info1["des_opt_res0_prec"] = reg_info.extra_info & 0x7f
+    tiu_info0["Start Cycle"] = monitor_info.inst_start_time
+    tiu_info0["End Cycle"] = monitor_info.inst_end_time
+    tiu_info0["Cmd Id"] = monitor_info.inst_id + 1
+    tiu_info0["Asic Cycle"] = monitor_info.inst_end_time - \
+        monitor_info.inst_start_time + 1
+    tiu_info0["Engine Id"] = 0
+    tiu_info0["Alg Ops"] = 1
+    tiu_info0["uArch Ops"] = 1
+    tiu_info0["Alg Cycle"] = 0
+    tiu_info0["uArch Rate"] = "0.0%"
+    tiu_info0["Alg Cycle"] = 0
+    return tiu_info0, tiu_info1
+
+def get_tiu_info(monitor_info, reg_info):
+    _reg_info = reg_info
+    reg_info = reg_info.reg
+    tiu_info0, tiu_info1 = dict(), dict()
+    for key, value in dict(reg_info).items():
+        tiu_info1[f"des_{key}"] = value
+
+    tiu_info0["Function Name"] = _reg_info.op_name
+    tiu_info0["Function Type"] = reg_info.OP_NAME
+    tiu_info0["Start Cycle"] = monitor_info.inst_start_time
+    tiu_info0["End Cycle"] = monitor_info.inst_end_time
+    tiu_info0["Cmd Id"] = monitor_info.inst_id + 1
+    tiu_info0["Asic Cycle"] = monitor_info.inst_end_time - \
+        monitor_info.inst_start_time + 1
+    tiu_info0["Engine Id"] = 0
+
+    tiu_info0["Alg Ops"] = _reg_info.ops(False)
+    tiu_info0["uArch Ops"] = _reg_info.ops(True)
+    if tiu_info0["uArch Ops"] == 0:
+        tiu_info0["uArch Rate"] = "0.0%"
+    else:
+        tiu_info0["uArch Rate"] = "{:.1%}".format(
+            tiu_info0["Alg Ops"]/tiu_info0["uArch Ops"])
+    tiu_info0["Alg Cycle"] = _reg_info.alg_cycle(tiu_info0["Alg Ops"])
+    return tiu_info0, tiu_info1
+
+def getTiuFunctionName(cmd_type, cmd_special_function):
+    tiuFunctionNameDict = {
+        # conv
+        0: "conv",
+        (0, 0): 'conv', (0, 1): 'conv_normal', (0, 2): 'conv_tf32',
+        # depthwise or pooling
+        1: "dw/pool",
+        (1, 0): 'depthwise', (1, 1): 'avg pooling', (1, 3): 'min pooling',(1, 4): 'max pooling',
+        (1, 5): 'ROI depthwise',(1, 6): 'ROI avg pooling',(1, 7): 'ROI max pooling',(1, 8): 'ROI min pooling',
+        # matrix multiply && matrix multiply2
+        2: "mm/mm2",
+        (2, 0): 'MM_NORMAL', (2, 4): 'MM2_NN', (2, 5): 'MM2_NT', (2, 6): 'MM2_TT',
+        (2, 7): 'MM_NN_TF32', (2, 8): 'MM_NT_TF32',  (2, 9): 'MM_TT_TF32',
+        # arithmetic && SEG
+        3: "arith/SEG",
+        (3, 0): 'mul', (3, 1): 'not', (3, 2): 'add', (3, 3): 'sub', (3, 4): 'max', (3, 5): 'min',
+        (3, 6): 'logic_shift', (3, 7): 'and', (3, 8): 'or', (3, 9): 'xor', (3, 10): 'select_great',
+        (3, 11): 'select_equal', (3, 12): 'div', (3, 13): 'select_less', (3, 14): 'data_convert',
+        (3, 15): 'add_satu', (3, 16): 'sub_satu', (3, 18): 'mac', (3, 19): 'copy', (3, 20): 'mul_satu',
+        (3, 21): 'arith shift', (3, 22): 'rotate shift', (3, 23): 'mulDHR [N]', (3, 26): 'ABS',
+        (3, 27): 'FSUBABS', (3, 28): 'copy_mb [N]', (3, 29): 'get_first_one', (3, 30): 'get_first_zero',
+        # RQ && DQ
+        4: "RQ/DQ",
+        (4, 0): 'RQ_0', (4, 1): 'RQ_1', (4, 3): 'DQ_0', (4, 4): 'DQ_1',
+        # TRANS && BC
+        5: "TRANS/BC",
+        (5, 0): 'C_W_transpose', (5, 1): 'W_C_transpose', (5, 2): 'lane_copy', (5, 3): 'lane_broad',
+        (5, 4): 'static_broad', (5, 5): 'static_distribute',
+        # scatter_gather && scatter_gather_line
+        6: "gather/scatter",
+        (6, 0): 'PL_gather_d1coor', (6, 1): 'PL_gather_d2coor', (6, 2): 'PL_gather_rec [N]',
+        (6, 3): 'PL_scatter_d1coor', (6, 4): 'PL_scatter_d2coor',
+        (6, 5): 'PE_S_gather_d1coor', (6, 6): 'PE_S_scatter_d1coor', (6, 7): 'PE_M_gather_d1coor [N]',
+        (6, 8): 'PE_S_mask_select', (6, 9): 'PE_S_nonzero', (6, 10): 'PE_S_scatter_pp_d1coor [N]',
+        (6, 13): 'PE_S_gather_hzd', (6, 14): 'PE_S_scatter_hzd', (6, 15): 'PE_S_mask_selhzd',
+        (6, 16): 'PE_S_nonzero_hzd', (6, 17): 'PE_S_gather_line', (6, 18): 'PE_S_scatter_line',
+        # linear_arithmetic
+        7: 'linear_arithmetic',
+        (7, 0): 'linear_mul', (7, 1): 'linear_not', (7, 2): 'linear_add', (7, 3): 'linear_sub',
+        (7, 4): 'linear_max', (7, 5): 'linear_min', (7, 6): 'linear_logic_shift', (7, 7): 'linear_and',
+        (7, 8): 'linear_or', (7, 9): 'linear_xor', (7, 10): 'linear_select_great',
+        (7, 11): 'linear_select_equal', (7, 12): 'linear_div', (7, 13): 'linear_select_less',
+        (7, 14): 'linear_data_convert', (7, 15): 'linear_add_satu', (7, 16): 'linear_sub_satu',
+        (7, 17): 'linear_clamp', (7, 18): 'linear_mac', (7, 19): 'linear_copy',(7, 20): 'linear_mul_satu',
+        # rand_gen
+        8: "rand_gen",
+        (8, 0): 'prng ', (8, 1): 'prng with intial seed', (8, 2): ':prng with loaded states',
+        # special_function
+        9: 'md/sfu',
+        (9, 12): 'tailor_4x', (9, 13): 'tailor', (9, 15): 'normalize', (9, 17): 'rsqrt',
+        # fused_linear
+        10: 'md_linear',
+        (10, 1): 'mac', (10, 20): '(a+b)^2', (10, 21): '(a-b)^2',
+        # SYS_TR_WR
+        12: 'WR_IMM',
+        (12, 0): 'WR_IMM',
+        # fused_cmpare
+        13: 'fused_cmpare',
+        (13, 22): 'CMP_gt and CMP_sel_gt', (13, 23): 'CMP_sel_gt', (13, 24): 'CMP_sel_eq',
+        (13, 25): 'CMP_lt and CMP_sel_lt', (13, 26): 'CMP_sel_lt', (13, 27): 'CMP_srch_bin',
+        # vector correlation
+        14: 'vector_correlation',
+        (14, 0): 'vc_mul',  (14, 2): 'vc_add', (14, 3): 'vc_sub', (14, 4): 'vc_max',
+        (14, 5): 'vc_min',  (14, 7): 'vc_and', (14, 8): 'vc_or', (14, 9): 'xor',
+        (14, 10): 'select_great', (14, 11): 'select_equal', (14, 12): 'div', (14, 13): 'select_less',
+        (14, 15): 'add_satu', (14, 16): 'sub_satu', (14, 20): 'mul_satu', (14, 23): 'mulDHR',
+        # system
+        15: 'sys',
+        (15, 0): 'intr barrier[N]', (15, 1): 'spb', (15, 2): 'swr', (15, 3): 'swr_from_lmem',
+        (15, 4): 'swr_collect_from_lmem', (15, 5): 'ata barrier[N]',
+        (15, 8): 'send_msg', (15, 9): 'wait_msg', (15, 10): 'sys_fork', (15, 11): 'sys_join',
+        (15, 12): 'sys_exit', (15, 13): 'rand_seed', (15, 30): 'nop', (15, 31): 'end',
+        31: 'unknown',
+        (31, 0): 'unknown'
+    }
+    functionType = tiuFunctionNameDict.get((cmd_type), f'cmd_type_{cmd_type}')
+    functinName = tiuFunctionNameDict.get((cmd_type, cmd_special_function),  f"{functionType}_{cmd_special_function}")
+    return functionType, functinName
+
+def getDmaFunctionName(cmd_type, cmd_special_function, direction):
+    dmaFunctionNameDict = {
+        (0, 0): 'DMA_tensor', (0, 1): 'NC trans', (0, 2): 'collect', (0, 3): 'broadcast', (0, 4): 'distribute', (0, 5): 'lmem 4 bank copy', (0, 6): 'lmem 4 bank broadcast',
+        (1, 0): 'DMA_matrix', (1, 1): 'matrix transpose',
+        (2, 0): 'DMA_masked_select', (2, 1): 'ncw mode',
+        (3, 0): 'DMA_general', (3, 1): 'broadcast',
+        (4, 0): 'DMA_cw transpose',(4, 1): 'DMA_cw transpose',(4, 5): 'DMA_cw transpose',
+        (5, 0): 'DMA_nonzero',
+        (6, 0): 'sys', (6, 1): 'nop', (6, 2): 'sys_tr_wr', (6, 3): 'sys_send', (6, 4): 'sys_wait',
+        (7, 0): 'DMA_gather',
+        (8, 0): 'DMA_scatter',(8, 1): 'DMA_scatter',
+        (9, 0): 'DMA_reverse', (9, 1): 'h reverse', (9, 2): 'c reverse', (9, 3): 'n reverse',
+        (10, 0): 'DMA_compress',
+        (11, 0): 'DMA_decompress',
+        (12, 0): 'DMA_lossy_compress',
+        (13, 0): 'DMA_lossy_decompress',
+        (14, 0): 'DMA_randmask',
+        (15, 0): 'DMA_transfer',
+        (31, 0): "unknown",
+    }
+    functionType = dmaFunctionNameDict[(cmd_type, 0)]
+    direction_dict = {
+        "DDR->DDR": "Ld",
+        "DDR->LMEM": "Ld",
+        "LMEM->DDR": "St",
+        "LMEM->LMEM": "Mv"
+    }
+    functinName = dmaFunctionNameDict.get((cmd_type, cmd_special_function), functionType)
+    if functionType != "unknown" and cmd_special_function == 0 and cmd_type <= 1:
+        functinName = "tensor{}".format(direction_dict.get(direction, ""))
+
+    return functionType, functinName
+
+def getCdmaFunctionName(cmd_type, cmd_special_function, no_use):
+    cdmaFunctionNameDict = {
+        # DMA_send
+        0: "send",
+        (0, 0): 'send',
+        # DMA_read
+        1: "read",
+        (1, 0): 'read',
+        # DMA_write
+        2: "write",
+        (2, 0): 'write',
+        # DMA_general
+        3: "general",
+        (3, 0): 'general',
+        # DMA_receive_tensor
+        4: "recevive",
+        (4, 0): 'recevive',
+        # DMA_lossy_compress
+        5: "lossy_compress",
+        (5, 0): 'lossy_compress',
+        # DMA_lossy_decompress
+        6: "lossy_decompress",
+        (6, 0): 'lossy_decompress',
+        # DMA_sys
+        7: 'sys',
+        (7, 0): 'end', (7, 1): 'nop', (7, 2): 'sys_tr_wr', (7, 3): 'sys_msg_tx_send',
+        (7, 4): 'sys_msg_tx_wait', (7, 5): 'sys_msg_rx_send', (7, 6): 'sys_msg_rx_wait',
+        # DMA_tcp_send
+        8: "tcp_send",
+        (8, 0): 'tcp_send ',
+        # DMA_tcp_receive
+        9: 'tcp_receive',
+        (9, 0): 'tcp_receive',
+        # fused_linear
+        31: 'unknown',
+        (31, 0): 'unknown'
+    }
+    functionType = cdmaFunctionNameDict.get((cmd_type), f'cmd_type_{cmd_type}')
+    functinName = cdmaFunctionNameDict.get((cmd_type, cmd_special_function),  f"{functionType}_{cmd_special_function}")
+    return functionType, functinName
+
+def rvt_cmdid_walkaround(tiu, gdma, tiu_cmd_id, gdma_cmd_id):
+    if rvt_walkaround and tiu_cmd_id == rvt_max_id:
+        tiu.append(FixedItemWrapper(type=DynRecordType.NODE_SET.value,
+                                    engine=EngineType.BD.value,
+                                    des_tsk_typ=tiu_swr["des_tsk_type"],
+                                    des_tsk_eu_typ=tiu_swr["des_tsk_eu_typ"],
+                                    inst_id=tiu_cmd_id, extra_info=0))
+        gdma.append(FixedItemWrapper(type=DynRecordType.NODE_SET.value,
+                                    engine=EngineType.GDMA.value,
+                                    des_tsk_typ=dma_trwr["des_tsk_type"],
+                                    des_tsk_eu_typ=dma_trwr["des_tsk_eu_typ"],
+                                    inst_id=gdma_cmd_id, extra_info=0))
+        tiu_cmd_id, gdma_cmd_id = 0, 0
+    return tiu_cmd_id, gdma_cmd_id
+
+def show_arch_info():
+    print("AKSV")
