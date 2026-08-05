@@ -31,6 +31,23 @@
 | ATPG | Automatic Test Pattern Generation | 自动测试向量生成 |
 | BIST | Built-In Self-Test | 内建自测试 |
 | Scan | Scan Chain | 扫描链，DFT 主要结构 |
+| CDC | Clock Domain Crossing | 时钟域跨越，信号从一个时钟域进入另一个时钟域 |
+| RDC | Reset Domain Crossing | 复位域跨越，异步复位释放不同步导致的冒险 |
+| MTBF | Mean Time Between Failures | 平均故障间隔时间，衡量同步器可靠性 |
+| SVA | SystemVerilog Assertions | SystemVerilog 断言，描述电路性质用于形式验证与仿真 |
+| LEC | Logic Equivalence Check | 逻辑等价性检查，证明两版网表功能一致 |
+| GLS | Gate-Level Simulation | 门级仿真，对综合后网表跑激励验证功能与时序 |
+| SDF | Standard Delay Format | 标准延迟格式，反标到网表供 GLS 用 |
+| UPF | Unified Power Format | 统一功耗格式，描述电源意图（电源域/隔离/保持） |
+| CPF | Common Power Format | 通用功耗格式，UPF 的另一格式 |
+| PVT | Process / Voltage / Temperature | 工艺/电压/温度角，综合与 STA 的多角条件 |
+| OCV | On-Chip Variation | 片上工艺变化，同一晶圆内器件参数差异 |
+| AOCV | Advanced OCV | 进阶 OCV，按路径深度 derate |
+| POCV | Parametric OCV | 参数化 OCV，用正态分布建模延迟变化 |
+| GTECH | Generic Technology | 工艺无关网表，综合翻译阶段的中间产物 |
+| VIP | Verification IP | 验证 IP，提供协议级激励与检查 |
+| UVC | UVM Component | UVM 可复用组件，与总线解耦的验证单元 |
+| JTAG | Joint Test Action Group (IEEE 1149.1) | 边界扫描标准，板级焊接连通性测试与调试端口 |
 
 ### 1.1 前置知识
 
@@ -100,6 +117,8 @@ flowchart LR
 ---
 
 ## 2. RTL 编码：用语言描述电路
+
+> 上一章把前端定位为"用代码描述电路、用验证证明它对"的四活动——RTL 编码、功能验证、逻辑综合、DFT。一个自然的问题是：这些活动里哪一个是根？本章从 RTL 编码讲起——先说清 RTL 的本质是描述电路而非执行程序，再列编码纪律，用一个跨时钟域异步 FIFO 的完整实现把纪律落到代码上，最后展开 SoC 里最容易翻车的跨时钟域（CDC）问题与同步器/静态检查。
 
 ### 2.1 RTL 的本质
 
@@ -171,9 +190,171 @@ endmodule
 
 > **核心要点**：RTL 编码的核心纪律是"可综合、可验证、可时序分析"。每一段 RTL 都要在脑子里想清楚对应的电路、它跨不跨时钟域、复位策略是否一致。**写 RTL 最大的坑是把硬件描述当成软件写**——结果综合出的电路充满了 latch、组合环路、跨域冒险，验证阶段才发现根本没法调。
 
+### 2.4 跨时钟域：RTL 最容易翻车的环节
+
+> 上两节讲了 RTL 的本质与编码纪律，纪律表里有一条"时钟域显式"——但它一笔带过了 SoC 里最容易翻车、流片后最难修的一类问题。本节专门展开跨时钟域（CDC，Clock Domain Crossing）：先讲亚稳态的物理本质，再讲同步器为什么是两级、异步 FIFO 的完整实现，最后讲 CDC 静态检查工具与复位域跨越（RDC）。
+
+#### 2.4.1 亚稳态：触发器的物理极限
+
+触发器采样时，要求输入数据在**建立时间窗口（setup window）**内稳定。如果数据恰好在窗口内翻转（跨时钟域时这是必然事件，因为两个时钟异步），触发器内部的双稳态节点会停在**中间电平**——既不是 0 也不是 1，需要一段不确定时间才能随机收敛到某个逻辑值。这段时间内，下游所有依赖这个信号的逻辑都处于"猜"的状态。
+
+**亚稳态不是"偶尔坏一下"**——它是物理必然：只要两个时钟异步，写端某次翻转落在读端时钟采样窗口内的概率非零，大量数据持续跨越时，亚稳态事件**必然发生**。工程上用平均故障间隔时间（MTBF）量化同步器的可靠性：
+
+$$\text{MTBF} = \frac{e^{t_{\text{resolve}}/\tau}}{f_{\text{clk}} \cdot f_{\text{data}} \cdot W \cdot T_{\text{clk}}}$$
+
+- $t_{\text{resolve}}$：留给亚稳态收敛的时间（一个时钟周期减去触发器建立时间与组合逻辑延迟）
+- $\tau$：触发器内部时间常数，与工艺相关（先进工艺更敏感）
+- $f_{\text{clk}}$、$f_{\text{data}}$：采样时钟与数据翻转频率
+- $W$：亚稳态窗口宽度，近似等于 setup+hold 时间
+- $T_{\text{clk}}$：时钟周期
+
+**数值直觉**：单级采样（没有同步器），2GHz 时钟 × 1GHz 数据翻转，$t_{\text{resolve}}$ 几乎为 0，MTBF 可能跌到秒级——每秒就亚稳态一次，芯片根本没法用。加一级同步器，$t_{\text{resolve}}$ 变成一个完整周期（约 0.5ns），MTBF 升到年级；加两级同步器，$t_{\text{resolve}}$ 变成两个周期，MTBF 升到**千年级**——这才是工程可接受的。
+
+#### 2.4.2 两级同步器：为什么是两级
+
+把一个单 bit 信号从 A 域引入 B 域，最低限度的做法是串两个触发器：
+
+```verilog
+// 两级同步器：把 A 域的 data_a 同步到 B 域的 clk_b
+module sync_2ff (
+    input  logic clk_b,      // 目标域时钟
+    input  logic rst_n,      // 同步到 clk_b 域的复位
+    input  logic data_a,     // A 域来的异步信号
+    output logic data_b      // 同步后的 B 域信号
+);
+    (* ASYNC_REG = "TRUE" *)   // 综合属性：告知工具这两级是同步器
+    logic meta, stable;        // meta 可能亚稳态，stable 已收敛
+
+    always_ff @(posedge clk_b) begin
+        if (!rst_n) begin
+            meta   <= 1'b0;
+            stable <= 1'b0;
+        end else begin
+            meta   <= data_a;  // 第一级：可能采到亚稳态
+            stable <= meta;    // 第二级：留给亚稳态一个周期收敛
+        end
+    end
+
+    assign data_b = stable;
+endmodule
+```
+
+这段代码体现了三个设计决策：**(1) 两级而非一级**——第一级 `meta` 采到亚稳态后，给它一个完整 `clk_b` 周期收敛，第二级 `stable` 才输出稳定值，对应 MTBF 公式里 $t_{\text{resolve}}$ 翻倍；**(2) 两级而非三级**——对于 1–2GHz 服务器级 SoC，两级已把 MTBF 推到可接受量级，第三级徒增延迟不增可靠性，只有极高可靠性需求（航天、车规）才上三级；**(3) `ASYNC_REG` 属性**——告知综合与布局工具"这两级是同步器"，禁止优化、禁止移位、强制紧挨着放置，最大化收敛时间窗口。
+
+> **核心要点**：同步器的本质是"用时间换可靠性"——把亚稳态收敛时间从 0 拉到一个（两级）或两个（三级）时钟周期。两级是工程默认值，背后的算账是 MTBF：单级秒级失效、两级千年失效。**同步器位置也是后端约束**——两触发器必须物理相邻（`ASYNC_REG`），否则布线延迟会吃掉留给亚稳态的收敛时间，这是后端工程师对前端 CDC 报告的反馈点。
+
+#### 2.4.3 异步 FIFO 的完整实现
+
+把 §2.3 那个"省略实现"的 async FIFO 补全。核心难点是**跨时钟域传递多 bit 指针**：直接传二进制指针会因多位同时翻转被采样到中间态。解法是格雷码指针 + 二级同步——每次只有一位翻转，被采样到的任何中间态都是合法的相邻值。
+
+```verilog
+// 跨时钟域异步 FIFO（写域 → 读域）
+module async_fifo #(
+    parameter DW = 64,    // 数据位宽
+    parameter AW = 8      // 地址位宽，深度 256
+) (
+    // —— 写域 ——
+    input  logic         wclk,
+    input  logic         wrst_n,
+    input  logic         winc,
+    input  logic [DW-1:0] wdata,
+    output logic         wfull,
+    // —— 读域 ——
+    input  logic         rclk,
+    input  logic         rrst_n,
+    input  logic         rinc,
+    output logic [DW-1:0] rdata,
+    output logic         rempty
+);
+    // 双口 RAM：写域写、读域读，真双口
+    logic [DW-1:0] mem [0:2**AW-1];
+
+    // 写指针：二进制 + 格雷码各一份
+    logic [AW:0] wbin, wgray;        // AW+1 位：多一位区分"满"与"空"
+    logic [AW:0] wgray_sync;          // 读域来的读指针（已同步到写域）
+
+    // 读指针：二进制 + 格雷码
+    logic [AW:0] rbin, rgray;
+    logic [AW:0] rgray_sync;          // 写域来的写指针（已同步到读域）
+
+    // —— 写域逻辑 ——
+    always_ff @(posedge wclk or negedge wrst_n) begin
+        if (!wrst_n) begin
+            wbin  <= '0;
+            wgray <= '0;
+        end else begin
+            // 写数据进 RAM（用写前地址）
+            if (winc && !wfull)
+                mem[wbin[AW-1:0]] <= wdata;
+            // 二进制 +1
+            wbin <= wbin + 1'b1;
+            // 二进制 → 格雷码：最高位异或次高位，逐位传递
+            //   这样保证相邻值只差一位
+            wgray <= wbin ^ (wbin >> 1);
+        end
+    end
+
+    // 读指针格雷码同步到写域：两级同步器
+    sync_2ff #(.AW(AW+1)) sync_r2w (
+        .clk_b(wclk), .rst_n(wrst_n), .data_a(rgray), .data_b(wgray_sync)
+    );
+
+    // 满判断：写指针格雷码 == {~读指针最高两位, 读指针其余位}
+    //   （格雷码的"满"条件，不能用简单相等，因为多了一位）
+    assign wfull = (wgray == {~wgray_sync[AW:AW-1], wgray_sync[AW-2:0]});
+
+    // —— 读域逻辑 ——
+    always_ff @(posedge rclk or negedge rrst_n) begin
+        if (!rrst_n) begin
+            rbin  <= '0;
+            rgray <= '0;
+        end else begin
+            // 格雷码 → 二进制：高位逐级异或还原
+            rbin[AW] = rgray[AW];
+            for (int i = AW-1; i >= 0; i--)
+                rbin[i] = rgray[i] ^ rbin[i+1];
+            if (rinc && !rempty)
+                rbin <= rbin + 1'b1;
+            rgray <= rbin ^ (rbin >> 1);
+        end
+    end
+
+    // 写指针格雷码同步到读域
+    sync_2ff #(.AW(AW+1)) sync_w2r (
+        .clk_b(rclk), .rst_n(rrst_n), .data_a(wgray), .data_b(rgray_sync)
+    );
+
+    // 空判断：读指针格雷码 == 同步过来的写指针格雷码
+    assign rempty = (rgray == rgray_sync);
+
+    // 读数据：地址对齐后直接读 RAM（同步读）
+    assign rdata = mem[rbin[AW-1:0]];
+endmodule
+```
+
+这段代码体现了三个关键设计决策：
+
+1. **格雷码指针**：写/读指针都用格雷码跨域传递，因为二进制 `011→100` 有三位同时翻转，被采样到中间态会误判满/空；格雷码每次只翻转一位，被采样到的任何中间态都是合法的相邻值，最坏只是"晚一拍"而非"错位"。
+2. **指针多一位（`AW+1`）**：`depth=256` 用 8 位地址，但指针用 9 位——靠多出的最高位区分"满"与"空"。空时读写指针相等，满时也是相等但最高位不同，避免只看低位时无法区分。
+3. **真双口 RAM + 同步读**：RAM 是写域写、读域读的真双口；读数据用 `rbin`（已还原的二进制）直接寻址，是同步读（输出寄存器在 RAM 内）——这避免了组合逻辑跨域。
+
+> **如何读这段代码**：关注三条跨域路径——(1) `rgray` 经 `sync_r2w` 进写域参与满判断；(2) `wgray` 经 `sync_w2r` 进读域参与空判断；(3) 双口 RAM 的写地址用写域时钟、读地址用读域时钟，数据本身不需要同步（RAM 的双口保证）。**同步器只同步指针，不同步数据**——数据靠 FIFO 深度与满/空标志保证不溢出。
+
+#### 2.4.4 CDC 静态检查工具与 RDC
+
+写对同步器只是第一步——大型 SoC 有上万条跨域路径，人工审查不现实，必须靠静态检查工具。
+
+- **CDC 检查工具**：代表是 **SpyGlass-CDC**（Synopsys，原 NewCxCDC）和 **0-in**（Siemens）。它们静态扫描 RTL，识别所有跨时钟域路径，检查每条是否：(1) 有同步器、(2) 同步器位置正确（紧挨着、无组合逻辑中间插入）、(3) 多 bit 信号是否走了格雷码/握手/FIFO（不能简单过同步器）。
+- **常见 CDC 报告类**：`unconstrained_signal`（跨域信号无同步器，最严重）、`multi_driver`（多驱动）、`re-convergence`（两路同步后再汇聚，可能因延迟不同产生毛刺）。
+- **RDC（复位域跨越）**：CDC 的姐妹问题。异步复位释放时刻在不同复位域间不同步，会让某些触发器先出来、某些还在复位，导致下游逻辑采样到中间态。解法与 CDC 类似——复位释放信号也要过同步器（复位同步器），RDC 工具（SpyGlass-RDC）静态检查所有复位域跨越。
+
+> **核心要点（CDC 资深视角）**：CDC 是"流片后不可修"问题的最大来源——metal ECO 改不了跨域逻辑结构，只能改金属层连线。因此 CDC 检查是综合前的**强制门禁**：CDC 报告不清零不进综合。三个资深纪律：**(1) 单 bit 过两级同步器、多 bit 走格雷码/FIFO/握手，绝不直接跨**；**(2) 同步器用 `ASYNC_REG` 标注，告知后端紧挨着放**；**(3) 复位释放也要同步，RDC 与 CDC 同等优先级**。**CDC 报告里的 `unconstrained_signal` 一条都不能留**——它是流片后偶发挂死的直接嫌疑人。
+
 ---
 
 ## 3. 功能验证：证明 RTL 是对的
+
+> 上一章讲了 RTL 编码：用可综合、可时序分析的纪律把电路描述出来，并把跨时钟域 FIFO 这类易翻车点落到代码。一个自然的问题是：代码写完了怎么知道它对？本章用功能验证回答——先按层次把验证拆成单元/组件/子系统/系统/形式五级，再展开 UVM 这套行业事实标准（参考模型/约束随机/可重用三件事），然后讲覆盖率怎么量化完备度、形式验证怎么用数学证明关键性质，最后说硬件加速验证（Emulation/FPGA 原型）为什么是大型 SoC 的强制选项。
 
 验证是前端耗时最长的活动，常占前端人力 60% 以上。它的目标只有一个：**在流片前把 bug 全找出来**——因为流片后修 bug 的成本是流片前的 100 倍以上。
 
@@ -222,6 +403,69 @@ flowchart LR
 
 > **核心要点（UVM 资深视角）**：UVM 不是"套模板写组件"，而是一个**分层、可重用、以参考模型为核心**的验证体系。判断一个验证环境的好坏，问三个问题：**参考模型独立于 RTL 吗？约束是否驱动了覆盖率收敛？换一层集成时环境复用率有多高？** 三个都答"是"，才是生产级环境。
 
+#### 3.2.1 UVM 最小代码骨架：可重用是设计出来的
+
+上面说"可重用是设计出来的"，下面用最小骨架代码佐证。一个 `uvm_sequence_item` 与 `monitor` 的最简实现：
+
+```systemverilog
+// —— Sequence Item：事务级激励的载体 ——
+class req_item extends uvm_sequence_item;
+    rand bit [31:0] addr;        // 随机地址
+    rand bit [31:0] data;        // 随机数据
+    rand bit        rw;          // 0=读 1=写
+
+    // 约束 1：写操作时数据不能全 0（避免掩盖 bug）
+    constraint c_data_nonzero { rw == 1 -> data != 0; }
+    // 约束 2：地址必须按字对齐（协议约束）
+    constraint c_addr_align    { addr[1:0] == 2'b00; }
+
+    `uvm_object_utils(req_item)   // 工厂注册 + 宏展开
+
+    function new(string name = "req_item");
+        super.new(name);
+    endfunction
+endclass
+
+// —— Sequence：生成受约束随机激励 ——
+class rand_seq extends uvm_sequence #(req_item);
+    `uvm_object_utils(rand_seq)
+    function new(string name = "rand_seq"); super.new(name); endfunction
+
+    task body();
+        req_item req;
+        repeat (100) begin
+            `uvm_do_with(req, { rw dist {0:=40, 1:=60}; })  // 60% 写 40% 读
+        end
+    endtask
+endclass
+
+// —— Monitor：观测总线、广播给 Scoreboard ——
+class bus_monitor extends uvm_monitor;
+    `uvm_component_utils(bus_monitor)
+    uvm_analysis_port #(req_item) ap;  // 分析端口：把观测到的事务广播出去
+
+    function new(string name, uvm_component parent);
+        super.new(name, parent);
+    endfunction
+
+    function void build_phase(uvm_phase phase);
+        ap = new("ap", this);
+    endfunction
+
+    task run_phase(uvm_phase phase);
+        req_item tr;
+        forever begin
+            // 从虚拟接口采一个事务（简化：省略接口采样逻辑）
+            tr = req_item::type_id::create("tr");
+            // ... 采 addr/data/rw ...
+            ap.write(tr);   // 广播给 Scoreboard
+        end
+    endtask
+endclass
+```
+
+这段代码体现了三个设计决策：**(1) 约束随机（`rand` + `constraint`）**——激励不是"乱跑"，而是被约束限制在合法空间内（对齐、非零），约束质量决定覆盖率收敛速度；**(2) `uvm_analysis_port` 解耦**——Monitor 广播事务，Scoreboard 订阅，两者不直接调用，这让 Monitor 能被任何 Scoreboard 复用；**(3) 工厂注册（`uvm_object_utils`）**——通过类型 ID 创建对象，允许在子类里覆盖实现，这是"环境重写一次"被规避的底层机制。**"可重用"就是这三件具体的事，不是抽象口号。**
+
 ### 3.3 覆盖率：验证到底做完没有
 
 覆盖率是验证完备度的量化指标，分两类：
@@ -248,6 +492,36 @@ flowchart LR
 - **等价性检查（Equivalence Check）**：证明综合前 RTL 与综合后网表功能一致——这比仿真快且完备，是综合后必做的验证。
 
 形式验证不用写测试用例，但要把性质用断言（SVA，SystemVerilog Assertions）精确描述出来。它的优势是**完备性**——仿真跑一亿个用例也不能保证第一亿零一个不出错，形式验证能证明"所有可能输入下性质都成立"。
+
+#### 3.4.1 SVA 断言：形式验证的输入语言
+
+断言（Assertion）是 SVA 用来描述电路性质的语言。它分两类，且在形式验证里承担不同角色：
+
+```systemverilog
+// —— 并发断言：在时钟边沿检查性质 ——
+// 性质 1：FIFO 不能同时读空和写满（互斥）
+assert property (@(posedge clk) disable iff (!rst_n)
+    !(wfull && rempty));
+
+// 性质 2：写满时写使能必须被拒绝（winc 不能导致溢出）
+assert property (@(posedge clk) disable iff (!rst_n)
+    wfull |-> !winc_next);   // |-> 非重叠蕴含：wfull 当拍看下一拍 winc
+
+// —— 形式验证的约束（assume）：限定输入空间 ——
+// 告诉形式工具"外部输入永远遵守这个约束"，工具据此剪枝
+assume property (@(posedge clk) disable iff (!rst_n)
+    winc |-> !wfull);   // 测试台保证：满时不写
+
+// —— 覆盖点（cover）：度量性质被触发的情况 ——
+cover property (@(posedge clk) disable iff (!rst_n)
+    wfull && rinc);      // 关注：满时还在读（边界场景）
+```
+
+这段代码体现了三个 SVA 设计决策：**(1) `assert`（证明性质）**——工具要证明这条性质在所有可能输入下永真，证明不了就报"反例"（counterexample），给出能违反性质的具体激励；**(2) `assume`（约束输入）**——告诉工具"外部环境会遵守这个约束"，工具据此剪掉不可能的输入分支，缩小状态空间——**约束写错会漏 bug**（假设太强，工具在缩小的空间里证明通过，但真实输入可能违反假设）；**(3) `cover`（度量覆盖）**——形式验证也能收集覆盖点，记录某条性质在证明过程中是否被触发，帮助判断"这条断言是否真的在干活"。
+
+**立即断言 vs 并发断言**：立即断言（`assert (...)` 不带 `property`）像 `if`，在过程块里立即执行；并发断言（`assert property (...)`）在时钟沿连续求值，能描述**时序性质**（如"满后两拍内必须有读"）。形式验证主要用并发断言。
+
+> **核心要点（SVA 资深视角）**：断言质量 = 形式验证价值。三个写断言的纪律：**(1) 性质要抓"不变量"而非"当前值"**——"FIFO 不能同时满空"是不变量，"当前 count=5"不是；**(2) `assume` 与 `assert` 要严格区分**——`assume` 是给工具的边界条件，`assert` 是要证明的结论，写反了会让工具"证明"一个被你假设出来的性质；**(3) 每条 `assert` 配一个 `cover`**——没有覆盖的断言是死代码，形式工具可能根本没碰到它。一条好的断言，能替代上千条随机用例。
 
 **资深经验：形式验证该用在哪、不该用在哪**——这是它与仿真互补而不是替代的关键：
 
@@ -388,7 +662,28 @@ flowchart LR
 
 ## 4. 逻辑综合：RTL 转门级网表
 
+> 上一章讲了验证：用覆盖率量化证明 RTL 行为正确。一个自然的问题是：验证通过的 RTL 怎么变成 Foundry 能制造的门级网表？本章用综合来回答——先把 RTL 做静态 Lint 体检，再用综合工具翻译/映射/优化成门级网表，用 SDC 约束贯穿时序，最后把电源意图用 UPF 交给后端。综合质量 70% 取决于约束。
+
 RTL 是行为描述，Foundry 不认——它只认门级网表（用哪些标准单元、怎么连）。逻辑综合完成这个翻译。
+
+### 4.0 RTL Lint：综合前的代码体检
+
+> 在 RTL 进综合工具之前，先过一道静态体检——Lint。它在零成本（不跑综合、不跑仿真）的前提下，抓出 RTL 里综合后会爆或时序无法分析的结构问题，是综合前的强制门禁。
+
+Lint 工具（代表：**SpyGlass-Lint**、**Siemens Precision**）静态扫描 RTL，不跑激励，靠规则匹配找问题。检查类与典型问题：
+
+| 检查类 | 典型问题 | 为什么危险 |
+|--------|----------|------------|
+| **组合环路** | 组合逻辑形成反馈环 | 时序无法分析，综合后振荡 |
+| **锁存器（latch）** | `if` 不配 `else` 且不在 `always_ff` | 综合出意外 latch，时序难收、静态漏电 |
+| **X 传播** | 未复位寄存器上游传播 | 仿真 X 被当成"任意值"，硅后变成具体 0/1，行为偏离 |
+| **未驱动/多驱动** | 信号无驱动或多个驱动 | 综合报错或选错驱动 |
+| **位宽不匹配** | 赋值左右位宽不一致 | 静默截断或符号扩展，行为偏离 |
+| **case 不全** | `case` 无 `default` | 综合出 latch 或优先级编码器，面积/时序恶化 |
+
+**工程纪律**：Lint 报告分严重级（`error`/`warning`/`info`），**`error` 级不清零不进综合**。典型流程是 CI（持续集成）里每晚跑一次 Lint，新提交引入的 `error` 直接阻断合并——这是"shift-left"在前端的落地：把问题挡在综合前，比综合后或硅后发现便宜几个数量级。
+
+> **核心要点**：Lint 是综合前的**零成本门禁**——它不跑综合、不跑仿真，只做规则匹配，几分钟扫完整个 SoC RTL。它的价值不是"找 bug"（找 bug 是验证的活），而是"挡住会让综合爆或时序无法分析的结构问题"。**组合环路、latch、X 传播这三类是 Lint 的必抓项**——它们在仿真里可能"看起来正常"，硅后会变成偶发挂死或行为偏离。
 
 ### 4.1 综合的输入输出
 
@@ -446,9 +741,82 @@ set_multicycle_path 2 -from [get_pins slow_reg/Q]
 
 > **核心要点（综合资深视角）**：综合把 RTL 翻译成门级网表，SDC 是这个翻译的"质量标准"。**综合的质量 70% 取决于 SDC 写得好不好**——时钟定义漏了、虚假路径没标、多周期路径没识别，都会导致时序报告失真。一份好的 SDC 是架构师、前端工程师、后端工程师三方反复评审的产物。而**"约束假通过"比"约束紧导致失败"危险十倍**——前者让问题潜伏到流片后，后者在流片前就能逼你改对。
 
+### 4.4 功耗约束与低功耗设计：RTL 阶段就要埋
+
+> 上节讲了 SDC 约束时序，但现代 SoC 还有一根平行约束线——功耗。功耗意图用 UPF 描述，在 RTL 阶段就要埋下：电源域划分、隔离单元、保持寄存器、时钟门控。这些不是后端才想的事，RTL 编码风格直接决定能省多少功耗。
+
+#### 4.4.1 低功耗 RTL 编码：三件事
+
+RTL 编码风格直接决定综合后能省多少功耗，三个要点：
+
+1. **时钟门控（Clock Gating）**：寄存器没有数据时，时钟不该翻转。现代综合工具能自动插入门控单元（ICG，Integrated Clock Gating），但 RTL 要"配合"——把使能信号放在 `always_ff` 的条件里（`if (enable) ...`），工具才能识别成可门控。**手写门控反而会让工具无法二次优化**，让综合工具做。
+
+```verilog
+// —— RTL 配合自动门控：把 enable 放进 always_ff 条件 ——
+always_ff @(posedge clk) begin
+    if (!rst_n)     data <= '0;
+    else if (en)    data <= next_data;   // en 在这里 → 工具能自动插 ICG
+end
+```
+
+2. **操作数隔离（Operand Isolation）**：某组合逻辑块在空闲时输入不变，但还在翻转——给输入加与门禁制（`enable ? data : '0`），让组合逻辑不翻转。RTL 层面是手动加 `enable` 选通，综合工具插入 isolation cell。
+
+3. **状态保持寄存器（Retention Register）**：电源域可断电时，关键寄存器要能保持状态——用 retention register（特殊触发器，有备用电源脚）。RTL 层面用特定库单元例化，或在 UPF 里声明 retention。
+
+#### 4.4.2 UPF：电源意图的描述语言
+
+UPF（Unified Power Format，IEEE 1801）是描述电源意图的语言，贯穿 RTL → 综合 → 后端。一个最小 UPF 片段：
+
+```tcl
+# —— 创建电源域 ——
+create_power_domain PD_TOP -include_scope
+create_power_domain PD_CPU -include_scope -scope cpu_subsys
+
+# —— 声明供电网络 ——
+create_supply_net VDD     -domain PD_TOP
+create_supply_net VDD_CPU -domain PD_CPU
+create_supply_net VSS     -domain PD_TOP
+
+# —— 隔离单元：CPU 域断电时，信号到 TOP 域要隔离 ——
+set_isolation iso_cpu_out \
+    -domain PD_CPU \
+    -elements {data_out*} \
+    -clamp_value 0 \
+    -source_domain PD_CPU -sink_domain PD_TOP
+
+# —— 保持寄存器：CPU 域断电时保持关键状态 ——
+set_retention ret_cpu \
+    -domain PD_CPU \
+    -elements {state_reg*} \
+    -supply_set VDD_RET
+
+# —— 电源开关：控制 PD_CPU 的上下电 ——
+create_power_switch sw_cpu \
+    -domain PD_CPU \
+    -input_supply_port {in VDD_CPU} \
+    -output_supply_port {out VDD_CPU} \
+    -control_port {ctrl cpu_pwr_en} \
+    -on_state {on cpu_pwr_en}
+```
+
+这段 UPF 体现了四个电源意图决策：**(1) 电源域划分**——哪些逻辑可一起断电（CPU 子系统可断、TOP 常开）；**(2) 隔离（isolation）**——断电域的输出到常开域要加 isolation cell 钳到 0/1，否则断电后输出悬空，常开域采样到 X；**(3) 保持（retention）**——断电时关键寄存器（如 CPU 状态机）要保持，用 retention register（有备用电源脚），醒来继续；**(4) 电源开关（power switch）**——控制域的上下电，开关单元（header/footer）由使能信号控制。**这四类特殊单元（isolation/retention/level shifter/power switch）的综合插入由 UPF 驱动**，RTL 不直接例化，综合工具读 UPF 自动插。
+
+#### 4.4.3 RTL 级功耗估算：硅前就能算账
+
+功耗不用等流片后测——RTL 阶段就能估。工具代表：**SpyGlass-Power**（RTL 级快速估算）、**PrimeTime-PX**（RTL/网表级精确估算）。流程：
+
+1. 读 RTL + UPF + 开关活动文件（SAIF，Switching Activity Interchange Format，从仿真波形导出）
+2. 估算每个寄存器/组合逻辑的翻转率
+3. 算出动态功耗 $P_{\text{dyn}} = \alpha \cdot C \cdot V^2 \cdot f$（$\alpha$ 翻转率、$C$ 负载电容、$V$ 电压、$f$ 频率）+ 静态漏电 $P_{\text{leak}}$
+4. 输出功耗报告，按模块排序找功耗热点
+
+> **核心要点（功耗资深视角）**：低功耗设计不是"后端加几个 cell"，而是**RTL 编码 + UPF 电源意图 + RTL 级估算**三件套的协同。三个资深纪律：**(1) 时钟门控让综合工具自动做，RTL 只需把 `enable` 放进 `always_ff` 条件**；**(2) UPF 在 RTL 阶段就要写，电源域/隔离/保持/开关是架构决策不是后端补丁**；**(3) RTL 级功耗估算用 SAIF 驱动，热点模块早期改 RTL 比后端改省一个数量级**。**UPF 是贯穿前后端的第二根约束线（第一根是 SDC）**，RTL 工程师写 UPF 的水平直接决定能省多少功耗。
+
 ---
 
 ## 5. 静态时序分析 STA：不仿真也查时序
+
+> 上一章讲了逻辑综合：把 RTL 翻译成门级网表，用 SDC 贯穿时序约束、用 UPF 描述电源意图。一个自然的问题是：综合出来的网表时序到底满不满足？跑仿真只能覆盖跑到的那几条路径，怎么知道所有路径都满足？本章用 STA 回答——不用跑激励，遍历所有"发起触发器 → 组合逻辑 → 捕获触发器"路径查 setup/hold，先讲 setup/hold 的物理本质与 Slack 含义，再讲为什么必须多 PVT 角分析，最后讲资深团队怎么读 STA 报告、怎么谈签核余量。
 
 STA（Static Timing Analysis）不用跑激励，靠遍历所有时序路径检查是否满足建立时间（setup）和保持时间（hold）。
 
@@ -496,6 +864,8 @@ Slack < 0：违例，需优化
 ---
 
 ## 6. DFT：给芯片装上"体检接口"
+
+> 上一章讲了 STA：基于 SDC 遍历所有路径查时序，给出综合后网表的时序合同。一个自然的问题是：时序对了，但这颗芯片造出来之后怎么挑出有制造缺陷的坏芯片？本章用 DFT 回答——先讲为什么内部节点无法直接观测所以需要专门测试结构，再展开扫描链/BIST/ATPG 三大结构与 stuck-at/transition 等故障模型，接着讲边界扫描、压缩扫描、LBIST 等进阶结构，最后算清测试时间/覆盖率/性能三本经济账与对固件的实际影响。
 
 DFT（Design for Test）在 RTL/网表里插入专门的测试结构，让芯片制造后能用自动化设备检测制造缺陷（短路/开路/坏单元）。**没有 DFT，造出来的芯片根本无法批量测试**——你不知道哪颗是好的。
 
@@ -567,26 +937,30 @@ DFT 结构对固件工程师也有关联：
 - **BIST 寄存器**：DDR PHY、SRAM 都有 BIST 控制寄存器，固件启动时可能触发一次内存 BIST 自检。
 - **安全启动**：某些 DFT 通路在安全启动下必须禁用，防止攻击者用扫描链读出密钥——这就是"安全与可测性的冲突"，需要专门的"安全 DFT"设计。
 
-> **核心要点**：DFT 不是"可选项"——没有 DFT 的芯片无法量产测试。它通过扫描链把内部触发器变可观测可控，通过 BIST 让存储器自检，通过 ATPG 生成制造测试向量。DFT 也是固件与安全的交集——测试通路既能用来挑坏芯片，也能被攻击者用来读密钥，所以安全设计必须显式禁用测试通路。
+> **核心要点（DFT 与软件）**：DFT 结构对固件有直接触点--JTAG/扫描引脚（IEEE 1149.1）在量产测试与正常工作间复用，固件要正确配置；DDR/SRAM 的 BIST 寄存器启动时可能触发自检；安全启动下必须禁用扫描链防密钥泄露，这是「安全 DFT」的核心要求。这三点让 DFT 与固件、安全三方耦合，不可只当后端结构。
 
 ---
 
 ## 7. 前端冻结与移交
 
+> 上一章讲了 DFT：给网表插上扫描链/BIST/ATPG，让制造缺陷可被量产测试挑出来。一个自然的问题是：四件事都做完了，前端什么时候算"完工"、怎么把成果交给后端？本章用前端冻结（RTL Freeze）与网表移交（Netlist Handoff）这个里程碑来回答——列出冻结的六项硬指标，并说明冻结后仍可变但每次变更都要走 ECO 流程、越接近流片变更成本越高。
+
 前端阶段的里程碑叫"RTL Freeze"（RTL 冻结）或"Netlist Handoff"（网表移交）。标志是：
 
-- [ ] 代码覆盖率与功能覆盖率达标（通常 ≥ 95%）
-- [ ] 关键 bug 全部关闭
-- [ ] 综合无违例或违例可接受
-- [ ] STA 在所有 PVT 角下 setup/hold 满足
-- [ ] DFT 结构插入完成，ATPG 覆盖率达标（通常 stuck-at 覆盖 ≥ 99%）
-- [ ] 等价性检查通过（RTL ↔ 网表）
+- [x] 代码覆盖率与功能覆盖率达标（通常 ≥ 95%）
+- [x] 关键 bug 全部关闭
+- [x] 综合无违例或违例可接受
+- [x] STA 在所有 PVT 角下 setup/hold 满足
+- [x] DFT 结构插入完成，ATPG 覆盖率达标（通常 stuck-at 覆盖 ≥ 99%）
+- [x] 等价性检查通过（RTL ↔ 网表）
 
 冻结后网表交给后端做物理设计。之后 RTL 仍可能因后端反馈或验证新发现 bug 而变更，但每次变更都要走 ECO（Engineering Change Order）流程，重新跑回归——**越接近流片，变更成本越高**。
 
 ---
 
 ## 8. 小结
+
+> 上一章讲了前端冻结：以代码覆盖率、STA、DFT、等价性检查六项硬指标为标志，把网表交给后端。一个自然的问题是：回头看前端这一整段，哪些结论是贯穿始终、必须记住的？本章用一段小结收束——前端四件事（写 RTL、做验证、做综合、插 DFT）里验证是耗时大头、DFT 是量产前提，而不变真理是验证完备度决定流片风险、SDC 正确性决定时序真假。
 
 前端把架构契约变成可验证的网表，四件事：写 RTL、做验证、做综合、插 DFT。其中验证是耗时大头，DFT 是量产前提。
 
@@ -601,17 +975,20 @@ DFT 结构对固件工程师也有关联：
 
 ## 参考资料
 
-- [SystemVerilog IEEE 1800-2017 Standard](https://standards.ieee.org/ieee/1800.1-10368/) — 参考 SV 语法与断言
-- [UVM Reference (Accellera)](https://www.accellera.org/downloads/standards/uvm) — 参考 UVM 方法学
-- [Synopsys Design Compiler / PrimeTime 文档](https://www.synopsys.com/implementation-and-signoff/) — 参考综合与 STA 流程
-- [Siemens Tessent DFT 文档](https://eda.sw.siemens.com/en-US/ic/tessent/) — 参考扫描链/BIST/ATPG
-- [JasperGold Formal Verification](https://www.cadence.com/en_US/home/tools/system-design-and-verification/formal-and-static-verification.html) — 参考形式验证
-- [Cadence Palladium / Protium](https://www.cadence.com/en_US/home/tools/system-design-and-verification/emulation-and-prototyping/palladium.html) — 参考了 §3.5 Emulation 架构（定制处理器/FPGA 流派）、FullVision 调试、编译速度数据
-- [Synopsys ZeBu Server 5 / ZeBu-200](https://www.synopsys.com/verification/emulation-prototyping/emulation/zebu-server.html) — 参考了 §3.5 商用 FPGA 流派、容量/功耗/Transactor 数据
-- [Synopsys HAPS-200 / HAPS 页面](https://www.synopsys.com/verification/emulation-prototyping/prototyping/haps-200.html) — 参考了 §3.5 FPGA 原型容量、TDM 分区、NVIDIA 50 MHz 实测
-- [ZeBu Server 5 规格书（PDF）](https://www.synopsys.com/content/dam/synopsys/verification/technical-papers/zebu-server5-spec-mar2023.pdf) — 参考了 §3.5 容量/功耗/语言支持具体规格
-- [Cadence Protium X3 System Studio Datasheet](https://www.cadence.com/en_US/home/resources/datasheets/protium-x3-system-studio-ds.html) — 参考了 §3.5.3 VP1902/250M 门规格
-- [Palladium Cloud（Cadence 博客）](https://community.cadence.com/cadence_blogs_8/b/breakfast-bytes/posts/cloud-palladium) — 参考了 §3.5.5 采购成本量级、云租用、NVIDIA 仿真 10 个月的案例
-- [Lauro Rizzatti：三大 Emulator 架构对比](https://www.rizzatti.com/lauro-on-cdns-palladium-xp2-vs-ment-veloce-2-vs-snps-zebu-3/) — 参考了 §3.5.2 三大架构流派与编译速度/可观测性/功耗差异
-- [DeepChip：Palladium/Veloce/ZeBu 技术对比](https://www.deepchip.com/items/0522-04.html) — 参考了 §3.5 价格/门、TDM、动态探针速度惩罚、Rent's Rule 对多 FPGA 分区的影响
-- [ESNUG 532：TDM 与 FPGA 探针惩罚](http://deepchip.com/items/0532-02.html) — 参考了 §3.5.3 多 FPGA 分区、动态探针 300 倍降速数据
+- [SystemVerilog IEEE 1800-2017 Standard](https://standards.ieee.org/ieee/1800.1-10368/) - 参考 §3.4 SVA 断言语法、立即/并发断言、assume/cover
+- [UVM 1.2 Class Reference (Accellera)](https://www.accellera.org/downloads/standards/uvm) - 参考 §3.2 UVM 方法学、sequence/monitor/analysis_port
+- [Synopsys SpyGlass 文档](https://www.synopsys.com/verification/static-and-formal-verification/spyglass.html) - 参考 §2.4 CDC 检查、§4.0 Lint 与 §4.4 功耗估算
+- [Synopsys Design Compiler / PrimeTime 文档](https://www.synopsys.com/implementation-and-signoff/) - 参考 §4 综合与 SDC、§5 STA 流程
+- [UPF / IEEE 1801 标准](https://standards.ieee.org/) - 参考 §4.4 UPF 电源意图描述（电源域/隔离/保持/开关）
+- [Siemens Tessent DFT 文档](https://eda.sw.siemens.com/en-US/ic/tessent/) - 参考 §6 扫描链/BIST/ATPG
+- [IEEE 1149.1 (JTAG) / IEEE 1500 标准](https://standards.ieee.org/) - 参考 §6.4 边界扫描与 Core Test wrapper
+- [JasperGold / VC Formal Formal Verification](https://www.cadence.com/en_US/home/tools/system-design-and-verification/formal-and-static-verification.html) - 参考 §3.4 形式验证适用场景
+- [Cadence Palladium / Protium](https://www.cadence.com/en_US/home/tools/system-design-and-verification/emulation-and-prototyping/palladium.html) - 参考了 §3.5 Emulation 架构（定制处理器/FPGA 流派）、FullVision 调试、编译速度数据
+- [Synopsys ZeBu Server 5 / ZeBu-200](https://www.synopsys.com/verification/emulation-prototyping/emulation/zebu-server.html) - 参考了 §3.5 商用 FPGA 流派、容量/功耗/Transactor 数据
+- [Synopsys HAPS-200 / HAPS 页面](https://www.synopsys.com/verification/emulation-prototyping/prototyping/haps-200.html) - 参考了 §3.5 FPGA 原型容量、TDM 分区、NVIDIA 50 MHz 实测
+- [ZeBu Server 5 规格书（PDF）](https://www.synopsys.com/content/dam/synopsys/verification/technical-papers/zebu-server5-spec-mar2023.pdf) - 参考了 §3.5 容量/功耗/语言支持具体规格
+- [Cadence Protium X3 System Studio Datasheet](https://www.cadence.com/en_US/home/resources/datasheets/protium-x3-system-studio-ds.html) - 参考了 §3.5.3 VP1902/250M 门规格
+- [Palladium Cloud（Cadence 博客）](https://community.cadence.com/cadence_blogs_8/b/breakfast-bytes/posts/cloud-palladium) - 参考了 §3.5.5 采购成本量级、云租用、NVIDIA 仿真 10 个月的案例
+- [Lauro Rizzatti：三大 Emulator 架构对比](https://www.rizzatti.com/lauro-on-cdns-palladium-xp2-vs-ment-veloce-2-vs-snps-zebu-3/) - 参考了 §3.5.2 三大架构流派与编译速度/可观测性/功耗差异
+- [DeepChip：Palladium/Veloce/ZeBu 技术对比](https://www.deepchip.com/items/0522-04.html) - 参考了 §3.5 价格/门、TDM、动态探针速度惩罚、Rent's Rule 对多 FPGA 分区的影响
+- [ESNUG 532：TDM 与 FPGA 探针惩罚](http://deepchip.com/items/0532-02.html) - 参考了 §3.5.3 多 FPGA 分区、动态探针 300 倍降速数据
