@@ -178,7 +178,7 @@ Slot Control 是读写寄存器，OS 通过它控制热插拔行为和中断使�
 | \[3]   | PDCE   | Presence Detect Changed Enable                              |
 | \[4]   | CCIE   | Command Completed Interrupt Enable                          |
 | \[5]   | HPIE   | Hot-Plug Interrupt Enable（总开关）                              |
-| \[7:6] | AIC    | Attention Indicator Control（00=保留, 01=On, 10=Blink, 11=Off） |
+| \[7:6] | AIC    | Attention Indicator Control（00=保留， 01=On, 10=Blink, 11=Off） |
 | \[9:8] | PIC    | Power Indicator Control（同 AIC 编码）                           |
 | \[10]  | PCC    | Power Controller Control（0=Power On, 1=Power Off）           |
 | \[11]  | EIC    | Electromechanical Interlock Control                         |
@@ -938,7 +938,7 @@ Thunderbolt 控制器一律假设 NCCS=1（不需要等待命令完成），因�
 
 pciehp 通过 `/sys/bus/pci/slots/` 暴露用户空间接口：
 
-```
+```text
 /sys/bus/pci/slots/<N>/
 ├── attention      # 读写注意力指示灯 (0=Off, 1=On, 2=Blink)
 ├── latch          # 只读锁扣状态 (0=Closed, 1=Open)
@@ -980,18 +980,18 @@ echo 'file pciehp_ctrl.c +p' > /sys/kernel/debug/dynamic_debug/control
 
 ### 10.2 常见问题排查
 
-| 现象          | 可能原因          | 排查方法                                   | <br />                        |
-| ----------- | ------------- | -------------------------------------- | :---------------------------- |
-| 热插入后设备不出现   | 链路训练失败        | 检查 `lspci -vv` 中 LNKSTA 的 NLW 是否为 0    | <br />                        |
-| 热插入后设备不出现   | BAR 分配失败      | \`dmesg                                | grep "BAR.\*no space"\`       |
-| 意外拔出后系统卡死   | 驱动未处理 MMIO 错误 | 检查驱动是否注册 `pci_error_handlers`          | <br />                        |
-| DPC 恢复后设备消失 | pciehp 误判链路变化 | \`dmesg                                | grep "Link Down/Up ignored"\` |
-| 电源故障循环      | 插卡功耗超限        | \`dmesg                                | grep "Power fault"\`          |
-| 按钮按下无反应     | HPIE 未使能      | 检查 `lspci -vv` 中 Slot Control 的 HPIE 位 | <br />                        |
+| 现象 | 可能原因 | 排查方法 |
+| --- | --- | --- |
+| 热插入后设备不出现 | 链路训练失败 | 检查 `lspci -vv` 中 LNKSTA 的 NLW 是否为 0 |
+| 热插入后设备不出现 | BAR 分配失败 | `dmesg` \| `grep "BAR.*no space"` |
+| 意外拔出后系统卡死 | 驱动未处理 MMIO 错误 | 检查驱动是否注册 `pci_error_handlers` |
+| DPC 恢复后设备消失 | pciehp 误判链路变化 | `dmesg` \| `grep "Link Down/Up ignored"` |
+| 电源故障循环 | 插卡功耗超限 | `dmesg` \| `grep "Power fault"` |
+| 按钮按下无反应 | HPIE 未使能 | 检查 `lspci -vv` 中 Slot Control 的 HPIE 位 |
 
 ### 10.3 关键日志消息
 
-```
+```text
 pciehp: Slot(#N): Card present           # 卡插入检测
 pciehp: Slot(#N): Link Up                # 链路训练完成
 pciehp: Slot(#N): Link Down              # 链路断开

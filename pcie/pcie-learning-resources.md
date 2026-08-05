@@ -24,10 +24,10 @@
 | ASPM | Active State Power Management | 链路级活动状态电源管理 |
 | VF | Virtual Function | SR-IOV 虚拟功能，轻量级 PCIe Function |
 | PF | Physical Function | SR-IOV 物理功能，管理 VF 的主 Function |
-| IMSIC | Incoming MSI Controller | RISC-V AIA 的 MSI 控制器,每 Hart 一个,对应 x86 APIC 与 ARM GIC ITS |
-| AIA | Advanced Interrupt Architecture | RISC-V 高级中断架构,含 IMSIC 与 APLIC |
-| DPC | Downstream Port Containment | 下游端口遏制,链路致命错误隔离机制 |
-| CRS | Configuration Request Retry Status | 配置请求重试状态(PCIe 6.0 起更名 RRS),表示设备存在但未就绪 |
+| IMSIC | Incoming MSI Controller | RISC-V AIA 的 MSI 控制器，每 Hart 一个，对应 x86 APIC 与 ARM GIC ITS |
+| AIA | Advanced Interrupt Architecture | RISC-V 高级中断架构，含 IMSIC 与 APLIC |
+| DPC | Downstream Port Containment | 下游端口遏制，链路致命错误隔离机制 |
+| CRS | Configuration Request Retry Status | 配置请求重试状态(PCIe 6.0 起更名 RRS)，表示设备存在但未就绪 |
 
 ***
 
@@ -35,44 +35,46 @@
 
 | 序号 | 主题   | 文档                                       | 核心内容                        | 建议学时 |
 | --- | ---- | ---------------------------------------- | --------------------------- | ---- |
-| 0   | 硅片架构 | [Controller与PHY架构](./controller-phy-architecture.md) | Controller/PHY数字模拟分工、PIPE接口、Lane分配与Bifurcation、RK3588实例 | 3h |
+| 0   | 硅片架构 | [Controller与PHY架构](./controller-phy-architecture.md) | Controller/PHY数字模拟分工、PIPE接口、链路训练(LTSSM)工程细节、链路要求(refclk/电气/均衡)、控制Lane数工作清单、Lane分配与Bifurcation、RK3588/SG2046实例 | 4h |
 | 1   | ECAM | [ECAM与配置空间访问](./ecam-config-space.md)    | 地址计算、MCFG、内核ECAM实现、控制器变体    | 3h |
 | 2   | BAR  | [BAR与资源分配](./bar-resource-allocation.md) | BAR探测协议、资源分配三阶段、iATU地址转换    | 4h |
 | 3   | 枚举   | [设备枚举流程](./enumeration-flow.md)          | 深度优先扫描、桥配置递归、Capability发现   | 4h |
 | 4   | 中断   | [MSI/MSI-X中断机制](./msi-interrupt.md)      | MSI/MSI-X结构、irqdomain集成、亲和性 | 3h |
 | 5   | 热插拔  | [Hot-Plug机制与pciehp驱动](./hotplug-mechanism.md) | Slot寄存器、pciehp状态机、中断处理、DPC交互 | 3h |
 | 6   | 虚拟化  | [SR-IOV虚拟化](./sriov-virtualization.md)   | PF/VF架构、ATS缓存、ACS隔离、VFIO    | 4h |
-| 7   | 工程实践 | [PCIe工程实践：常见问题与踩坑指南](./pcie-engineering-pitfalls.md) | 链路训练/ECAM/枚举/BAR/中断/热插拔/SR-IOV/DMA 的故障现象→根因→排查→修复,SG2046/RISC-V 特定问题 | 6h |
-| 8   | 高级主题 | [P2P DMA 与多芯级联](./p2p-multi-chip-interconnect.md) | P2P/NTB/CXL.mem 三种跨设备/跨 Host 直传机制,规范机制+内核实现+应用场景+跨实现对比 | 5h |
+| 7   | 工程实践 | [PCIe工程实践：常见问题与踩坑指南](./pcie-engineering-pitfalls.md) | 链路训练/ECAM/枚举/BAR/中断/热插拔/SR-IOV/DMA 的故障现象→根因→排查→修复，SG2046/RISC-V 特定问题 | 6h |
+| 8   | 高级主题 | [P2P DMA 与多芯级联](./p2p-multi-chip-interconnect.md) | P2P/NTB/CXL.mem 三种跨设备/跨 Host 直传机制，规范机制+内核实现+应用场景+跨实现对比 | 5h |
+| 9   | 性能评测 | [PCIe 性能评测与优化](./pcie-performance-optimization.md) | 带宽/延迟模型、fio/iperf/lspci/AER 评测方法、链路/中断/DMA/传输层优化、五步定位法与工程案例 | 4h |
 
 ### 官方文档
 
 | 文档 | 用途 | 建议阅读时机 |
 |------|------|------|
-| [PCI Express Base Specification 6.0](https://pcisig.com/specifications) | PCIe 协议规范,涵盖物理层/数据链路层/事务层/配置空间 | 学完 Phase 0-1 后查阅具体章节 |
+| [PCI Express Base Specification 6.0](https://pcisig.com/specifications) | PCIe 协议规范，涵盖物理层/数据链路层/事务层/配置空间 | 学完 Phase 0-1 后查阅具体章节 |
 | [PCI Firmware Specification 3.0](https://uefi.org/specifications) | ACPI MCFG 表、_OSC 协商规范 | 学完 ECAM(01)与热插拔(05)后 |
 | [PIPE Specification (Intel)](https://www.intel.com/content/www/us/en/io/pci-express/pcie-pipe-spec.html) | Controller 与 PHY 之间的 PIPE 接口定义 | 学完 Controller/PHY 架构(00)后 |
 | [Synopsys DesignWare PCIe Databook](https://www.synopsys.com/designware-ip/interface-ip/pci-express.html) | DWC Controller 的 iATU/DBI/LTSSM 寄存器手册 | 调试 DWC 控制器问题时 |
 | [RISC-V AIA Specification](https://github.com/riscv/riscv-aia) | IMSIC MSI 控制器、APLIC 中断控制器规范 | 在 RISC-V 平台调试 MSI 时 |
 | [ACPI Specification 6.5](https://uefi.org/specifications) | §5.2.12.16 MCFG Table,IORT,_OSC | 学完 ECAM(01)后 |
+| [fio](https://fio.readthedocs.io/) | 带宽/IOPS/延迟评测工具 | 学完性能评测(09)后动手压测 |
 
 ### 源码导航
 
 | 仓库 | 路径 | 关键目录/文件 | 职责 | 对应文档 |
 |------|------|-------------|------|---------|
-| linux-common | `drivers/pci/ecam.c` | `pci_ecam_create()` / `pci_ecam_map_bus()` | 通用 ECAM 库,创建配置窗口与地址计算 | [ECAM 与配置空间](./ecam-config-space.md) |
-| linux-common | `drivers/pci/controller/pci-host-generic.c` | `pci_dw_valid_device()` / `pci_dw_ecam_bus_ops` | 通用 PCI host 驱动,DWC ECAM 幽灵设备过滤 | [ECAM 与配置空间](./ecam-config-space.md) |
-| linux-common | `drivers/pci/controller/dwc/pcie-designware-host.c` | `dw_pcie_ecam_enabled()` / `dw_pcie_other_conf_map_bus()` / `dw_pcie_msi_parent_ops` | DWC host 初始化,`native_ecam` 分支选择,iATU 配置访问,MSI parent 注册 | [ECAM 与配置空间](./ecam-config-space.md) · [MSI/MSI-X](./msi-interrupt.md) · [工程踩坑](./pcie-engineering-pitfalls.md) §10.1 |
-| linux-common | `drivers/pci/controller/dwc/pcie-sophgo.c` | `sophgo_pcie_host_init()` / `sophgo_pcie_intx_handler()` / `sophgo_pcie_configure_rc()` | Sophgo SG2046 DWC PCIe 控制器驱动,INTx 处理,`native_ecam=true` 设置 | [工程踩坑](./pcie-engineering-pitfalls.md) §10 |
-| linux-common | `arch/riscv/boot/dts/sophgo/sg2046-pcie-s.dtsi` | `pcie@200102400000` 等节点 | SG2046 PCIe 设备树配置,`msi-parent`/`dma-ranges`/`ranges` | [工程踩坑](./pcie-engineering-pitfalls.md) §10 · [BAR 与资源分配](./bar-resource-allocation.md) |
-| linux-common | `drivers/pci/probe.c` | `pci_read_bases()` / `pci_scan_bridge_extend()` / `pci_bus_wait_rrs()` | PCI 设备枚举,BAR 探测,CRS/RRS 等待 | [设备枚举流程](./enumeration-flow.md) · [工程踩坑](./pcie-engineering-pitfalls.md) §3-4 |
-| linux-common | `drivers/pci/iov.c` | `sriov_enable()` / `pci_iov_virtfn_bus()` | SR-IOV 核心,VF 创建与 BDF 计算 | [SR-IOV 虚拟化](./sriov-virtualization.md) · [工程踩坑](./pcie-engineering-pitfalls.md) §7 |
-| linux-common | `drivers/pci/msi/msi.c` | `__pci_write_msi_msg()` / `pci_msix_write_vector_ctrl()` | MSI/MSI-X 核心,消息写入与 Per-Vector Mask | [MSI/MSI-X 中断](./msi-interrupt.md) |
-| linux-common | `drivers/pci/hotplug/pciehp_hpc.c` | `pciehp_ist()` / `pciehp_ignore_link_change()` | pciehp 热插拔中断处理,DPC 虚假链路事件过滤 | [Hot-Plug 机制](./hotplug-mechanism.md) · [工程踩坑](./pcie-engineering-pitfalls.md) §6 |
+| linux-common | `drivers/pci/ecam.c` | `pci_ecam_create()` / `pci_ecam_map_bus()` | 通用 ECAM 库，创建配置窗口与地址计算 | [ECAM 与配置空间](./ecam-config-space.md) |
+| linux-common | `drivers/pci/controller/pci-host-generic.c` | `pci_dw_valid_device()` / `pci_dw_ecam_bus_ops` | 通用 PCI host 驱动，DWC ECAM 幽灵设备过滤 | [ECAM 与配置空间](./ecam-config-space.md) |
+| linux-common | `drivers/pci/controller/dwc/pcie-designware-host.c` | `dw_pcie_ecam_enabled()` / `dw_pcie_other_conf_map_bus()` / `dw_pcie_msi_parent_ops` | DWC host 初始化，`native_ecam` 分支选择，iATU 配置访问，MSI parent 注册 | [ECAM 与配置空间](./ecam-config-space.md) · [MSI/MSI-X](./msi-interrupt.md) · [工程踩坑](./pcie-engineering-pitfalls.md) §10.1 |
+| linux-common | `drivers/pci/controller/dwc/pcie-sophgo.c` | `sophgo_pcie_host_init()` / `sophgo_pcie_intx_handler()` / `sophgo_pcie_configure_rc()` | Sophgo SG2046 DWC PCIe 控制器驱动，INTx 处理，`native_ecam=true` 设置 | [工程踩坑](./pcie-engineering-pitfalls.md) §10 |
+| linux-common | `arch/riscv/boot/dts/sophgo/sg2046-pcie-s.dtsi` | `pcie@200102400000` 等节点 | SG2046 PCIe 设备树配置，`msi-parent`/`dma-ranges`/`ranges` | [工程踩坑](./pcie-engineering-pitfalls.md) §10 · [BAR 与资源分配](./bar-resource-allocation.md) |
+| linux-common | `drivers/pci/probe.c` | `pci_read_bases()` / `pci_scan_bridge_extend()` / `pci_bus_wait_rrs()` | PCI 设备枚举，BAR 探测，CRS/RRS 等待 | [设备枚举流程](./enumeration-flow.md) · [工程踩坑](./pcie-engineering-pitfalls.md) §3-4 |
+| linux-common | `drivers/pci/iov.c` | `sriov_enable()` / `pci_iov_virtfn_bus()` | SR-IOV 核心，VF 创建与 BDF 计算 | [SR-IOV 虚拟化](./sriov-virtualization.md) · [工程踩坑](./pcie-engineering-pitfalls.md) §7 |
+| linux-common | `drivers/pci/msi/msi.c` | `__pci_write_msi_msg()` / `pci_msix_write_vector_ctrl()` | MSI/MSI-X 核心，消息写入与 Per-Vector Mask | [MSI/MSI-X 中断](./msi-interrupt.md) |
+| linux-common | `drivers/pci/hotplug/pciehp_hpc.c` | `pciehp_ist()` / `pciehp_ignore_link_change()` | pciehp 热插拔中断处理，DPC 虚假链路事件过滤 | [Hot-Plug 机制](./hotplug-mechanism.md) · [工程踩坑](./pcie-engineering-pitfalls.md) §6 |
 | linux-common | `drivers/pci/pcie/dpc.c` | `dpc_handler()` | DPC 触发与恢复处理 | [工程踩坑](./pcie-engineering-pitfalls.md) §8 |
-| linux-common | `drivers/pci/p2pdma.c` | `calc_map_type_and_dist()` / `pci_p2pdma_add_resource()` / `pci_alloc_p2pmem()` | P2P DMA 核心,映射类型判定/ZONE_DEVICE 资源/内存池 | [P2P DMA 与多芯级联](./p2p-multi-chip-interconnect.md) §2 · [工程踩坑](./pcie-engineering-pitfalls.md) §9.2 |
-| linux-common | `drivers/ntb/ntb.c` / `drivers/ntb/hw/*` | `ntb_dev_ops` / `ntb_register_device()` | NTB 硬件抽象层与厂商驱动,跨 Host 互联 | [P2P DMA 与多芯级联](./p2p-multi-chip-interconnect.md) §4 |
-| linux-common | `drivers/pci/endpoint/functions/pci-epf-ntb.c` | `epf_ntb_epc_init()` / `epf_ntb_write_mw()` | EPF 软件模拟 NTB,用两个 EP Controller 互路由 | [P2P DMA 与多芯级联](./p2p-multi-chip-interconnect.md) §4.3 |
+| linux-common | `drivers/pci/p2pdma.c` | `calc_map_type_and_dist()` / `pci_p2pdma_add_resource()` / `pci_alloc_p2pmem()` | P2P DMA 核心，映射类型判定/ZONE_DEVICE 资源/内存池 | [P2P DMA 与多芯级联](./p2p-multi-chip-interconnect.md) §2 · [工程踩坑](./pcie-engineering-pitfalls.md) §9.2 |
+| linux-common | `drivers/ntb/ntb.c` / `drivers/ntb/hw/*` | `ntb_dev_ops` / `ntb_register_device()` | NTB 硬件抽象层与厂商驱动，跨 Host 互联 | [P2P DMA 与多芯级联](./p2p-multi-chip-interconnect.md) §4 |
+| linux-common | `drivers/pci/endpoint/functions/pci-epf-ntb.c` | `epf_ntb_epc_init()` / `epf_ntb_write_mw()` | EPF 软件模拟 NTB，用两个 EP Controller 互路由 | [P2P DMA 与多芯级联](./p2p-multi-chip-interconnect.md) §4.3 |
 
 ***
 
@@ -91,6 +93,7 @@ flowchart TD
     P6["Phase 6<br/>虚拟化与隔离<br/>SR-IOV/ACS/ATS"]
     P7["Phase 7<br/>错误处理与可靠性<br/>AER"]
     P8["Phase 8<br/>现代扩展<br/>P2P/Resizable BAR/CXL/FLIT"]
+    P9["Phase 9<br/>性能评测与优化<br/>带宽/延迟模型/评测工具/优化手段"]
 
     P0 --> P1
     P1 -->|"ECAM读写配置空间"| P2
@@ -109,6 +112,10 @@ flowchart TD
     P6 -->|"ACS控制P2P"| P8
     P7 -->|"FEC纠正物理层错误"| P8
     P1 -->|"Resizable BAR扩展BAR"| P8
+    P3 -->|"TLP开销决定带宽"| P9
+    P4 -->|"链路协商决定上限"| P9
+    P5 -->|"中断路径是性能税"| P9
+    P7 -->|"AER计数作信号探针"| P9
 
     style P0 fill:#f3e5f5,stroke:#9c27b0
     style P1 fill:#e8f5e9,stroke:#4caf50
@@ -120,6 +127,7 @@ flowchart TD
     style P6 fill:#e3f2fd,stroke:#2196f3
     style P7 fill:#e3f2fd,stroke:#2196f3
     style P8 fill:#fce4ec,stroke:#e91e63
+    style P9 fill:#e8eaf6,stroke:#3f51b5
 ```
 
 | 阶段        | 层次    | 对应能力                       |
@@ -130,6 +138,7 @@ flowchart TD
 | Phase 5-5b | 🔵 系统 | 中断子系统、热插拔事件处理              |
 | Phase 6-7 | 🔵 系统 | 虚拟化、可靠性                    |
 | Phase 8   | 🔴 前沿 | 数据中心和高性能计算的现代扩展            |
+| Phase 9   | 🟦 评测 | 性能模型、评测工具、优化手段——用实测验证前面所有理解 |
 
 ***
 
@@ -195,7 +204,7 @@ flowchart TD
 
 一个PCIe域（Segment）包含一个RC及其下游所有设备。大型系统可有多个域：
 
-```
+```text
 Segment 0 (Domain 0000):     Segment 1 (Domain 0001):
   RC0 ─┬─ EP                  RC1 ─┬─ EP
        └─ Switch ─ EP              └─ EP
@@ -234,7 +243,7 @@ flowchart LR
 
 PCIe链路由1-16条Lane组成，每条Lane包含两对差分信号（TX+/TX- 和 RX+/RX-）：
 
-```
+```text
 x1链路:  TX  →  RX  (1对发送, 1对接收)
          RX  ←  TX
 
@@ -304,7 +313,7 @@ flowchart TD
 
 **DMA (Direct Memory Access)** 是设备绕过CPU直接读写系统内存的机制：
 
-```
+```text
 传统方式:  设备 → 中断通知CPU → CPU读取设备数据 → CPU写入内存 (慢)
 DMA方式:   设备 → 直接读写内存 → 完成后中断通知CPU (快)
 ```
@@ -321,7 +330,7 @@ DMA的关键问题：
 
 > 以上是协议视角——RC、Switch、EP 是拓扑概念；TLP、DLLP、Symbol 是数据包概念。**但这些逻辑模块在硅片上怎么划分？** 答案是分两半：Controller 是数字协议引擎（知道 TLP、配置空间、BAR），PHY 是模拟信号前端（只看到 bit 流）。多 Controller 共享一组 PHY Lane 时，通过 SerDes MUX 或 PHY Bifurcation 做 Lane 粒度分配。
 
-详见 [Controller 与 PHY 架构](./controller-phy-architecture.md) — 覆盖 Controller/PHY 数字模拟分工、PIPE 接口与 LTSSM 执行模型、SerDes MUX 与 Bifurcation 方案对比、RK3588 实战案例。
+详见 [Controller 与 PHY 架构](./controller-phy-architecture.md) — 覆盖 Controller/PHY 数字模拟分工、PIPE 接口与 LTSSM 执行模型、链路训练(LTSSM)状态与定时器、链路要求(refclk/电气/均衡)、控制 Lane 数的工程清单、SerDes MUX 与 Bifurcation 方案对比、RK3588/SG2046 实战案例。
 
 > **核心要点**：先理解硅片上 Controller/PHY/Lane 的物理结构，再读 ECAM（Controller 的 DBI 接口）、BAR（Controller 的 ATU 地址转换）、LTSSM（Controller 做决策、PHY 做电气执行），每一个概念都有明确的硬件归属。
 
@@ -361,7 +370,7 @@ flowchart TD
 
 **地址计算**：
 
-```
+```text
 ECAM地址 = 基址 + (Bus << 20) + (Dev << 15) + (Func << 12) + Offset
 ```
 
@@ -497,7 +506,7 @@ dw_pcie_prog_outbound_atu(pci, outbound);  // 配置 iATU: CPU 地址 → PCIe �
 
 从 Bus 0 开始深度优先遍历：
 
-```
+```text
 pci_host_probe()
   └─ pci_scan_root_bus()           // Bus 0 作为根总线
        └─ pci_scan_child_bus(bus)
@@ -592,7 +601,7 @@ pci_alloc_irq_vectors(dev, 1, 16, PCI_IRQ_MSI | PCI_IRQ_MSIX);
 
 **ACPI 平台**：
 
-```
+```text
 MCFG 表 → ECAM MMIO 基址 (每段 Bus 范围一个 entry)
 DSDT/SSDT → _CRS (设备资源/BAR/桥窗口) + _PRT (中断路由)
 ```
@@ -644,7 +653,7 @@ flowchart TD
 
 ### 2.4 BDF —— 设备寻址
 
-```
+```text
 Bus (8bit, 0-255) : Device (5bit, 0-31) : Function (3bit, 0-7, ARI扩展至0-255)
 ```
 
@@ -660,7 +669,7 @@ Linux 表示：`0000:01:00.0` = Segment 0, Bus 1, Dev 0, Func 0
 
 ### 3.1 TLP —— 数据的信封
 
-```
+```text
 ┌──────────┬───────────┬──────────┬──────┐
 │ Header   │ Data      │ Digest   │ LCRC │
 │ 3-4 DW   │ 0-1024 DW │ 0-1 DW   │ 1 DW │
@@ -669,7 +678,7 @@ Linux 表示：`0000:01:00.0` = Segment 0, Bus 1, Dev 0, Func 0
 
 **Memory Request Header (3 DW)**：
 
-```
+```text
 DW0: [Fmt|Type|R|TC|Attr|R|TD|EP|Attr|AT|Length]
 DW1: [Requester ID (BDF) | Tag | Last BE | First BE]
 DW2: [Address[63:2] / Address[31:2]]
@@ -689,7 +698,7 @@ DW3: [Address[63:32]] (仅64-bit地址)
 
 **Completion Header (3 DW)**：
 
-```
+```text
 DW0: [Fmt=10|Type=01010|R|TC|Attr|R|TD|EP|Attr|AT|Length]
 DW1: [Completer ID (BDF) | Status | BCM | Byte Count]
 DW2: [Requester ID | Tag | Lower BE | Upper BE]
@@ -724,7 +733,7 @@ DW2: [Requester ID | Tag | Lower BE | Upper BE]
 
 PCIe使用**基于信用的流量控制**避免接收端缓冲区溢出：
 
-```
+```text
 发送端                              接收端
   ┌──────────┐    FC Update DLLP    ┌──────────┐
   │ 维护信用计数 │ ←────────────────── │ 报告可用缓冲区 │
@@ -751,7 +760,7 @@ PCIe在多个层次检测传输错误：
 |------|------|---------|
 | 数据链路层 | LCRC (32-bit) | TLP传输中的比特错误 |
 | 数据链路层 | Sequence Number | TLP丢失或重复 |
-| 事务层 | ECRC (可选, 32-bit) | 端到端数据完整性（穿过Switch后仍有效） |
+| 事务层 | ECRC (可选， 32-bit) | 端到端数据完整性（穿过Switch后仍有效） |
 | 事务层 | Poisoned TLP | 数据已被上游组件标记为损坏（bit0 of DW0=1） |
 | 事务层 | Unsupported Request | 目标不支持该事务类型 |
 
@@ -796,7 +805,7 @@ flowchart TD
 
 Gen3 (8 GT/s) 及以上速率需要**链路均衡**补偿高频信号损耗：
 
-```
+```text
 信号损耗问题:
   Gen1/2: NRZ编码 + 2.5/5 GT/s → 信号完整性OK，无需均衡
   Gen3+:  8+ GT/s → 高频衰减严重，需要发送端预加重 + 接收端均衡
@@ -869,7 +878,7 @@ Gen3 (8 GT/s) 及以上速率需要**链路均衡**补偿高频信号损耗：
 
 **MSI Capability结构**：
 
-```
+```text
 Config Space
 ├── Message Address  → 中断目标地址 (Local APIC)
 ├── Message Data     → 中断向量号
@@ -1019,7 +1028,7 @@ flowchart TD
 
 **AER错误处理流程**：
 
-```
+```text
 错误发生 → 设备设置AER Status位
   → Root Port收集错误 (Root Error Command控制是否上报)
   → Root Port发送MSI/MSI-X中断给CPU
@@ -1039,7 +1048,7 @@ flowchart TD
 
 DPC是AER的重要补充——当链路发生不可恢复错误时，**自动阻塞下游端口**，防止错误传播：
 
-```
+```text
 错误发生 → DPC触发 → 下游端口阻塞 → 所有下游TLP被丢弃
                                     → 软件收到DPC中断
                                     → 软件决定恢复策略
@@ -1093,7 +1102,7 @@ static void dpc_handler(struct irq_desc *desc)
 
 **Linux**：`pci_p2pdma_add_resource()` · `CONFIG_PCI_P2PDMA`
 
-> **深入**：P2P DMA 的规范机制(ACS 真值表、ATS Direct Translated P2P)、Linux 内核实现(`calc_map_type_and_dist()` 三段式决策、ZONE_DEVICE 包装 MMIO)、以及 NTB 跨 Host 互联、CXL.mem 内存池化,详见 [P2P DMA 与多芯级联](./p2p-multi-chip-interconnect.md)。
+> **深入**：P2P DMA 的规范机制(ACS 真值表、ATS Direct Translated P2P)、Linux 内核实现(`calc_map_type_and_dist()` 三段式决策、ZONE_DEVICE 包装 MMIO)、以及 NTB 跨 Host 互联、CXL.mem 内存池化，详见 [P2P DMA 与多芯级联](./p2p-multi-chip-interconnect.md)。
 
 ### 8.2 Resizable BAR —— 大显存映射
 

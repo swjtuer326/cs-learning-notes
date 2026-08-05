@@ -18,6 +18,15 @@
 | CDR | Clock and Data Recovery | 从串行数据流中恢复时钟，接收端 PHY 的关键功能 |
 | CTLE | Continuous Time Linear Equalizer | 连续时间线性均衡器，接收端补偿高频损耗 |
 | DFE | Decision Feedback Equalizer | 判决反馈均衡器，用已判决符号消除码间干扰 |
+| SSC | Spread Spectrum Clocking | 扩频时钟，通过小幅频率调制降低 EMI |
+| CC | Common Clock / Common Refclk | 共同时钟架构，两端共享同一参考时钟 |
+| SRIS | Separate Refclk with Independent SSC | 独立参考时钟架构（各自独立时钟且各自 SSC） |
+| EIEOS | Electrical Idle Exit Ordered Set | 电气 Idle 退出有序集，由 PHY 生成/检测 |
+| TS1/TS2 | Training Sequence 1 / 2 | 训练有序集，承载速率/链路号/Lane 号等协商字段 |
+| N_FTS | Number of Fast Training Sequences | 快速训练序列个数，链路唤醒时的同步参数 |
+| DLLLA | Data Link Layer Link Active | 数据链路层链路活跃，LTSSM 进入 L0 后置位的握手信号 |
+| OCM | Output Clamp Mode | PHY PMA 输出钳位模式，上电初始化时需解除 |
+| MLW / SLS / TLS | Max/Max-Link-Width, Supported Link Speed, Target Link Speed | LNKCAP/LNKCTL2 中的能力与目标字段 |
 
 ---
 
@@ -31,7 +40,9 @@
 | Lane 与链路宽度 | [PCIe 核心知识索引](./pcie-learning-resources.md) §0.5 |
 | TLP 与三层模型 | [PCIe 核心知识索引](./pcie-learning-resources.md) §0.6 |
 | LTSSM 链路状态机 | [PCIe 核心知识索引](./pcie-learning-resources.md) §4.1 |
-| DWC 控制器 DBI 接口 | [ECAM 与配置空间](./ecam-config-space.md) §3.4 |
+| 链路均衡与能力 | [PCIe 核心知识索引](./pcie-learning-resources.md) §4.2-4.3 |
+| 链路训练失败排查 | [工程踩坑指南](./pcie-engineering-pitfalls.md) §1 |
+| DWC 控制器 DBI 接口 | [ECAM 与配置空间](./ecam-config-space.md) §3.7 |
 
 ### 1.2 系统上下文
 
@@ -152,7 +163,7 @@ flowchart TD
 | **工艺依赖** | 跟随 SoC 工艺（5nm / 3nm），标准单元库即可 | 通常独立工艺优化，以硬宏形式集成 |
 | **知道什么** | 知道 TLP 格式、BAR 地址范围、MSI 向量号 | 不知道协议——只看到差分电压跳变 |
 | **关键模块** | iATU, DBI, LTSSM 决策逻辑 | SerDes, PLL, CDR, CTLE, DFE |
-| **验证方法** | UVM / SystemVerilog 仿真 | SPICE 仿真, 眼图, IBIS-AMI |
+| **验证方法** | UVM / SystemVerilog 仿真 | SPICE 仿真，眼图， IBIS-AMI |
 | **对外接口** | CPU 侧: AXI/AHB; PHY 侧: PIPE | Controller 侧: PIPE; 外: 差分焊盘 |
 | **IP 形态** | 可综合 IP（RTL 源码或加密网表） | 硬宏（GDSII 版图，包含模拟 layout） |
 | **功耗来源** | 动态功耗为主（逻辑翻转） | 静态功耗显著（偏置电流、终端电阻） |
@@ -164,7 +175,7 @@ flowchart TD
 | 划分方式 | 编码 (8b/10b, 128b/130b) | LTSSM 决策 | 典型产品 |
 |----------|------------------------|-----------|---------|
 | **Controller 含 MAC** | Controller (数字) | Controller (数字) | Synopsys DWC PCIe |
-| **PHY 含 MAC** | PHY (数字逻辑, 在 PHY 硬宏内) | Controller (少数实时控制给 PHY) | 部分 Cadence / 自研 PHY |
+| **PHY 含 MAC** | PHY (数字逻辑，在 PHY 硬宏内) | Controller (少数实时控制给 PHY) | 部分 Cadence / 自研 PHY |
 
 本文以 **DWC 风格**（Controller 含 MAC, 编码和 LTSSM 都在 Controller）为主进行讨论，这也是行业主流。PIPE 接口位于 MAC 和 PCS 之间，传递的是**已编码的符号**（8b/10b 后的 10-bit 符号或 128b/130b 后的 block）。
 
@@ -246,7 +257,7 @@ flowchart LR
 
 LTSSM 的每个状态切换都涉及一组 PIPE 信号操作。以下举例说明"Controller 决策 → PIPE 传令 → PHY 执行"：
 
-```
+```text
 Detect 状态（检测对端是否存在）:
   1. Controller 置位 TxDetectRx
   2. PHY 对 Lane 充电到 Vcm, 测量放电时间
@@ -276,11 +287,283 @@ L0 → L1 省电:
 
 ---
 
-## 4. 多 Controller 共享 PHY 的设计模式
+## 4. 链路训练：LTSSM 的工程细节
 
-> 前三章讲的是一个 Controller 配一个 PHY 的理想情况。现实中的 SoC 有多个 PCIe Controller，但 PHY 的 Lane 数是固定的。**多个 Controller 如何共享一组 PHY Lane？** 这是 SoC 架构师的核心设计问题。
+> 上一章讲了 PIPE 接口是 Controller 与 PHY 的对话契约。一个自然的问题是：**真实上电时，链路是怎么从"没接设备"一步步走到 L0 的？** 本章从 PIPE 信号与定时器的角度把 LTSSM 的核心状态逐一遍历——先讲训练前的必要条件，再讲 Detect→Polling→Configuration→L0 每一步背后的硬件动作与超时，最后讲两个训练中最容易踩坑的细节（Lane 反转与极性反转）。这是本文从"架构"走向"工程"的第一站。
 
-### 4.1 问题：Lane 不够用
+### 4.1 训练前的必要条件
+
+链路训练不会"自动发生"，它需要硬件先满足一系列前提。任何一个条件不满足，LTSSM 都会卡在 Detect 循环重复，或根本进入不了训练：
+
+1. **参考时钟就绪**：Controller 和 PHY 拿到稳定的 100 MHz refclk（要求细节见 §5.1）。
+2. **复位释放**：PHY 的 SRAM 微码初始化完成、PMA 输出钳位（OCM）解除、Controller 退出复位。RK3588 驱动在 `rockchip_p3phy_rk3588_init()` 里先"解除 PMA 输出钳位"（`BIT(8) | BIT(24)` 写 CMN_CON0），再 poll `SRAM_INIT_DONE` 状态位，读不到就报 `"lock failed ... check input refclk and power supply"`（[phy-rockchip-snps-pcie3.c](file:///home/pbw/sg2046/linux-common/drivers/phy/rockchip/phy-rockchip-snps-pcie3.c) 第 187-198 行）。这条日志出现的全部意义就是提醒你：**refclk、电源、复位没就绪**。
+3. **供电稳定**：Controller 数字域和 PHY 模拟域的电压建立到额定值——模拟域的偏置电流、PLL、CDR 对电源纹波极其敏感。
+4. **能力配置完成**：目标速率（LNKCTL2 TLS）与 Lane 数（LNKCAP MLW）需在训练开始前按 §6 的清单写好。
+
+> **核心要点**：这四个条件是"软件可先诊断"的部分。学习链路训练时最容易忽略的是 PHY 微码 SRAM 初始化——很多"设备不出现"的根因根本不是 LTSSM 逻辑问题，而是 PHY 内部固件没加载完成、OCM 没解除。
+
+### 4.2 一次完整的训练：Detect → Polling → Configuration → L0
+
+链路初始化是**仅一个方向发起、另一端被动响应**的双向过程。发起方（通常 Downstream Port）在每条 Lane 上以 **Gen1（2.5 GT/s）** 为起始速率运行 LTSSM：
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "'trebuchet ms', verdana, arial, sans-serif"}}}%%
+flowchart TD
+    DQ["Detect.Quiet<br/>电气 Idle, 等超时"] --> DA["Detect.Active<br/>接收器检测 (TxDetectRx)"]
+    DA -->|"有对端"| PA["Polling.Active<br/>位锁定 (8b/10b 逗号)"]
+    DA -->|"超时 12ms 无对端"| DQ
+    PA -->|"位锁定"| PC["Polling.Configuration<br/>符号锁定 (K28.5)"]
+    PA -->|"超时 24ms"| DQ
+    PC -->|"符号锁定, 交换 TS1/TS2"| CWS["Config.Linkwidth.Start<br/>宽度协商"]
+    PC -->|"超时"| DQ
+    CWS --> CLA["Config.Lanenum<br/>Lane 号分配"]
+    CLA --> CC["Config.Complete<br/>确认 Link Up"]
+    CC --> L0["L0<br/>正常传 TLP"]
+    L0 -->|"Gen3+ 速率提升"| RCY["Recovery<br/>均衡 + 速率切换"]
+
+    style DQ fill:#e0e0e0
+    style DA fill:#fff9c4
+    style PA fill:#fff9c4
+    style PC fill:#fff9c4
+    style CWS fill:#d1e8ff
+    style CLA fill:#d1e8ff
+    style CC fill:#d1e8ff
+    style L0 fill:#c8e6c9
+    style RCY fill:#ffcdd2
+```
+
+> **如何读这张图**：灰色=电气 Idle / 失败回退，黄色=Detect 与 Polling（训练的前半段），蓝色=Configuration（宽度与 Lane 号协商），绿色=L0（完成），红色=Gen3+ 后面临的 Recovery（均衡）。横向看：一次成功的链路建链一定从左到右走完灰→黄→蓝→绿。
+
+#### Detect —— 接收器检测（有没有对端？）
+
+训练发起方在 Detect.Active 对每条 Lane 执行一次**接收器检测（Receiver Detection）**：控制 PHY 对 Lane 充电，然后观察放电时间——如果对端存在，其差分终端阻抗体现在放电曲线上（PIPE 信号 `TxDetectRx` 置位后由 PHY 完成，PHY 回报 `PhyStatus`）。这步不涉及数据。
+
+| 参数 | 值 | 规范 |
+|------|----|------|
+| Detect.Quiet 超时 | **12 ms**（默认，可选扩到 24 ms） | PCIe Base Spec §4.2.5 |
+| 检测手段 | 充电-放电，观察对端终端阻抗 | PIPE `TxDetectRx` / `PhyStatus` |
+
+> **核心要点**：Detect 不传数据、不做协商，它只回答"对端在不在"。永远停在 Detect = 对端物理不存在或 PHY 的接收器检测能力异常（常见于 refclk/电源问题，见 §4.1）。软件这时查 `PORT_DEBUG0` 的 LTSSM 值，DWC 下回落到 `Detect.Quiet / Detect.Active` 就代表"没有对端"（对应 `dw_pcie_wait_for_link()` 返回 `-ENODEV`）。
+
+#### Polling —— 位锁定与符号锁定（Gen1 下进行）
+
+进入 Polling 后，训练方开始在每 Lane 上发送 **Gen1 速率**的二进制流，目的是对齐时钟并同步符号，依次完成三件事：
+
+1. **位锁定（Bit Lock）**：接收方 CDR 从串行流中恢复时钟并把时钟相位对齐到 bit 边界。
+2. **符号锁定（Symbol Lock）**：8b/10b 编码下用 **K28.5** 逗号序列定位字节边界，把连续的 10-bit 符号重新切成字节流。
+3. **有序集交换**：双方互发 TS1（训练序列 1），确认符号已锁定，进而进入下一代。
+
+| 参数 | 值 | 规范 |
+|------|----|------|
+| 起始速率 | Gen1（2.5 GT/s），此后所有协商都在 Gen1 完成 | PCIe Base Spec §4.2.6 |
+| Polling.Active 超时 | **24 ms** | PCIe Base Spec §4.2.5 |
+| 对齐机制 | K28.5 逗号（8b/10b）；128b/130b 后另有对齐方案 | PCIe Base Spec §4.2 |
+
+#### Configuration —— Lane 编号与宽度协商
+
+进入 Configuration 后，训练方把协商从"单 Lane 是否存在"升级到"多条 Lane 谁的编号是几"。每 Lane 在 TS1/TS2 的 **Lane Number** 字段里广播自己是谁；接收方据此推导链路宽度，并决定采用哪几条 Lane：
+
+- **最高效的链路是连续的、从 Lane 0 起**的：如 x4 用 Lane 0-3，x8 用 Lane 0-7。
+- 若某条 Lane 训练失败或物理坏掉，整条链路会**协商降级**（x8→x4→x2→x1），但 Lane 0 是"锚"，必须存在。
+- 完成宽度协商后双方互发 TS2 确认，进入 Config.Complete，随后拉起**数据链路层的 DLLLA 握手**。
+
+#### L0 —— 建链完成
+
+进入 L0 说明物理层训练成功。此时 lane 的 PHY/DL 都就绪，但软件还不能立刻发配置请求：
+
+> **工程要点**：依据 PCIe r6.0 §6.6.1，**支持 >5 GT/s 的下游端口，软件必须在链路训练完成后至少等 100 ms**才能发送配置请求。DWC 在 `dw_pcie_wait_for_link()` 里当 `max_link_speed > 2`（即 >Gen2）时会 `msleep(PCIE_RESET_CONFIG_WAIT_MS)` 专门做这件事（[pcie-designware.c](file:///home/pbw/sg2046/linux-common/drivers/pci/controller/dwc/pcie-designware.c) 第 806-807 行）。**这 100 ms 是所有 Gen3+ 平台枚举时总要等的硬时间**，不是 bug。
+
+### 4.3 训练中的 PIPE 信号握手
+
+用"Controller 决策 → PIPE 传令 → PHY 执行"的框架把 §4.2 的每一步串起来，恰好对应 §3.3 的 PIPE 信号：
+
+| LTSSM 动作 | Controller 决策 | PIPE 传令（C→P） | PHY 执行与回报（P→C） |
+|-----------|----------------|------------------|----------------------|
+| 接收器检测 | 是否发起 Detect | `TxDetectRx` | 充电-放电检测，回报 `PhyStatus` |
+| 位/符号锁定 | 何时开始发 TS1 | `TxData` + `TxDataK` | CDR 锁定，回报 `RxValid`/`RxStatus=000` |
+| 速率协商 | 选速率档 | `Rate[1:0]` | PLL 切换，回报 `PhyStatus` |
+| 电气 Idle | 何时静音 | `TxElecIdle` | 关闭驱动，回报 `PhyStatus` |
+| 均衡（Gen3+） | 预设选择 | `TxPreset`/`TxEQ` | 调整驱动/接收均衡，回报 `RxStatus` |
+
+### 4.4 卡在哪个状态 = 哪一层的问题
+
+训练失败时，LTSSM 停留在某个状态，这本身就是最有价值的诊断信号：
+
+| 卡住的状态 | 含义 | 最可能的根因 | 排查方向 |
+|-----------|------|-------------|---------|
+| **Detect** | 对端不存在或检测不到 | 对端未上电、refclk/电源/复位没就绪、PHY 检测异常 | 检查供电、refclk、PHY 微码初始化（§4.1） |
+| **Polling.Active** | 检测到了对端但位锁不住 | 信号完整性差、refclk 抖动大、速率/时钟失配 | 看 AER Receiver Error、查 PCB/连接器 |
+| **Polling.Configuration** | 符号锁不住 | 速率协商失败、对端固件没就绪 | 对端重启、检查对端固件时间 |
+| **Configuration** | 宽度/Lane 号协商不拢 | Lane 数据位宽、Lane 反转/极性配置错误、Lane 映射冲突 | 核对 `num-lanes`/`data-lanes`、Bifurcation（§7） |
+| **Recovery 循环** | 已建链但反复进 Recovery | Gen3+ 均衡失败、ASPM 干扰、信号衰减 | 均衡参数、关闭 ASPM（[工程踩坑](./pcie-engineering-pitfalls.md) §1.2/1.4） |
+
+> **核心要点**：链路是**逐状态推进**的——停在 Detect 别去查均衡，停在 Recovery 别去查 Lane 映射。用"当前停留在哪个状态"作为判断起点，比盲目看 `lspci` 快得多。DWC 下 LTSSM 值可用 `devmem` 读 `PORT_DEBUG0` 低 4 位（对应 [工程踩坑指南](./pcie-engineering-pitfalls.md) §1.1 的排查命令）。
+
+### 4.5 两个训练中最易踩坑的细节：Lane 反转与极性反转
+
+x4/x8 宽链路在 PCB 布线、连接器引脚排布时，Lane 顺序或差分对的正负经常没法按"顺序、原极性"一一对应。规范为此定义了两种容错，它们都在 **Configuration 阶段**靠 TS1/TS2 里的字段搞定：
+
+| 机制 | 现象 | 谁负责 | 规范依据 |
+|------|------|--------|---------|
+| **Lane 反转** | Lane 0↔Lane N 顺序颠倒（如 Lane0 连的是对端的 Lane7） | 接收方检测后内部重排（支持 x8 及以上的组件必须支持） | PCIe Base Spec §4.2.6 |
+| **极性反转** | 某条 Lane 的差分对正负接反了（+/- 互换） | 接收方每条 Lane 独立检测并反相（组件必须支持） | PCIe Base Spec §4.2.6 |
+
+> **核心要点**：这两个是**接收端硬件自动解决**的，软件通常无需干预。但若 SoC 里 Controller 与 PHY 的 Lane 映射与 PCB 上的实际布线不一致（例如 Bifurcation 把 Lane 组切开后编号错位），训练会在 Configuration 阶段反复失败——这类问题只能靠核对 SoC 的 Lane 路由表（RK3588 见 §8.2）和原理图解决，软件调参无效。
+
+---
+
+## 5. 链路的要求
+
+> 上一章讲了链路训练的过程。一个自然的问题是：**训练能顺利走完，对环境（时钟、电气、协议能力）有什么硬性要求？** 本章先讲参考时钟的架构要求，再讲电气要求（去加重/预加重/均衡），最后讲宽度与速率协商的规则——这些"要求"正好决定了 SoC 硬件怎么设计、固件/驱动怎么配置。
+
+### 5.1 参考时钟的要求
+
+训练和传输都依赖时钟。参考时钟（refclk）的架构是 SoC 设计阶段第一个要定的：**两端是否共享同一个时钟？**
+
+| 对比维度 | Common Clock（共同时钟） | Separate Refclk（独立参考时钟 / SRIS） |
+|----------|------------------------|--------------------------------------|
+| **时钟来源** | 两端共享同一 100 MHz refclk | 两端各自独立时钟 |
+| **总偏移容差** | 两端合计 ≤ ±300 ppm（含 SSC） | 各自 ≤ ±300 ppm，两端合计可达 ±600 ppm |
+| **SSC** | 可共享同源 SSC | 各自独立 SSC（SRIS 允许独立扩频） |
+| **SKP 依赖** | 补偿量较小，弹性缓冲压力小 | 补偿量较大，必须依赖 SKP 吸收偏差 |
+| **典型场景** | 板级/系统级共享时钟源 | 不同板卡/不同设备，各自提供时钟 |
+| **时钟树成本** | 需要精确共享，布线约束高 | 灵活，但需要更严的同步控制 |
+
+> **如何读这张表**：核心差异是**时钟容差预算**——共同时钟把两端的偏差算在一起（±300 ppm），独立参考时钟虽然灵活，但通过 SKP 有序集和弹性缓冲吸收时钟差（这正是 [§3.2](./controller-phy-architecture.md#32-pipe-信号) 里 `RxStatus` 的 `001 = SKP 已增/删` 的含义）。
+
+**SSC（扩频时钟）**：通过把时钟小幅调频（典型 -0.5% 到 0 的下扩频）展宽频谱、降低 EMI。它直接增加了时钟频率的变化范围，因此训练和接收都要按容差计算。设计上如果 SoC 提供 refclk 给外部设备，需在 DT 里声明；RK3588 的 PHY 用 `rockchip,rx-common-refclk-mode` 属性逐 Lane 配置是否启用公共参考时钟模式（[phy-rockchip-snps-pcie3.c](file:///home/pbw/sg2046/linux-common/drivers/phy/rockchip/phy-rockchip-snps-pcie3.c) 第 147-158 行，逐 Port 写 `RX_CMN_REFCLK_MODE`）。
+
+> **核心要点**：参考时钟这条"要求"常常被当软问题排查——实际上它大多在**硬件设计**阶段定了。若换成代价很大，优先自查：refclk 是否给到 PHY、是否开启 SSC、公共时钟是否真的共源。RK3588 报锁失败时驱动日志里 `check input refclk` 就是明示。
+
+### 5.2 电气要求：去加重、预加重与均衡
+
+| 速率 | 差分阻抗 | 发送端处理 | 接收端均衡 |
+|------|---------|-----------|-----------|
+| Gen1 2.5 GT/s | 100 Ω 差分 | 无 | 无 |
+| Gen2 5.0 GT/s | 100 Ω 差分（趋势同 Gen3） | 去加重 -3.5 dB | 无 |
+| Gen3 8.0 GT/s | **85 Ω 差分** | 发送端预加重（TX Preset P0-P10） | CTLE / DFE（均衡 Phase 0-3） |
+| Gen4+ 16-32 GT/s | 85 Ω 差分 | 多级 TX EQ | 更复杂均衡 + 接收端识别 |
+
+> **如何读这张表**：从 Gen3 起电气"要求"跃变——阻抗降到 85 Ω、发送端引入预设、接收端强制均衡。这也是为什么 Gen3 是第一档需要**链路均衡（Equalization）**的速率（协议定义 Phase 0-3，见 [PCIe 核心知识索引](./pcie-learning-resources.md) §4.2）。这些全部落在 PHY 层，Controller 通过 PIPE 的 `TxDeemph`（Gen2）/`TxPreset`/`TxEQ`（Gen3+）把预设传给 PHY。
+
+> **核心要点**：**速率 ≤5 GT/s（Gen1/2）靠发送端去加重就能搞定；速率 ≥8 GT/s（Gen3+）必须两端联手做均衡**。这就是为什么"Gen3 起没有均衡就会降速或训练失败"——它不是可选项，是协议要求。均衡失败是 [工程踩坑指南](./pcie-engineering-pitfalls.md) §1.2 里 Gen3+ 降速的头号根因。
+
+### 5.3 宽度与速率协商的规则
+
+协商的"输入"是两端各自的能力，协商的"结果"体现在链路状态寄存器：
+
+| 寄存器 | 角色 | 关键字段 |
+|--------|------|---------|
+| **LnkCap** | 能力（只读） | Max Link Speed（SLS）、Max Link Width（MLW） |
+| **LnkCtl** | 软件控制 | Retrain Link、Common Clock Config、ASPM |
+| **LnkCtl2** | 软件控制 | **Target Link Speed（TLS）**、Target Link Width（PCIe 6.0+ 字段） |
+| **LnkSta** | 协商结果 | Negotiated Speed（CLS）、Negotiated Width（NLW）、DLLLA |
+
+协商遵循两条硬规则：
+
+1. **宽度取双方能力较小者**：最终宽度 = min(本端 MLW，对端 MLW)，且必须是连续、从 Lane 0 起始的一组 Lane。
+2. **速率受预算目标约束**：任何一端可以用 LNKCTL2 TLS 把协商速率上限压低；对端即使在更高速率，也只会协商到 TLS 之下的档位。
+
+```text
+举例：本端声明 x8/Gen4，对端只支持 x4/Gen3
+  → 协商结果 LnkSta: 宽度 x4, 速率 Gen3   （取双方交集的下限）
+```
+
+**降级**：链路在训练中发现某 Lane 失败，就自动以更低宽度重训（x8→x4→x2→x1）。这种"能力子集"的协商保证了两端不匹配时仍能建链，代价是性能损失——这也是 `lspci -vvv` 里 LnkCap 与 LnkSta 不一致的标准解释（[工程踩坑指南](./pcie-engineering-pitfalls.md) §1.2/1.3 区分"速率降级"与"宽度降级"根因不同）。
+
+---
+
+## 6. 控制 Lane 数的工程工作
+
+> 前两章讲了链路怎么训练、有什么要求。一个自然的问题是：**作为一个 SoC/系统工程师，我想让某个 PCIe 口稳定地跑到 x4（而不是误协商成 x8 或降到 x1），需要分别动哪些地方？** 本章给出一份"控制 Lane 数"的完整工程清单——先讲自上而下的配置链路，再讲 DWC 控制器与 Linux 的具体落地，最后讲最常见的几个坑。
+
+### 6.1 一份完整的"指定 Lane 数"清单
+
+控制最终协商宽度，需要 **PHY → Controller → 配置空间 → 设备树 → 训练验证** 五层都对齐。改错一层，都可能出现"训不到 x4 / 训到更宽 / 干脆不训"：
+
+1. **PHY 层（Lane 归属与可用性）**：先把 Lane 路由到目标 Controller。Bifurcation / MUX 配置决定"这条 PHY Lane 属于哪个 Controller"（RK3588 见 §8，SG2046 由固件锁定）。**Lane 冲突时，其他 Controller 抢 Lane 会让目标口少 Lane。**
+2. **Controller 层（硬件链路模式）**：在 DWC 等控制器里设置链路模式寄存器，告诉 LTSSM"本次希望训练成几 lane 的链路"。
+3. **能力声明（LNKCAP MLW）**：把 MLW 写成目标宽度，对端看到的"我的最大能力"就是它，协商取两者较小者。
+4. **协商上限（Target Link Speed / Width）**：限制速率用 LNKCTL2 的 **TLS**（Gen1/2/3+ 均可用）；限制宽度，标准化的 LNKCTL2 **Target Link Width** 字段是 PCIe 6.0 才引入——老控制器往往靠改 LNKCAP MLW 或私有寄存器（DWC 的 `PORT_LINK_CONTROL`）来压低协商上限（见第 2、3 步）。
+5. **设备树 `num-lanes` / `data-lanes`**：把"希望多少 lane"用 DT 属性表达出来，驱动据此驱动 PHY 与 Controller（`num-lanes` 给 Controller、`data-lanes` 给 RK3588 style 的 PHY）。
+6. **触发重训练**：改完配置后置位 LNKCTL 的 **Retrain Link** 位（或复位/重上电），让链路带着新配置重新走一遍 §4。
+7. **验证协商结果**：`lspci -vvv` 看 LnkSta 的 NLW/CLS，或用 `dmesg` 的 `PCIe Gen.x xN link up`。
+
+> **核心要点**：**"希望多少 lane"是分散在五层的**——PHY 决定物理可用性、Controller 决定硬件链路模式、LNKCAP 负责告诉对端、DT 负责软件表达、Retrain 负责让新配置被采纳。调试时先确认 1（Lane 归属）和 2（链路模式）没配错，再去查 3-4（协商），最后看 6（是否真的重训了）。
+
+### 6.2 DWC 控制器：三个寄存器把宽度写进去
+
+DWC 控制器把"设置 Lane 数"落实到三个寄存器，全部在 `dw_pcie_setup()` 里按顺序执行（[pcie-designware.c](file:///home/pbw/sg2046/linux-common/drivers/pci/controller/dwc/pcie-designware.c) 第 1251-1287 行）：
+
+| 寄存器 | 字段 | 作用 |
+|--------|------|------|
+| `PORT_LINK_CONTROL` | `PORT_LINK_MODE_x_LANES` | 设置 Link Downstream 的链路模式（LTSSM 实际训练的宽度） |
+| `LINK_WIDTH_SPEED_CONTROL` | `PORT_LOGIC_LINK_WIDTH_1_LANES` | 设置逻辑 Lane 宽度 |
+| LNKCAP | `MLW`（Max Link Width） | 更新能力字段，供对端读取 |
+
+```c
+/* 摘自 [pcie-designware.c](file:///home/pbw/sg2046/linux-common/drivers/pci/controller/dwc/pcie-designware.c) 第 898-943 行，已省略部分变量 */
+static void dw_pcie_link_set_max_link_width(struct dw_pcie *pci, u32 num_lanes)
+{
+	/* (1) PORT_LINK_CONTROL: 设置硬件链路模式为 N lane */
+	plc = dw_pcie_readl_dbi(pci, PCIE_PORT_LINK_CONTROL);
+	plc &= ~PORT_LINK_FAST_LINK_MODE;
+	plc &= ~PORT_LINK_MODE_MASK;
+	switch (num_lanes) {
+	case 1:  plc |= PORT_LINK_MODE_1_LANES;  break;
+	case 2:  plc |= PORT_LINK_MODE_2_LANES;  break;
+	case 4:  plc |= PORT_LINK_MODE_4_LANES;  break;
+	case 8:  plc |= PORT_LINK_MODE_8_LANES;  break;
+	case 16: plc |= PORT_LINK_MODE_16_LANES; break;
+	default: dev_err(pci->dev, "num-lanes %u: invalid value\n", num_lanes); return;
+	}
+	/* (2) LINK_WIDTH_SPEED_CONTROL: 设置逻辑 lane 宽度（固定 1 条，配合上面） */
+	/* ... 省略 ... */
+
+	/* (3) LNKCAP: 更新最大链路宽度字段，告诉对端 */
+	lnkcap = dw_pcie_readl_dbi(pci, cap + PCI_EXP_LNKCAP);
+	lnkcap &= ~PCI_EXP_LNKCAP_MLW;
+	lnkcap |= FIELD_PREP(PCI_EXP_LNKCAP_MLW, num_lanes);
+	dw_pcie_writel_dbi(pci, cap + PCI_EXP_LNKCAP, lnkcap);
+}
+```
+
+> **如何读这代码**：这段体现了 **"一边告诉硬件训练几 lane，一边告诉对端我的能力"** 的双重设计——PORT_LINK_CONTROL 是给控制器内部 LTSSM 看的（训练几 lane，按 `num-lanes` 走 switch），LNKCAP MLW 是给对端看的（协商用）。两者必须一致，否则会出现"控制器想训 x4、但对端以为你只能 x1"的错位。这个函数只支持 1/2/4/8/16 的 2 幂宽度（`num-lanes` 取其他值会报 `"invalid value"` 并直接 `return`，不写任何寄存器）。
+
+速率同理，`dw_pcie_link_set_max_speed()`（[pcie-designware.c](file:///home/pbw/sg2046/linux-common/drivers/pci/controller/dwc/pcie-designware.c) 第 843-888 行）同时写 LNKCAP `SLS` 和 LNKCTL2 `TLS`。`dw_pcie_setup()` 的完整顺序是：**先设速率、再设 N_FTS、再拉 PORT_LINK_CONTROL 使能 DLL、最后设宽度**——宽度是最后一步，因为它依赖前面速率与 DLL 能力就绪。
+
+### 6.3 Linux 驱动如何落地
+
+| 环节 | 函数 / 属性 | 做了什么 |
+|------|------------|---------|
+| 解析需求 | `dw_pcie_setup()` 读 `num-lanes`（[pcie-designware.c](file:///home/pbw/sg2046/linux-common/drivers/pci/controller/dwc/pcie-designware.c) 第 194 行） | 把 DT 里的 `num-lanes` 填进 `pci->num_lanes` |
+| 驱动控制器 | `dw_pcie_setup_rc()`（[pcie-designware-host.c](file:///home/pbw/sg2046/linux-common/drivers/pci/controller/dwc/pcie-designware-host.c) 第 1104 行）调用 `dw_pcie_setup()` | 执行 §6.2 的寄存器写入 |
+| 等待建链 | `dw_pcie_wait_for_link()` | 轮询直到 link up，Gen3+ 先等 100 ms（§4.2） |
+| 判断是否起来 | `dw_pcie_link_up()` 读 `PORT_DEBUG1` 的 LINK_UP / LINK_IN_TRAINING | DWC 专用状态位，比读 LnkSta 更直接 |
+| 主动限制宽度 | `pcie-tegra194.c` / `pcie-rockchip.c` 的 `num-lanes` 校验与覆盖 | 校验 `num-lanes > 能力` 时回退 |
+
+对 RK3588 这类"PHY 在 Linux 可见"的平台，`num-lanes`（给 Controller）与 `data-lanes`（给 PHY 驱动做 Bifurcation，见 §8.2）**是两个不同层的属性**——前者决定 Controller 训几 lane，后者决定 PHY Lane 怎么路由。两者不匹配是 §6.4 最常见的坑。
+
+### 6.4 常见坑
+
+| 坑 | 现象 | 根因与修复 |
+|----|------|-----------|
+| `num-lanes` 写太大 | 卡在 Configuration 或协商降级 | `num-lanes` 超过 PHY 实际可用 Lane，或 Controller 硬件上限只到那档；核对 PHY 分配（§6.1 步骤 1-2） |
+| `num-lanes` 不是 2 的幂 / 非法值 | 寄存器没被写，或不训练 | DWC 只支持 1/2/4/8/16，其他值 `invalid value` 直接 return |
+| `data-lanes` 与 `num-lanes` 不一致 | 训到的宽度不是想要的 | 一个是 PHY 路由、一个是 Controller 训练宽度，必须一致 |
+| Lane 被其他 Controller 占用 | 宽度降级（x8 训成 x4） | Bifurcation / MUX 冲突；重新规划 Lane 归属（§7/§8） |
+| 改了配置没触发重训练 | 反映的是旧宽度 | 必须置位 Retrain Link 或复位，新配置才会被采纳 |
+| 只改了 DT 没动 PHY 路由 | LnkSta 仍是物理路由决定的宽度 | 物理 Lane 归属是 PHY 层的事，DT 不能替 PHY 路由 |
+
+> **核心要点**：控制 Lane 数不是"写一个 `num-lanes` 就行"，而是一条**五层一致**的链路。把 §6.1 的清单当成 checklist：先 PHY、再 Controller、再能力、再 DT、最后重训练 + 验证。逐层对齐后，x8 训成 x4 / 训不到预期宽度这类问题大多能定位到某一层。
+
+---
+
+## 7. 多 Controller 共享 PHY 的设计模式
+
+> 前六章讲的是单个 Controller 配单个 PHY、以及链路训练与 Lane 控制的原理。现实中的 SoC 有多个 PCIe Controller，但 PHY 的 Lane 数是固定的。**多个 Controller 如何共享一组 PHY Lane？** 这是 SoC 架构师的核心设计问题。
+
+### 7.1 问题：Lane 不够用
 
 典型 SoC 场景：
 
@@ -296,7 +579,7 @@ L0 → L1 省电:
 | **PHY Bifurcation** | PHY 自身支持把 Lane 拆成多个独立 Link | PHY 需内置双 LTSSM |
 | **虚拟化** | 一个 Controller 出多个 Function，不占额外 Lane | Controller 需 SR-IOV |
 
-### 4.2 方案一：SerDes MUX / Crossbar
+### 7.2 方案一：SerDes MUX / Crossbar
 
 Controller 和 PHY Lane 之间插入可配置的 MUX：
 
@@ -351,11 +634,11 @@ flowchart TD
 
 | 模式 | Controller A | Controller B | 总 Lane | 场景 |
 |------|-------------|-------------|---------|------|
-| A 独占 | x8 (L0-7) | 未使用 | 8 | GPU 单卡, NVMe 走另一组 PHY |
+| A 独占 | x8 (L0-7) | 未使用 | 8 | GPU 单卡， NVMe 走另一组 PHY |
 | 对半分 | x4 (L0-3) | x4 (L4-7) | 8 | GPU + NVMe 各 x4 |
 | A 降级 + B 独立 | x4 (L0-3) | x2 (L4-5 或其它 PHY) | 6 | 灵活配置 |
 
-### 4.3 方案二：PHY Bifurcation（分叉）
+### 7.3 方案二：PHY Bifurcation（分叉）
 
 Bifurcation 是**PHY 自身支持**的能力——一个 PHY 硬宏内部的 Lane 拆成两组独立的 Link，各有独立的 LTSSM：
 
@@ -401,17 +684,17 @@ flowchart TD
 | 对比维度 | SerDes MUX | PHY Bifurcation |
 |----------|-----------|----------------|
 | **谁做 Lane 分配** | 外部 Crossbar IP | PHY 内部 |
-| **Lane 分组** | 灵活, 可按单 Lane 粒度分配 | 固定, 由 PHY 设计决定（如 Lane 0-3 一组, 4-7 一组） |
+| **Lane 分组** | 灵活，可按单 Lane 粒度分配 | 固定，由 PHY 设计决定（如 Lane 0-3 一组， 4-7 一组） |
 | **独立 LTSSM** | Controller 各自维护 | PHY 内部每 Link 各有一套 |
 | **额外硬件** | MUX + 寄存器 | PHY 需原生支持（硬宏功能） |
 | **配置方式** | 写 SoC 系统寄存器 | 写 PHY 内部寄存器 + Controller 寄存器 |
 | **典型场景** | SoC 自己设计的多协议 SerDes | 从 x16 拆出 x8+x8 或 x8+x4+x4 |
 
-### 4.4 方案三：虚拟化（不占 Lane）
+### 7.4 方案三：虚拟化（不占 Lane）
 
 一个 Controller 通过 SR-IOV 导出多个 Function。这不是 Lane 级别的共享——所有 Function 共享同一条物理链路。详见 [SR-IOV 虚拟化](./sriov-virtualization.md)。
 
-### 4.5 方案对比
+### 7.5 方案对比
 
 | 对比维度 | SerDes MUX | PHY Bifurcation | 虚拟化 (SR-IOV) |
 |----------|-----------|----------------|----------------|
@@ -427,11 +710,11 @@ flowchart TD
 
 ---
 
-## 5. 实例：RK3588 的 PCIe 架构
+## 8. 实例：RK3588 的 PCIe 架构
 
-> 前四章讲了一般原理。**一个实际的 SoC 怎么落地这些设计？** 本章以 Rockchip RK3588 为例，展示 Controller、PHY、MUX、Bifurcation 的完整配合。
+> 前七章讲了一般原理、共享 PHY 的模式与 Lane 控制的工程清单。**一个实际的 SoC 怎么落地这些设计？** 本章以 Rockchip RK3588 为例，展示 Controller、PHY、MUX、Bifurcation 的完整配合。
 
-### 5.1 全局视图
+### 8.1 全局视图
 
 RK3588 有 **5 个 PCIe Controller**，共享 **1 个专用 PCIe3 PHY（4 Lane）+ 3 个组合 PHY（各 1 Lane）**：
 
@@ -483,11 +766,11 @@ flowchart TD
 
 > **如何读这张图**：5 个 Controller（蓝色）对 4 条高速 Lane（黄色），必然有资源冲突。RK3588 的解法：**pcie30phy 通过内部 Bifurcation Logic + MUX，让 Lane 可以在多个 Controller 之间分配，但总物理 Lane 数不变**。Ctrl 2/3 还可以走组合 PHY 的 1-Lane 通路（图右虚线），这是"备份路径"——当一个 Controller 接组合 PHY 时，pcie30phy 的对应 Lane 给别的 Controller 用。
 
-### 5.2 pcie30phy 的 Lane 映射规则
+### 8.2 pcie30phy 的 Lane 映射规则
 
 pcie30phy 内部有 2 个 Port，每个 Port 2 条 Lane。Lane 到 Controller 的映射**不是完全自由的**，有硬件固定约束：
 
-```
+```text
 pcie30phy Lane 映射 (硬件固定约束)
 ┌──────────────────────────────────────────────┐
 │                                              │
@@ -522,7 +805,7 @@ pcie30phy Lane 映射 (硬件固定约束)
 | `3` | 1L0 — 该 Lane 独立为 Ctrl 2 的 x1 链路 | Ctrl 2 (pcie2x1l0) |
 | `4` | 1L1 — 该 Lane 独立为 Ctrl 3 的 x1 链路 | Ctrl 3 (pcie2x1l1) |
 
-### 5.3 五种 Bifurcation 模式
+### 8.3 五种 Bifurcation 模式
 
 由 `rockchip,pcie30-phymode` 属性 + 两个寄存器（`PCIE3PHY_GRF_CMN_CON0` 低 3 位，`PHP_GRF_PCIESEL_CON` 低 2 位）控制：
 
@@ -570,15 +853,17 @@ flowchart TD
 
 | Mode | `data-lanes` | CMN_CON0 | PCIESEL | 效果 |
 |------|-------------|:--------:|:-------:|------|
-| **AGGREG** | `<1 1 1 1>` | 4 | 0 | x4 聚合, Ctrl 0 独占 |
+| **AGGREG** | `<1 1 1 1>` | 4 | 0 | x4 聚合， Ctrl 0 独占 |
 | **NANBNB** | `<1 1 2 2>` | 0 | 0 | x2 + x2, Ctrl 0 + Ctrl 1 |
-| **NANBBI** | `<1 3 2 2>` | 1 | 1 | Ctrl 0(x2) + Ctrl 2(x1) + Ctrl 1(x2)。Ctrl 2 占用 Port 0 Lane1, Ctrl 0 只剩 1 条 |
+| **NANBBI** | `<1 3 2 2>` | 1 | 1 | Ctrl 0(x1) + Ctrl 2(x1) + Ctrl 1(x2)。Port 0 分叉为两条 x1（L0→Ctrl 0、L1→Ctrl 2），Port 1 保持 x2（Ctrl 1） |
 | **NABINB** | `<1 1 2 4>` | 2 | 2 | Ctrl 0(x2) + Ctrl 1(x1) + Ctrl 3(x1) |
 | **NABIBI** | `<1 3 2 4>` | 3 | 3 | 四条 x1, 四个 Controller 各得一条 |
 
-> **核心要点**：模式名中的 "A" = Aggregation (聚合给 Ctrl 0), "N" = No bifurcation, "B" = Bifurcation, "I" = Independent lane。例如 NANBBI = Port 0 不分叉(N) + 聚合(A) + Port 0 不分叉(N) + Port 0 分叉(B) + Port 1 分叉(B) + Port 1 独立 I——实际上编码规则是：**前两个字母对应 Port 0 的两条 Lane, 后两个字母对应 Port 1 的两条 Lane**。N=该 Lane 聚合给单一 Controller, B=该 Lane 分叉为独立链路, I=独立 x1。
+> **如何读这张表**：`data-lanes` 的四个值按 Lane 0-3 排列——`1` = 聚合给 Ctrl 0，`2` = 归 Ctrl 1，`3` = 独立 x1 给 Ctrl 2（即 Port 0 分叉），`4` = 独立 x1 给 Ctrl 3（即 Port 1 分叉）。CMN_CON0/PCIESEL 两列是写入两个寄存器的值，编码规则：`bit2` = aggregation，`bit1` = Port 1 分叉，`bit0` = Port 0 分叉（见 Rockchip 的 `phy-snps-pcie3.h` 头文件）。例如 NANBBI 值 1 = 只置 bit0（Port 0 分叉成两条 x1），Port 1 保持 x2。
+>
+> **核心要点**：模式名的六个字母是 Rockchip 的惯例命名（A=Aggregation、N=No bifurcation、B=Bifurcation、I=Independent lane），但**不要试图从字母逐字解码**——同一字母在不同位置含义不同。以 `data-lanes` 数组和寄存器的三个 bit 为准：每个值定义了该 Lane 归哪个 Controller，bit 组合定义了哪条 Lane 被分叉。
 
-### 5.4 驱动实现要点
+### 8.4 驱动实现要点
 
 Linux 驱动 `phy-rockchip-snps-pcie3.c` 的初始化逻辑：
 
@@ -596,13 +881,13 @@ Linux 驱动 `phy-rockchip-snps-pcie3.c` 的初始化逻辑：
 
 ---
 
-## 6. 实例对比：RK3588(嵌入式 ARM) vs SG2046(服务器 RISC-V)
+## 9. 实例对比：RK3588(嵌入式 ARM) vs SG2046(服务器 RISC-V)
 
-> 上一节以 RK3588 为例展示了嵌入式 SoC 的 PCIe 架构——PHY 由 Linux 驱动管理,Lane 通过 Bifurcation 灵活分配。一个自然的问题是:**服务器级 SoC 的 PCIe 架构有何不同?** 本节以 Sophgo SG2046(RISC-V 服务器)为例,与 RK3588 对照,揭示两种设计哲学的差异。
+> 上一节以 RK3588 为例展示了嵌入式 SoC 的 PCIe 架构——PHY 由 Linux 驱动管理，Lane 通过 Bifurcation 灵活分配。一个自然的问题是:**服务器级 SoC 的 PCIe 架构有何不同?** 本节以 Sophgo SG2046(RISC-V 服务器)为例，与 RK3588 对照，揭示两种设计哲学的差异。
 
-### 6.1 SG2046 PCIe 架构概览
+### 9.1 SG2046 PCIe 架构概览
 
-SG2046 是多 die(chiplet)RISC-V 服务器 SoC,每个 die 有多个 PCIe Controller,全部基于 Synopsys DWC IP。与 RK3588 的关键差异:**PHY 完全由固件(SBI/U-Boot)管理,Linux 驱动不触碰 PHY**。
+SG2046 是多 die(chiplet)RISC-V 服务器 SoC，每个 die 有多个 PCIe Controller，全部基于 Synopsys DWC IP。与 RK3588 的关键差异:**PHY 完全由固件(SBI/U-Boot)管理，Linux 驱动不触碰 PHY**。
 
 ```mermaid
 %%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
@@ -632,13 +917,13 @@ flowchart TD
     style IOMMU fill:#e8f5e9,stroke:#059669
 ```
 
-### 6.2 两种设计哲学的对比
+### 9.2 两种设计哲学的对比
 
 | 对比维度 | RK3588(嵌入式 ARM) | SG2046(服务器 RISC-V) |
 |----------|-------------------|---------------------|
 | **PHY 管理** | Linux 驱动 `phy-rockchip-snps-pcie3.c` | SBI 固件(M-mode),Linux 不触碰 |
-| **Lane 分配** | 运行时通过 `data-lanes` DT 属性 + GRF 寄存器 | 固件静态配置,Linux 不可见 |
-| **Bifurcation** | PHY 内部支持,5 种模式 | 由固件/硬件固定,Linux 不可见 |
+| **Lane 分配** | 运行时通过 `data-lanes` DT 属性 + GRF 寄存器 | 固件静态配置，Linux 不可见 |
+| **Bifurcation** | PHY 内部支持，5 种模式 | 由固件/硬件固定，Linux 不可见 |
 | **配置访问** | 通用 ECAM(`pci-host-ecam-generic`) | iATU 路径(`native_ecam=true`) |
 | **MSI 投递** | GIC ITS(ARM) | IMSIC(RISC-V AIA) |
 | **IOMMU** | SMMU(ARM) | RISC-V IOMMU |
@@ -646,11 +931,11 @@ flowchart TD
 | **Linux 驱动复杂度** | 高(PHY + Bifurcation + MUX) | 低(只初始化 DWC 核心) |
 | **固件复杂度** | 低(U-Boot 只做基础初始化) | 高(SBI 全面管理 PHY) |
 
-> **如何读这张表**:RK3588 是"Linux 中心化"设计——Linux 驱动掌控从 PHY 到应用的全栈;SG2046 是"固件中心化"设计——SBI 固件在 M-mode 完成底层初始化,Linux 只看到已配置好的 DWC Controller。两种方案各有优劣:RK3588 灵活但驱动复杂,SG2046 稳定但调试 PHY 问题需要进入 M-mode。
+> **如何读这张表**:RK3588 是"Linux 中心化"设计——Linux 驱动掌控从 PHY 到应用的全栈;SG2046 是"固件中心化"设计——SBI 固件在 M-mode 完成底层初始化，Linux 只看到已配置好的 DWC Controller。两种方案各有优劣:RK3588 灵活但驱动复杂，SG2046 稳定但调试 PHY 问题需要进入 M-mode。
 
-### 6.3 SG2046 DTS 的"去 PHY 化"特征
+### 9.3 SG2046 DTS 的"去 PHY 化"特征
 
-对比 RK3588 与 SG2046 的 PCIe DT 节点,能直观看到 PHY 管理职责的差异:
+对比 RK3588 与 SG2046 的 PCIe DT 节点，能直观看到 PHY 管理职责的差异:
 
 ```dts
 // RK3588 PCIe DT(节选)——PHY 是 Linux 可见的外设
@@ -680,9 +965,9 @@ pcie@200102400000 {
 
 > **核心要点**:SG2046 的 DT 中没有 `phys`/`phy-names`/`num-lanes`/`max-link-speed` 属性——这些全部由 SBI 固件在 M-mode 设置。Linux 驱动 `pcie-sophgo.c` 只做三件事:(1) 映射 dbi/atu/app/config 寄存器;(2) 设置 `native_ecam=true` 走 iATU 配置访问;(3) 注册 INTx 中断处理。PHY 相关的链路训练、均衡、Lane 分配都在固件层完成。
 
-### 6.4 SG2046 多 die 架构的 domain 问题
+### 9.4 SG2046 多 die 架构的 domain 问题
 
-SG2046 是 chiplet 多 die 架构,每个 die 有独立的 PCIe Controller 集合。DTS 中通过 `linux,pci-domain` 标识:
+SG2046 是 chiplet 多 die 架构，每个 die 有独立的 PCIe Controller 集合。DTS 中通过 `linux,pci-domain` 标识:
 
 ```dts
 // arch/riscv/boot/dts/sophgo/sg2046-pcie-s.dtsi
@@ -691,24 +976,24 @@ pcie@200109000000 { linux,pci-domain = <0>; ... };  // Die 0 Ctrl 1(注意:同 d
 pcie@200119c00000 { linux,pci-domain = <0>; ... };  // Die 0 Ctrl 2
 ```
 
-> **工程注意**:三个 Controller 都用了 `linux,pci-domain = <0>`,这在单 die 系统中会产生 BDF 冲突。SG2046 的多 die 拓扑中,不同 die 的 PCIe 域应该用不同的 `linux,pci-domain` 值(如 die 0 → domain 0,die 1 → domain 1)。如果固件/DT 配置不当,两个 die 的 Root Port 会都出现在 `0000:00:00.0`,导致 `lspci` 输出混乱。详见 [工程踩坑指南](./pcie-engineering-pitfalls.md) §10.4。
+> **工程注意**:三个 Controller 都用了 `linux,pci-domain = <0>`，这在单 die 系统中会产生 BDF 冲突。SG2046 的多 die 拓扑中，不同 die 的 PCIe 域应该用不同的 `linux,pci-domain` 值(如 die 0 → domain 0,die 1 → domain 1)。如果固件/DT 配置不当，两个 die 的 Root Port 会都出现在 `0000:00:00.0`，导致 `lspci` 输出混乱。详见 [工程踩坑指南](./pcie-engineering-pitfalls.md) §10.4。
 
-### 6.5 服务器 vs 嵌入式的设计取舍
+### 9.5 服务器 vs 嵌入式的设计取舍
 
 | 设计取舍 | 嵌入式(RK3588) | 服务器(SG2046) | 原因 |
 |----------|---------------|---------------|------|
-| **PHY 管理** | Linux 驱动 | 固件 | 服务器需要稳定,固件锁定 PHY 配置避免 OS 误操作 |
-| **Lane 灵活性** | 高(Bifurcation) | 低(固定) | 服务器板卡设计固定,不需要运行时切换 |
-| **配置访问** | 硬件 ECAM | iATU | 服务器优先用 256MB 对齐的 ECAM,但 SG2046 选择 iATU 可能因地址映射约束 |
-| **MSI 控制器** | GIC ITS | IMSIC | 架构决定,RISC-V AIA 是规范 |
-| **错误恢复** | AER + DPC | AER + DPC | 服务器对可靠性要求更高,DPC 必须启用 |
+| **PHY 管理** | Linux 驱动 | 固件 | 服务器需要稳定，固件锁定 PHY 配置避免 OS 误操作 |
+| **Lane 灵活性** | 高(Bifurcation) | 低(固定) | 服务器板卡设计固定，不需要运行时切换 |
+| **配置访问** | 硬件 ECAM | iATU | 服务器优先用 256MB 对齐的 ECAM，但 SG2046 选择 iATU 可能因地址映射约束 |
+| **MSI 控制器** | GIC ITS | IMSIC | 架构决定，RISC-V AIA 是规范 |
+| **错误恢复** | AER + DPC | AER + DPC | 服务器对可靠性要求更高，DPC 必须启用 |
 | **热插拔** | 通常不用 | 必须支持 | 服务器需要在线更换卡 |
 
-> **核心要点**:RK3588 与 SG2046 代表两种典型的 PCIe SoC 设计哲学——**嵌入式**让 Linux 掌控一切以换取灵活性,**服务器**让固件锁定底层以换取稳定性。理解这种差异有助于在不同平台上调试 PCIe 问题:RK3588 上链路训练失败要查 Linux PHY 驱动;SG2046 上链路训练失败要进 SBI M-mode 查固件日志。
+> **核心要点**:RK3588 与 SG2046 代表两种典型的 PCIe SoC 设计哲学——**嵌入式**让 Linux 掌控一切以换取灵活性，**服务器**让固件锁定底层以换取稳定性。理解这种差异有助于在不同平台上调试 PCIe 问题:RK3588 上链路训练失败要查 Linux PHY 驱动;SG2046 上链路训练失败要进 SBI M-mode 查固件日志。
 
 ---
 
-## 7. 与现有笔记的衔接
+## 10. 与现有笔记的衔接
 
 本文从硅片视角建立了 Controller/PHY/Lane 分配的框架。以下是本文概念与现有笔记中对应机制的交叉索引：
 
@@ -718,15 +1003,19 @@ pcie@200119c00000 { linux,pci-domain = <0>; ... };  // Die 0 Ctrl 2
 | Controller 内部 DBI | [ECAM 与配置空间](./ecam-config-space.md) §3.7 | DBI 是 Controller 内部寄存器访问接口 |
 | DWC `native_ecam`/iATU 配置访问 | [ECAM 与配置空间](./ecam-config-space.md) §3.3-3.4 | SG2046 走 iATU 路径而非通用 ECAM |
 | Controller 的 LTSSM 决策 | [PCIe 核心知识索引](./pcie-learning-resources.md) §4.1 | 状态机逻辑在 Controller, 电气执行在 PHY |
-| Lane 与链路宽度 | [PCIe 核心知识索引](./pcie-learning-resources.md) §0.5 | Lane 是 PHY 的物理资源, ×N 宽度受限于 PHY Lane 数 |
-| DWC 控制器代码 | [BAR 与资源分配](./bar-resource-allocation.md) §5 | `drivers/pci/controller/dwc/` 中的 `dw_pcie` 结构体 |
-| SR-IOV 虚拟化 | [SR-IOV 虚拟化](./sriov-virtualization.md) | 本文 §4.4 提到的第三种"共享"方案 |
+| Lane 与链路宽度 | [PCIe 核心知识索引](./pcie-learning-resources.md) §0.5 | Lane 是 PHY 的物理资源， ×N 宽度受限于 PHY Lane 数 |
+| DWC 控制器代码 | [BAR 与资源分配](./bar-resource-allocation.md) §4 | `dw_pcie_prog_outbound_atu()` 等 iATU 函数与本文 Controller 内 iATU 硬件对应 |
+| SR-IOV 虚拟化 | [SR-IOV 虚拟化](./sriov-virtualization.md) | 本文 §7.4 提到的第三种"共享"方案 |
+| 链路训练(LTSSM) | [PCIe 核心知识索引](./pcie-learning-resources.md) §4.1-4.2 · [工程踩坑](./pcie-engineering-pitfalls.md) §1 | 本文 §4 是训练过程的工程细节，踩坑指南提供故障排查视角 |
+| 链路能力与协商 | [PCIe 核心知识索引](./pcie-learning-resources.md) §4.3 | 本文 §5.3 详解 LnkCap/LnkCtl/LnkSta 的协商规则 |
+| 控制 Lane 数的软件侧 | [Controller 与 PHY 架构](./controller-phy-architecture.md) §6.2 | `dw_pcie_link_set_max_link_width()` 写 LNKCAP 与 PORT_LINK_CONTROL, 是控制 Lane 数的核心代码 |
+| DWC 链路训练代码 | [工程踩坑](./pcie-engineering-pitfalls.md) §1.1 | `PORT_DEBUG0` LTSSM 状态读取，对应本文 §4.4 的定位方法 |
 | CXL 使用 PCIe PHY | [PCIe 核心知识索引](./pcie-learning-resources.md) §8.3 | CXL.io 复用 PCIe Controller/PHY, CXL.cache/mem 新增协议层 |
 | SG2046 iATU 配置访问 | [ECAM 与配置空间](./ecam-config-space.md) §3.4 · [工程踩坑](./pcie-engineering-pitfalls.md) §10.1 | SG2046 的 `native_ecam=true` 走 iATU 而非 ECAM |
 | SG2046 IMSIC MSI | [MSI/MSI-X 中断](./msi-interrupt.md) §0.5 · [工程踩坑](./pcie-engineering-pitfalls.md) §5.3 | RISC-V AIA IMSIC 替代 GIC ITS |
 | SG2046 工程踩坑 | [工程踩坑指南](./pcie-engineering-pitfalls.md) §10 | RISC-V/SG2046 特定问题汇总 |
 
-> **核心要点**：读现有笔记时，记住"Controller 是数字协议引擎、PHY 是模拟信号前端"这条主线——ECAM/BAR/MSI 都在 Controller 里处理，Lane 宽度/链路训练/信号质量在 PHY 里落地。这样软件调试时就知道：配置空间读写失败大概率是 Controller 问题，链路反复降速/重训练大概率是 PHY/PCB 信号完整性问题。SG2046 上 PHY 问题还需考虑固件层,因为 Linux 不直接管理 PHY。
+> **核心要点**：读现有笔记时，记住"Controller 是数字协议引擎、PHY 是模拟信号前端"这条主线——ECAM/BAR/MSI 都在 Controller 里处理，Lane 宽度/链路训练/信号质量在 PHY 里落地。这样软件调试时就知道：配置空间读写失败大概率是 Controller 问题，链路反复降速/重训练大概率是 PHY/PCB 信号完整性问题。SG2046 上 PHY 问题还需考虑固件层，因为 Linux 不直接管理 PHY。
 
 ---
 
@@ -734,15 +1023,17 @@ pcie@200119c00000 { linux,pci-domain = <0>; ... };  // Die 0 Ctrl 2
 
 | 文档 | 用途 | 建议阅读时机 |
 |------|------|------|
-| [PIPE Specification (Intel)](https://www.intel.com/content/www/us/en/io/pci-express/pcie-pipe-spec.html) | PIPE 接口的完整信号定义与时序 | 学完本文 §3 后 |
-| [Synopsys DesignWare PCIe Controller Databook](https://www.synopsys.com/designware-ip/interface-ip/pci-express.html) | DWC Controller 内部架构、iATU/DBI 详解 | 需要查阅具体寄存器时 |
+| [PIPE Specification (Intel)](https://www.intel.com/content/www/us/en/io/pci-express/pcie-pipe-spec.html) | PIPE 接口的完整信号定义与时序 | 学完本文 §3-§4 后 |
+| [Synopsys DesignWare PCIe Controller Databook](https://www.synopsys.com/designware-ip/interface-ip/pci-express.html) | DWC Controller 内部架构、iATU/DBI/链路寄存器详解 | 学完本文 §6，需要查寄存器时 |
 | [RK3588 TRM (Rockchip)](https://opensource.rock-chips.com/) | RK3588 PCIe Controller + PHY 寄存器手册 | 研究 RK3588 具体配置时 |
-| PCIe Base Spec §4 (Physical Layer) | 物理层协议规范, LTSSM 与电气参数 | 学完本文 §3 后 |
-| PCIe Base Spec §6.2 (AER) | 物理层错误如何上报到事务层 | 与 [AER](pcie-learning-resources.md) Phase 7 对照读 |
+| PCIe Base Spec §4 (Physical Layer) | 物理层协议规范， LTSSM 与电气参数 | 学完本文 §4-§5 后 |
+| PCIe Base Spec §6.2 (AER) · §6.6 (链路初始化时序) | 物理层错误上报、建链后的 100ms 等待要求 | 学完本文 §4 后对照读 |
+| [pcie-designware.c (本地)](file:///home/pbw/sg2046/linux-common/drivers/pci/controller/dwc/pcie-designware.c) | DWC 链路设置(`dw_pcie_setup`/`dw_pcie_link_set_max_*`) | 学完本文 §6 后阅读 |
 
 ## 参考资料
 
-- [PIPE Specification 4.4 / 5.2](https://www.intel.com/content/www/us/en/io/pci-express/pcie-pipe-spec.html) — 参考了 PIPE 信号定义与状态机时序
-- [PCI Express Base Specification 4.0+](https://pcisig.com/specifications) — 参考了 §4 Physical Layer, §5 LTSSM
-- [phy-rockchip-snps-pcie3.c](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/drivers/phy/rockchip/phy-rockchip-snps-pcie3.c) — 参考了 RK3588 Bifurcation 的寄存器编程逻辑
-- [pcie-designware.c](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/drivers/pci/controller/dwc/pcie-designware.c) — 参考了 DWC Controller 的 iATU 与 DBI 编程接口
+- [PIPE Specification 4.4 / 5.2](https://www.intel.com/content/www/us/en/io/pci-express/pcie-pipe-spec.html) — 参考了 PIPE 信号定义、`TxDetectRx`/`PhyStatus` 检测、`RxStatus` 状态、状态机时序
+- [PCI Express Base Specification 4.0+](https://pcisig.com/specifications) — 参考了 §4 Physical Layer(电气/均衡)、§4.2.x LTSSM 状态与定时器、§4.2.5 Detect.Quiet、§4.2.6 训练序列与 Lane 反转/极性、§6.6 建链后时序
+- [phy-rockchip-snps-pcie3.c](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/drivers/phy/rockchip/phy-rockchip-snps-pcie3.c) — 参考了 RK3588 Bifurcation 的寄存器编程逻辑与 `data-lanes` 解析
+- [pcie-designware.c](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/drivers/pci/controller/dwc/pcie-designware.c) — 参考了 `dw_pcie_setup()`/`dw_pcie_link_set_max_link_width()`/`dw_pcie_wait_for_link()` 的链路设置与等待逻辑
+- [pcie-designware.c (本地)](file:///home/pbw/sg2046/linux-common/drivers/pci/controller/dwc/pcie-designware.c) — 第 194/806-807/843-943/1251-1287 行，链路速率与宽度设置

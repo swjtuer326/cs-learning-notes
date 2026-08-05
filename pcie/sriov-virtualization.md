@@ -21,15 +21,15 @@
 
 ### 0.1 系统上下文
 
-**项目定位**:SR-IOV 是 PCIe SIG 制定的设备虚拟化标准,核心目标是让多个虚拟机(或用户态进程)在同一台物理主机上**安全、隔离、线速**地共享同一个 PCIe 物理设备。它位于"硬件虚拟化能力 ↔ 虚拟化软件栈"的交界处:向下依赖 PCIe 规范定义的 PF/VF 配置空间与 Capability,向上对接 IOMMU、VFIO、QEMU/KVM 等虚拟化基础设施。
+**项目定位**:SR-IOV 是 PCIe SIG 制定的设备虚拟化标准，核心目标是让多个虚拟机(或用户态进程)在同一台物理主机上**安全、隔离、线速**地共享同一个 PCIe 物理设备。它位于"硬件虚拟化能力 ↔ 虚拟化软件栈"的交界处:向下依赖 PCIe 规范定义的 PF/VF 配置空间与 Capability，向上对接 IOMMU、VFIO、QEMU/KVM 等虚拟化基础设施。
 
 **软硬件耦合点**:
 
-- **PF 驱动(控制面)↔ VF 驱动(数据面)**:PF 驱动负责 VF 的创建/销毁/资源分配,VF 驱动只做数据面 I/O,二者通过 PF-VF 邮箱通信
-- **VF DMA ↔ IOMMU**:每个 VF 的 DMA 必须经 IOMMU(VT-d / SMMU / RISC-V IOMMU)做地址转换与权限检查,否则 VF 可访问任意物理内存
-- **ATS 缓存 ↔ IOMMU**:设备侧缓存的 GPA→HPA 转换结果必须能被 IOMMU 失效,页表变更与缓存清缺一不可
-- **ACS 隔离 ↔ Switch 路由**:ACS 在 PCIe Switch/Root Port 上拦截 P2P TLP,强制走 IOMMU 审计,任一环节缺失都会破坏隔离模型
-- **VFIO ↔ 用户态**:VFIO 把 VF 以安全文件描述符形式暴露给用户态,QEMU/VFIO 驱动通过 ioctl 操作设备,宿主机内核仍掌控配置空间与中断路由
+- **PF 驱动(控制面)↔ VF 驱动(数据面)**:PF 驱动负责 VF 的创建/销毁/资源分配，VF 驱动只做数据面 I/O，二者通过 PF-VF 邮箱通信
+- **VF DMA ↔ IOMMU**:每个 VF 的 DMA 必须经 IOMMU(VT-d / SMMU / RISC-V IOMMU)做地址转换与权限检查，否则 VF 可访问任意物理内存
+- **ATS 缓存 ↔ IOMMU**:设备侧缓存的 GPA→HPA 转换结果必须能被 IOMMU 失效，页表变更与缓存清缺一不可
+- **ACS 隔离 ↔ Switch 路由**:ACS 在 PCIe Switch/Root Port 上拦截 P2P TLP，强制走 IOMMU 审计，任一环节缺失都会破坏隔离模型
+- **VFIO ↔ 用户态**:VFIO 把 VF 以安全文件描述符形式暴露给用户态，QEMU/VFIO 驱动通过 ioctl 操作设备，宿主机内核仍掌控配置空间与中断路由
 
 **跨实现/跨架构对比**:
 
@@ -37,13 +37,13 @@
 |----------|-----|-----|--------|
 | IOMMU 实现 | Intel VT-d / AMD-Vi | SMMUv2 / SMMUv3 | RISC-V IOMMU 规范(2024) |
 | 设备标识 | Requester ID (BDF) | Stream ID | DeviceID(依据 IOMMU 规范) |
-| ATS 支持 | 完整 | SMMUv3 起支持 | 规范支持,实现较少 |
-| 生态成熟度 | 最成熟(服务器主力) | 嵌入式/边缘广泛 | 起步阶段,生态追赶中 |
+| ATS 支持 | 完整 | SMMUv3 起支持 | 规范支持，实现较少 |
+| 生态成熟度 | 最成熟(服务器主力) | 嵌入式/边缘广泛 | 起步阶段，生态追赶中 |
 
 | 对比维度 | SR-IOV | virtio | Scalable IOV |
 |----------|--------|--------|--------------|
 | 隔离粒度 | PCIe Function 级 | 软件队列级 | PASID + 队列级 |
-| 性能 | 线速(硬件直通) | 软件转发,经宿主机 | 接近线速,共享更细 |
+| 性能 | 线速(硬件直通) | 软件转发，经宿主机 | 接近线速，共享更细 |
 | 硬件依赖 | 强(PF/VF 配置空间) | 弱(只需 virtio 设备) | 强(需 PASID / Scalable IOV Cap) |
 | 适用场景 | 网卡/GPU 直通 | 通用虚拟设备 | 高密度 GPU/Accelerator 共享 |
 
@@ -70,13 +70,13 @@ flowchart TD
     IOMMU -->|"地址转换 + 权限"| MEM["系统内存"]
 ```
 
-> **核心要点**:SR-IOV 不是孤立机制,而是"硬件 Capability + IOMMU 隔离 + 内核驱动 + 用户态框架"四层协定的产物。任一层缺失或配置错误,都会导致 VF 直通失败或安全模型崩塌。
+> **核心要点**:SR-IOV 不是孤立机制，而是"硬件 Capability + IOMMU 隔离 + 内核驱动 + 用户态框架"四层协定的产物。任一层缺失或配置错误，都会导致 VF 直通失败或安全模型崩塌。
 
 ### 0.2 为什么需要SR-IOV
 
 在虚拟化环境中，多个VM需要访问同一个物理PCIe设备（如网卡）。传统方案存在严重问题：
 
-```
+```text
 软件模拟: VM → QEMU模拟设备 → 内核驱动 → 物理设备
   问题: 每次I/O都经过VM Exit，性能极差
 
@@ -91,7 +91,7 @@ SR-IOV: VM → VF → 物理设备 (硬件级隔离，线速性能)
 
 IOMMU (Input/Output Memory Management Unit) 是设备侧的内存管理单元，为DMA提供地址转换和访问控制：
 
-```
+```text
 没有IOMMU:
   设备DMA → 可访问任意物理地址 → 安全风险
 
@@ -104,7 +104,7 @@ IOMMU (Input/Output Memory Management Unit) 是设备侧的内存管理单元，
 |------|----------|---------|
 | Intel | VT-d (VTD) | DMA Remapping, Interrupt Remapping |
 | AMD | AMD-Vi (IOMMU) | Device Table, IOTLB |
-| ARM | SMMU | Stream ID匹配, 上下文银行 |
+| ARM | SMMU | Stream ID匹配，上下文银行 |
 
 > SR-IOV的VF直通必须依赖IOMMU，否则VF的DMA可以访问任意内存。
 
@@ -122,7 +122,7 @@ SR-IOV将一个物理设备（PF）拆分为多个虚拟功能（VF），每个V
 
 ## 1. 规范机制
 
-> 上一章建立了 SR-IOV 的设计哲学——数据面隔离、控制面统一,并以 IOMMU 作为 DMA 安全的底座。一个自然的问题是:这套"PF 管、VF 干"的分工在 PCIe 规范层面到底是如何定义的?本章用规范机制来回答这个问题——先讲 SR-IOV 的整体架构与 PF/VF 区别,再剖析 SR-IOV Extended Capability 的字段布局,最后给出 VF 的 BDF 计算方法。
+> 上一章建立了 SR-IOV 的设计哲学——数据面隔离、控制面统一，并以 IOMMU 作为 DMA 安全的底座。一个自然的问题是:这套"PF 管、VF 干"的分工在 PCIe 规范层面到底是如何定义的?本章用规范机制来回答这个问题——先讲 SR-IOV 的整体架构与 PF/VF 区别，再剖析 SR-IOV Extended Capability 的字段布局，最后给出 VF 的 BDF 计算方法。
 
 ### 1.1 SR-IOV架构
 
@@ -168,7 +168,7 @@ flowchart TD
 
 ### 1.3 SR-IOV Capability结构
 
-```
+```text
 SR-IOV Extended Capability (Config Space 0x100+):
 ├── 0x00: Cap ID = 0x10, Version, Next Ptr
 ├── 0x02: SR-IOV Control
@@ -195,7 +195,7 @@ SR-IOV Extended Capability (Config Space 0x100+):
 
 ### 1.4 VF的BDF计算
 
-```
+```text
 VF[i].BDF = PF.BDF + Offset + Stride × i
 
 其中:
@@ -216,7 +216,7 @@ VF[i].BDF = PF.BDF + Offset + Stride × i
 
 ## 2. Linux内核实现
 
-> 上一章建立了 SR-IOV 的规范机制——Capability 字段、VF BDF 计算公式、PF/VF 配置空间差异。一个自然的问题是:Linux 内核如何把这些规范落地为可用的代码路径?本章用 Linux 内核实现来回答这个问题——先讲 VF BDF 的内核计算函数,再深入 `sriov_enable()` 的资源检查与启用序列,然后梳理 VF 创建的时序、VF BAR 的特殊处理,以及 VFIO 对 VF 配置空间的虚拟化拦截。
+> 上一章建立了 SR-IOV 的规范机制——Capability 字段、VF BDF 计算公式、PF/VF 配置空间差异。一个自然的问题是:Linux 内核如何把这些规范落地为可用的代码路径?本章用 Linux 内核实现来回答这个问题——先讲 VF BDF 的内核计算函数，再深入 `sriov_enable()` 的资源检查与启用序列，然后梳理 VF 创建的时序、VF BAR 的特殊处理，以及 VFIO 对 VF 配置空间的虚拟化拦截。
 
 ### 2.1 VF BDF计算
 
@@ -401,7 +401,7 @@ resource_size_t pci_iov_resource_size(struct pci_dev *dev, int resno)
 3. 实际分配时，PF的整个BAR空间被划分为N个等大小的VF BAR
 4. 每个VF的BAR由硬件自动映射到PF BAR空间中的对应偏移
 
-```
+```text
 PF BAR空间 (必须 >= VF_BAR_size × NumVFs):
 ┌──────────────────────────────────────────────┐
 │ VF0 BAR │ VF1 BAR │ VF2 BAR │ ... │ VFn BAR │
@@ -440,7 +440,7 @@ static void pci_read_vf_config_common(struct pci_dev *virtfn)
 
 VF直通给VM时，QEMU/VFIO不能让VM直接访问VF的配置空间——VM可能修改关键寄存器（如Command寄存器关闭Memory Space）导致VF不可用，或读取不应暴露的信息。VFIO通过`vfio_pci_config.c`实现配置空间拦截：
 
-```
+```text
 VM访问VF配置空间:
   VM → VFIO ioctl → vfio_pci_config.c → 拦截判断
     ├── 允许直通: 无安全影响的寄存器 (如BAR读取、Status)
@@ -463,7 +463,7 @@ VM访问VF配置空间:
 
 ## 3. ATS (Address Translation Service)
 
-> 上一章建立了 Linux 内核的 SR-IOV 实现路径——VF 创建、BAR 分配、配置空间虚拟化。一个自然的问题是:VF 直通给 VM 后,DMA 每次都要走 IOMMU 查页表,性能瓶颈如何缓解?本章用 ATS(Address Translation Service)来回答这个问题——先讲 ATS 的缓存机制与失效流程,再剖析内核 `pci_enable_ats()` 中 PF/VF 的协同约束。
+> 上一章建立了 Linux 内核的 SR-IOV 实现路径——VF 创建、BAR 分配、配置空间虚拟化。一个自然的问题是:VF 直通给 VM 后，DMA 每次都要走 IOMMU 查页表，性能瓶颈如何缓解?本章用 ATS(Address Translation Service)来回答这个问题——先讲 ATS 的缓存机制与失效流程，再剖析内核 `pci_enable_ats()` 中 PF/VF 的协同约束。
 
 ### 3.1 ATS机制
 
@@ -549,7 +549,7 @@ int pci_enable_ats(struct pci_dev *dev, int ps)
 
 ## 4. ACS (Access Control Services)
 
-> 上一章建立了 ATS 缓存机制——设备缓存 IOMMU 转换结果以减少查表开销。一个自然的问题是:如果 VF 之间或 VF 与系统内存之间绕过 IOMMU 直接做 P2P DMA,隔离模型如何维持?本章用 ACS(Access Control Services)来回答这个问题——先讲 ACS 的五个控制点及其安全意义,再分析 ACS 重定向对 P2P DMA 路径的影响。
+> 上一章建立了 ATS 缓存机制——设备缓存 IOMMU 转换结果以减少查表开销。一个自然的问题是:如果 VF 之间或 VF 与系统内存之间绕过 IOMMU 直接做 P2P DMA，隔离模型如何维持?本章用 ACS(Access Control Services)来回答这个问题——先讲 ACS 的五个控制点及其安全意义，再分析 ACS 重定向对 P2P DMA 路径的影响。
 
 ### 4.1 ACS控制点
 
@@ -607,7 +607,7 @@ static int pci_bridge_has_acs_redir(struct pci_dev *pdev)
 
 ## 5. VFIO用户态驱动
 
-> 上一章建立了 ACS 的隔离控制——通过重定向和阻截把所有 DMA 路径拉回 IOMMU 审计。一个自然的问题是:规范层的隔离准备好后,用户态(VM 或用户态驱动)如何安全地拿到 VF 的实际控制权?本章用 VFIO(Virtual Function I/O)来回答这个问题——先讲 VFIO 的分层架构与 ioctl 接口,再以典型流程演示 group/container/device 的打开、MMIO 映射与 MSI-X 中断注册。
+> 上一章建立了 ACS 的隔离控制——通过重定向和阻截把所有 DMA 路径拉回 IOMMU 审计。一个自然的问题是:规范层的隔离准备好后，用户态(VM 或用户态驱动)如何安全地拿到 VF 的实际控制权?本章用 VFIO(Virtual Function I/O)来回答这个问题——先讲 VFIO 的分层架构与 ioctl 接口，再以典型流程演示 group/container/device 的打开、MMIO 映射与 MSI-X 中断注册。
 
 ### 5.1 VFIO架构
 
@@ -669,7 +669,7 @@ ioctl(device_fd, VFIO_DEVICE_SET_IRQS, &irq_set);
 
 ## 6. VF Migration
 
-> 上一章建立了 VFIO 用户态驱动框架——VM 通过 ioctl 直接操作 VF 硬件。一个自然的问题是:VM 一旦直通了 VF,要做热迁移时设备状态如何跟随?本章用 VF Migration 来回答这个问题——先讲为什么 VF Migration 是热迁移的硬骨头,再走一遍源/目标主机的状态保存与恢复流程,最后说明当前内核与厂商实现的进展。
+> 上一章建立了 VFIO 用户态驱动框架——VM 通过 ioctl 直接操作 VF 硬件。一个自然的问题是:VM 一旦直通了 VF，要做热迁移时设备状态如何跟随?本章用 VF Migration 来回答这个问题——先讲为什么 VF Migration 是热迁移的硬骨头，再走一遍源/目标主机的状态保存与恢复流程，最后说明当前内核与厂商实现的进展。
 
 SR-IOV Capability中包含VF Migration相关字段（VF Migration Enable、VF Migration Interrupt Enable、VF Migration Status），允许VF的状态在物理主机之间迁移。这是虚拟机热迁移（Live Migration）的关键支撑。
 
@@ -677,7 +677,7 @@ SR-IOV Capability中包含VF Migration相关字段（VF Migration Enable、VF Mi
 
 VF直通给VM后，VF的设备状态（DMA上下文、队列状态、内部寄存器）绑定在物理主机上。如果需要将VM迁移到另一台物理机，必须：
 
-```
+```text
 无VF Migration:
   VM迁移 → VF状态丢失 → 目标机VF从头初始化 → 业务中断
 
@@ -687,7 +687,7 @@ VF直通给VM后，VF的设备状态（DMA上下文、队列状态、内部寄�
 
 ### 6.2 Migration流程
 
-```
+```text
 源主机:                              目标主机:
   1. VM暂停                            1. 创建VF (sriov_numvfs)
   2. PF驱动保存VF状态                   2. PF驱动准备接收VF状态
@@ -712,13 +712,13 @@ SR-IOV规范定义了Migration的Capability框架，但**具体迁移哪些状�
 
 ## 7. Multi-Queue 与 VF
 
-> 上一章建立了 VF Migration 的状态保存与恢复框架。一个自然的问题是:迁移只是异常路径,真正决定 VF 吞吐的是日常的队列与中断配置——VF 的多个收发队列如何分配、如何与 MSI-X 向量对应?本章用 Multi-Queue 与 VF 来回答这个问题——先讲 PF 驱动的队列分配模型,再引入 RSS 把入向流量分散到多队列,最后梳理队列数与 MSI-X 向量数的换算关系与运行时调整接口。
+> 上一章建立了 VF Migration 的状态保存与恢复框架。一个自然的问题是:迁移只是异常路径，真正决定 VF 吞吐的是日常的队列与中断配置——VF 的多个收发队列如何分配、如何与 MSI-X 向量对应?本章用 Multi-Queue 与 VF 来回答这个问题——先讲 PF 驱动的队列分配模型，再引入 RSS 把入向流量分散到多队列，最后梳理队列数与 MSI-X 向量数的换算关系与运行时调整接口。
 
 网卡的SR-IOV VF通常需要多个收发队列（Multi-Queue）以实现高性能。队列分配机制是VF驱动设计的核心考量。
 
 ### 7.1 队列分配模型
 
-```
+```text
 物理网卡 (PF):
   总队列数 = 128 (硬件固定)
   ├── PF保留: 16队列
@@ -738,7 +738,7 @@ PF驱动负责:
 
 RSS是网卡将入向流量分散到多个接收队列的机制，避免单队列成为瓶颈：
 
-```
+```text
 入向数据包 → RSS哈希 (基于五元组) → 哈希值 % 队列数 → 目标队列
   → 不同流的数据包被分散到不同队列
   → 每个队列有独立的MSI-X向量
@@ -751,7 +751,7 @@ VF的RSS配置由VF驱动通过PF-VF邮箱通道请求PF设置，VF不能直接�
 
 每个VF的队列数决定了其需要的MSI-X向量数：
 
-```
+```text
 VF MSI-X向量需求:
   向量数 = 接收队列数 + 发送队列数 + 其他向量(如链路状态、错误)
   
@@ -772,7 +772,7 @@ echo 32 > /sys/bus/pci/devices/0000:03:00.0/sriov_vf_msix_count
 
 ## 8. 实战调试
 
-> 上一章建立了 Multi-Queue 与 MSI-X 向量的配置模型。一个自然的问题是:理解了机制与代码后,在真实系统上如何操作和排查问题?本章用实战调试来回答这个问题——先列 SR-IOV 的 sysfs 操作命令,再演示 VFIO 绑定流程,最后用一张故障表把"现象—原因—排查"串起来。
+> 上一章建立了 Multi-Queue 与 MSI-X 向量的配置模型。一个自然的问题是:理解了机制与代码后，在真实系统上如何操作和排查问题?本章用实战调试来回答这个问题——先列 SR-IOV 的 sysfs 操作命令，再演示 VFIO 绑定流程，最后用一张故障表把"现象—原因—排查"串起来。
 
 ### 8.1 SR-IOV操作
 
@@ -823,7 +823,7 @@ cat /sys/kernel/iommu_groups/26/devices
 
 ## 9. 代码阅读路线
 
-> 上一章建立了实战调试的操作与排查路径。一个自然的问题是:遇到深层次问题需要回到源码时,应该按什么顺序阅读?本章用代码阅读路线来回答这个问题——先给出五个核心文件的阅读次序与关注函数,再用一张依赖图标注它们之间的调用与数据流。
+> 上一章建立了实战调试的操作与排查路径。一个自然的问题是:遇到深层次问题需要回到源码时，应该按什么顺序阅读?本章用代码阅读路线来回答这个问题——先给出五个核心文件的阅读次序与关注函数，再用一张依赖图标注它们之间的调用与数据流。
 
 | 顺序 | 文件 | 关注函数 |
 |------|------|----------|

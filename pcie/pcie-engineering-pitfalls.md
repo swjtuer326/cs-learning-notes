@@ -26,7 +26,7 @@
 
 每条坑按统一结构组织：
 
-```
+```text
 现象 → 根因 → 排查命令 → 修复方法 → 规范/代码依据
 ```
 
@@ -52,7 +52,7 @@
 | ECAM 窗口未配置或地址错误 | `cat /proc/iomem \| grep -i ecam` | 修正固件/DT 的 ECAM 基址 |
 | Bus 号超范围 | `dmesg \| grep "bus.*out of range"` | 扩大 Subordinate Bus 号 |
 | 设备处于 D3cold | 配置空间返回全 FF | 固件先恢复 D0 再枚举 |
-| 复位未完成就扫描 | CRS 超时后放弃 | 增大 `pci_bios_interpret` 等待，或加 reset delay |
+| 复位未完成就扫描 | CRS 超时后放弃 | 启用 CRS Software Visibility（见 §3.1），或加 reset delay |
 
 **排查命令**：
 
@@ -122,7 +122,7 @@ setpci -s 00:01.0 0x10.B=0x20   # Link Control Retrain Link bit
 
 **根因**：
 
-1. **Lane 分配/Bifurcation 配置错误**：SoC 的 PHY Lane 被分给其他 Controller。详见 [Controller 与 PHY 架构](./controller-phy-architecture.md) §4-5。
+1. **Lane 分配/Bifurcation 配置错误**：SoC 的 PHY Lane 被分给其他 Controller。详见 [Controller 与 PHY 架构](./controller-phy-architecture.md) §7-8。
 2. **物理 Lane 损坏**：某几条 Lane 的差分对断线或短路。
 3. **热插拔槽只接了部分 Lane**：如 x16 插槽只接了 x8 信号。
 
@@ -175,7 +175,7 @@ echo 0 > /sys/module/pcie_aspm/parameters/policy
 
 ## 2. ECAM 与配置空间
 
-> 详见 [ECAM 与配置空间](./ecam-config-space.md)。
+> §1 讲了链路训练——链路起来后，下一步是读配置空间。这一环节的典型故障是"配置空间访问结果不对"：Bus 0 出现幽灵设备、偶发读到错误值、Extended Capability 不可见。本章从 ECAM 的地址计算与控制器路径出发，解释这些现象各自指向哪一层。机制详见 [ECAM 与配置空间](./ecam-config-space.md)。
 
 ### 2.1 Bus 0 出现"幽灵设备"（重复设备）
 
@@ -241,15 +241,15 @@ dmesg | grep -i "ecam\|cam"
 # 详见本文 §10.1 的详细解释
 ```
 
-> **核心要点**：注意 `native_ecam` 标志的误导性命名——它实际表示**非 ECAM**(iATU)模式,而非"内建 ECAM"。SG2046 设置此标志后,配置访问走 iATU 出向窗口,Extended Capability 仍可见(因为 iATU 也能访问完整 4KB 配置空间,只是每次访问都要重配窗口)。详见 §10.1。
+> **核心要点**：注意 `native_ecam` 标志的误导性命名——它实际表示**非 ECAM**(iATU)模式，而非"内建 ECAM"。SG2046 设置此标志后，配置访问走 iATU 出向窗口，Extended Capability 仍可见(因为 iATU 也能访问完整 4KB 配置空间，只是每次访问都要重配窗口)。详见 §10.1。
 
-**代码依据**:[drivers/pci/controller/dwc/pcie-designware-host.c](file:///home/pbw/sg2046/linux-common/drivers/pci/controller/dwc/pcie-designware-host.c) 第 478-504 行 `dw_pcie_ecam_enabled()`——`native_ecam=true` 时返回 `false`,导致 DWC 跳过通用 ECAM 窗口创建,改用 iATU 路径(`dw_pcie_ops`/`dw_child_pcie_ops`)。
+**代码依据**:[drivers/pci/controller/dwc/pcie-designware-host.c](file:///home/pbw/sg2046/linux-common/drivers/pci/controller/dwc/pcie-designware-host.c) 第 478-504 行 `dw_pcie_ecam_enabled()`——`native_ecam=true` 时返回 `false`，导致 DWC 跳过通用 ECAM 窗口创建，改用 iATU 路径(`dw_pcie_ops`/`dw_child_pcie_ops`)。
 
 ---
 
 ## 3. 枚举与设备发现
 
-> 详见 [设备枚举流程](./enumeration-flow.md)。
+> §2 讲了配置空间访问，下一步是枚举——把总线拓扑扫出来。这一环节的典型故障是"设备时有时无"：NVMe 枚举超时丢失、深层 Switch 拓扑 Bus 号耗尽、两遍扫描导致设备重复添加。本章分别给出根因与验证命令。机制详见 [设备枚举流程](./enumeration-flow.md)。
 
 ### 3.1 NVMe/大容量设备枚举超时丢失
 
@@ -259,7 +259,7 @@ dmesg | grep -i "ecam\|cam"
 
 **机制详解**：
 
-```
+```text
 设备返回 CRS → Root Port 的 CRS Software Visibility 启用时 → 软件读到 Vendor ID=0x0001
   → 表示"设备存在但未就绪"
   → 内核重试，指数退避：1ms, 2ms, 4ms, ... 上限 1s
@@ -286,8 +286,8 @@ while (pci_bus_rrs_vendor_id(*l)) {
 lspci -vvv -s 00:01.0 | grep -i "CRS"
 #   RootCtl: CRS Software Visibility Enabled
 
-# 2. 增大内核等待（通过内核参数）
-#    pci=crs_timelimit=60  （某些内核版本支持）
+# 2. 内核侧的 CRS/RRS 等待时间是硬编码的（60 秒），无内核参数可调
+#    pci_bus_wait_rrs() 轮询，见 drivers/pci/probe.c
 
 # 3. 固件层面：确保 Root Port 的 CRS Software Visibility Enable 位被置位
 #    Root Control Register (offset 0x5C) bit3
@@ -303,7 +303,7 @@ lspci -vvv -s 00:01.0 | grep -i "CRS"
 
 **场景示例**：
 
-```
+```text
 Root Port (Sub=255)
   └─ Switch L1 (Sub=255)
        └─ Switch L2 (Sub=255)
@@ -363,7 +363,7 @@ if ((secondary || subordinate) && !pcibios_assign_all_busses() && !broken) {
 
 ## 4. BAR 与资源分配
 
-> 详见 [BAR 与资源分配](./bar-resource-allocation.md)。
+> §3 讲枚举发现设备——但设备只是"看见"了，还要给它分配地址空间才能用。这一环节的典型故障是"BAR 分配失败"：MMIO 资源不足、BAR 探测得到错误大小、64-bit BAR 在 32 位系统失败、iATU 窗口配置错误。本章按分配失败的层次逐一拆解。机制详见 [BAR 与资源分配](./bar-resource-allocation.md)。
 
 ### 4.1 BAR 分配失败："not enough MMIO resources"
 
@@ -505,7 +505,7 @@ ranges = <0x02000000 0x0 0x20000000  0x0 0x20000000  0x0 0x08000000>;
 
 ## 5. 中断（MSI/MSI-X）
 
-> 详见 [MSI/MSI-X 中断机制](./msi-interrupt.md)。
+> §4 解决了设备可见、地址可用，下一步是"设备如何通知 CPU"——中断。这一环节的典型故障是"设备完成工作但系统无感知"：MSI-X 没分配成功、中断收不到、单核 100%、亲和性失衡。本章从 MSI-X 表、irqdomain、亲和性三个层面定位。机制详见 [MSI/MSI-X 中断机制](./msi-interrupt.md)。
 
 ### 5.1 MSI-X 分配失败：`-ENOSPC`
 
@@ -640,9 +640,9 @@ if (pci_msi_enabled()) {
 }
 ```
 
-> **关键区别**:DWC 内建 MSI 路径(`dw_pcie_msi_host_init` → `dw_pcie_msi_parent_ops` 第 57-63 行)仅在**没有** `msi-parent` 时启用。SG2046 的 DT 写了 `msi-parent = <&imsic_s>`,所以 DWC 内建 MSI 逻辑被旁路——设备的 MemWr TLP 直接写入 IMSIC 的 MMIO 地址,PCI core 通过 `msi-parent` 找到 IMSIC 的 irqdomain 分配中断向量。`dw_pcie_msi_parent_ops` 在 SG2046 上**不会**被注册。
+> **关键区别**:DWC 内建 MSI 路径(`dw_pcie_msi_host_init` → `dw_pcie_msi_parent_ops` 第 57-63 行)仅在**没有** `msi-parent` 时启用。SG2046 的 DT 写了 `msi-parent = <&imsic_s>`，所以 DWC 内建 MSI 逻辑被旁路——设备的 MemWr TLP 直接写入 IMSIC 的 MMIO 地址，PCI core 通过 `msi-parent` 找到 IMSIC 的 irqdomain 分配中断向量。`dw_pcie_msi_parent_ops` 在 SG2046 上**不会**被注册。
 
-> **核心要点**：在 RISC-V 平台上，PCIe MSI **不经过** DWC 的内部 MSI 逻辑（`PCIE_MSI_INTR0_STATUS` 等），而是直接通过 IMSIC。这意味着：(1) `msi-parent` 必须正确指向 IMSIC；(2) IMSIC 的 MMIO 地址必须在设备的 DMA 可达范围内（通过 `dma-ranges` 配置）；(3) 调试 MSI 问题时要用 IMSIC 的 debugfs，而不是 DWC 的 MSI 状态寄存器；(4) 驱动里的 `sophgo_pcie_msi_enable()` 只是使能 app 层的 MSI 中断信号位(`PCIE_INT_EN_INT_MSI`),并不参与 MSI 向量分配。
+> **核心要点**：在 RISC-V 平台上，PCIe MSI **不经过** DWC 的内部 MSI 逻辑（`PCIE_MSI_INTR0_STATUS` 等），而是直接通过 IMSIC。这意味着：(1) `msi-parent` 必须正确指向 IMSIC；(2) IMSIC 的 MMIO 地址必须在设备的 DMA 可达范围内（通过 `dma-ranges` 配置）；(3) 调试 MSI 问题时要用 IMSIC 的 debugfs，而不是 DWC 的 MSI 状态寄存器；(4) 驱动里的 `sophgo_pcie_msi_enable()` 只是使能 app 层的 MSI 中断信号位(`PCIE_INT_EN_INT_MSI`)，并不参与 MSI 向量分配。
 
 ### 5.4 中断亲和性导致性能问题
 
@@ -679,7 +679,7 @@ done
 
 ## 6. 热插拔
 
-> 详见 [Hot-Plug 机制与 pciehp 驱动](./hotplug-mechanism.md)。
+> §5 讲的是设备常驻的中断路径。但服务器、桌面环境允许在系统运行时插拔卡，这一环节的典型故障是"插了不出现 / 拔了系统卡死"：热插入后设备不出现、意外拔出导致 MMIO 崩溃、DPC 恢复后设备消失。本章从 Slot 状态机与 pciehp 事件链入手。机制详见 [Hot-Plug 机制与 pciehp 驱动](./hotplug-mechanism.md)。
 
 ### 6.1 热插入后设备不出现
 
@@ -773,7 +773,7 @@ static struct pci_driver my_driver = {
 
 ## 7. SR-IOV 与虚拟化
 
-> 详见 [SR-IOV 虚拟化](./sriov-virtualization.md)。
+> §6 讲的是物理设备的热插拔。数据中心场景还要把一块物理卡切成多个虚拟功能（VF），这一环节的典型故障是"VF 创建失败"：Bus 号耗尽、VF BAR 分配失败、VF 无法直通给虚拟机。本章从 sriov_enable 的依赖链与 ACS/IOMMU 隔离入手。机制详见 [SR-IOV 虚拟化](./sriov-virtualization.md)。
 
 ### 7.1 VF 创建失败："not enough MMIO resources"
 
@@ -892,7 +892,7 @@ echo 4 > /sys/bus/pci/devices/0000:03:00.0/sriov_numvfs
 
 ## 8. 错误处理（AER/DPC）
 
-> 详见 [PCIe 核心知识索引](./pcie-learning-resources.md) Phase 7。
+> §5-§7 处理的是正常路径的中断、热插拔与虚拟化。但 PCIe 是可靠性优先的总线，链路故障（信号差、设备出错）必须被记录与隔离，这一环节的典型故障是"错误风暴"与"卡在 Recovery"：AER 可纠正错误持续增长、DPC 触发后下游设备消失。本章讲 AER 分级上报与 DPC 隔离的排查方法。机制详见 [PCIe 核心知识索引](./pcie-learning-resources.md) Phase 7。
 
 ### 8.1 AER 错误频繁但无实际影响
 
@@ -966,6 +966,8 @@ echo 1 > /sys/bus/pci/rescan
 
 ## 9. DMA 与地址转换
 
+> 前面 §4 讲了 BAR 资源分配、§5 讲了中断，这些机制最终都要服务于 DMA——设备读写主机内存。一个自然的问题是：DMA 地址写错了会出现什么现象、如何定位？本章从 DMA 的地址转换链出发，梳理 DMA 写错位置、swiotlb 兜底、iATU 窗口错误三类典型故障。
+
 ### 9.1 DMA 写入错误位置
 
 **现象**：设备 DMA 数据写到错误的内存位置，导致数据损坏或内核 panic。
@@ -1027,11 +1029,13 @@ if (ctrl & (PCI_ACS_RR | PCI_ACS_CR | PCI_ACS_EC))
 
 > **核心要点**：P2P DMA 是 GPU Direct RDMA、NVMe P2P 等高性能场景的关键。启用 P2P 需要：(1) 设备在同一 Switch 下；(2) ACS 不阻止 P2P；(3) 驱动使用 `pci_p2pdma_*` API。服务器 BIOS 通常有 "ACS Support" 选项可关闭。
 
-> **机制详见**：P2P DMA 的规范机制(ACS 真值表、ATS Direct Translated P2P)、Linux 内核实现(`calc_map_type_and_dist()` 三段式决策、`pci_p2pdma_add_resource()` 用 ZONE_DEVICE 把 MMIO 包装为 `struct page`)、NTB 跨 Host 互联、CXL.mem 内存池化,详见 [P2P DMA 与多芯级联](./p2p-multi-chip-interconnect.md) §1-2、§6.3 故障表。
+> **机制详见**：P2P DMA 的规范机制(ACS 真值表、ATS Direct Translated P2P)、Linux 内核实现(`calc_map_type_and_dist()` 三段式决策、`pci_p2pdma_add_resource()` 用 ZONE_DEVICE 把 MMIO 包装为 `struct page`)、NTB 跨 Host 互联、CXL.mem 内存池化，详见 [P2P DMA 与多芯级联](./p2p-multi-chip-interconnect.md) §1-2、§6.3 故障表。
 
 ---
 
 ## 10. RISC-V / SG2046 特定问题
+
+> 前八章的问题在 x86/ARM 上也常见。但 RISC-V 平台、尤其是 SG2046 这类服务器 SoC 有自己独特的坑——`native_ecam` 的 iATU 配置路径、固件锁定 PHY、多 die 的 domain 划分。本章把这类"只在特定平台出现"的问题单独成章，方便在 RISC-V 上调试时直接定位。
 
 ### 10.1 native_ecam 标志的真实含义（非 ECAM，iATU 模式）
 
@@ -1048,8 +1052,8 @@ SG2046 的 PCIe 驱动设置了 `pp->native_ecam = true`，但这个标志名极
 
 | 标志状态 | `dw_pcie_ecam_enabled()` 返回 | 使用的 `pci_ops` | 访问机制 |
 |---------|---------------------------|----------------|---------|
-| `native_ecam=false` + 256MB 对齐 + 足够大 | `true` | `dw_pcie_ecam_ops` | 硬件 ECAM 解码,Bus>0 走 `pci_ecam_map_bus()` |
-| `native_ecam=true`（SG2046） | `false` | `dw_pcie_ops` + `dw_child_pcie_ops` | iATU 出向窗口,每次访问重配 iATU |
+| `native_ecam=false` + 256MB 对齐 + 足够大 | `true` | `dw_pcie_ecam_ops` | 硬件 ECAM 解码，Bus>0 走 `pci_ecam_map_bus()` |
+| `native_ecam=true`（SG2046） | `false` | `dw_pcie_ops` + `dw_child_pcie_ops` | iATU 出向窗口，每次访问重配 iATU |
 | `native_ecam=false` + 不对齐 | `false` | `dw_pcie_ops` + `dw_child_pcie_ops` | iATU 出向窗口（回退路径） |
 
 **iATU 配置访问的工作方式**（SG2046 实际路径）：
@@ -1094,12 +1098,12 @@ static void __iomem *dw_pcie_other_conf_map_bus(struct pci_bus *bus,
 
 **工程意义与坑**：
 
-1. **性能差异**：iATU 路径下,每次下游设备配置访问都要重写 iATU 寄存器(几次 MMIO 写),比硬件 ECAM 解码慢一个数量级。大量 VF 枚举时差异明显。
-2. **RC 自身配置仍走 DBI**：无论 `native_ecam` 是否为 true,Bus 0 Dev 0 的配置访问都走 `dw_pcie_own_conf_map_bus()` → `dbi_base + where`,不经过 iATU。
-3. **"config" DT 资源仍需保留**：即使不走通用 ECAM,DT 中的 `config` 区域仍被 `devm_pci_remap_cfg_resource()` 映射为 `va_cfg0_base`,作为 iATU 出向窗口的 CPU 侧地址。SG2046 保留了 256MB(`0x3000_00000000-0x3000_0fffffff`)。
-4. **链接未就绪时配置访问返回 NULL**：`dw_pcie_other_conf_map_bus()` 在 `!dw_pcie_link_up()` 时返回 NULL,这会传播为 `PCIBIOS_DEVICE_NOT_FOUND`。链路抖动期间 `lspci` 会偶发性看不到下游设备——这是 iATU 路径的固有行为,硬件 ECAM 路径则没有这个检查。
+1. **性能差异**：iATU 路径下，每次下游设备配置访问都要重写 iATU 寄存器(几次 MMIO 写)，比硬件 ECAM 解码慢一个数量级。大量 VF 枚举时差异明显。
+2. **RC 自身配置仍走 DBI**：无论 `native_ecam` 是否为 true,Bus 0 Dev 0 的配置访问都走 `dw_pcie_own_conf_map_bus()` → `dbi_base + where`，不经过 iATU。
+3. **"config" DT 资源仍需保留**：即使不走通用 ECAM,DT 中的 `config` 区域仍被 `devm_pci_remap_cfg_resource()` 映射为 `va_cfg0_base`，作为 iATU 出向窗口的 CPU 侧地址。SG2046 保留了 256MB(`0x3000_00000000-0x3000_0fffffff`)。
+4. **链接未就绪时配置访问返回 NULL**：`dw_pcie_other_conf_map_bus()` 在 `!dw_pcie_link_up()` 时返回 NULL，这会传播为 `PCIBIOS_DEVICE_NOT_FOUND`。链路抖动期间 `lspci` 会偶发性看不到下游设备——这是 iATU 路径的固有行为，硬件 ECAM 路径则没有这个检查。
 
-> **核心要点**：变量名 `native_ecam` 是个历史包袱,它实际含义是"vendor driver 自行处理配置访问,DWC 核心不要建通用 ECAM 窗口"。SG2046 设置此标志后走 iATU 路径,而非硬件 ECAM。调试 SG2046 配置访问问题时,要查 iATU 出向窗口是否配置成功、链路是否 up,而不是查 ECAM 映射。
+> **核心要点**：变量名 `native_ecam` 是个历史包袱，它实际含义是"vendor driver 自行处理配置访问，DWC 核心不要建通用 ECAM 窗口"。SG2046 设置此标志后走 iATU 路径，而非硬件 ECAM。调试 SG2046 配置访问问题时，要查 iATU 出向窗口是否配置成功、链路是否 up，而不是查 ECAM 映射。
 
 **代码依据**:[drivers/pci/controller/dwc/pcie-designware-host.c](file:///home/pbw/sg2046/linux-common/drivers/pci/controller/dwc/pcie-designware-host.c) 第 478-504 行 `dw_pcie_ecam_enabled()`、第 506-566 行 `dw_pcie_host_get_resources()` 的分支选择、第 724-761 行 `dw_pcie_other_conf_map_bus()`。
 
@@ -1149,6 +1153,8 @@ pcie@200109000000 {
 ---
 
 ## 11. 调试工具速查
+
+> 前面各章给出的是"遇到问题查什么"。一个自然的问题是：这些命令平时散在各章里，动手排障时怎么快速找到？本章把用户态工具、内核参数、寄存器读取三类速查集中成一份清单，供排障时对照使用。
 
 ### 11.1 用户态工具
 
@@ -1218,6 +1224,8 @@ echo 1 > /sys/bus/pci/devices/$BDF/link/retrain  # 触发链路重训练（如�
 
 ## 12. 排查流程图
 
+> 前面是按问题类型组织的故障章节。一个自然的问题是：面对一个全新的、不确定归属的 PCIe 故障，从哪里开始查？本章把前十一章的排查路径合成一张决策流程图，按"链路是否起来 → 设备是否可见 → 资源是否分配 → 中断是否工作 → DMA 是否正常"的顺序逐层收窄。
+
 ```mermaid
 %%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "'trebuchet ms', verdana, arial, sans-serif"}}}%%
 flowchart TD
@@ -1263,7 +1271,7 @@ flowchart TD
 
 ---
 
-上一篇：[SR-IOV 虚拟化](./sriov-virtualization.md) | 返回：[PCIe 核心知识索引](./pcie-learning-resources.md)
+上一篇：[SR-IOV 虚拟化](./sriov-virtualization.md) | 下一篇：[P2P DMA 与多芯级联](./p2p-multi-chip-interconnect.md)
 
 ---
 

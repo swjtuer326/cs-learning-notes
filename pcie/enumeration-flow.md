@@ -42,7 +42,7 @@ PCIe是**发现式总线**——系统启动时，软件必须主动扫描每个
 
 枚举完成后，内核建立了完整的设备树：
 
-```
+```text
 pci_host_bridge (Segment 0)
 ├── pci_bus 00
 │   ├── 00:00.0 Root Port (Bridge to Bus 01)
@@ -200,7 +200,7 @@ int pci_scan_slot(struct pci_bus *bus, int devfn)
 
 ARI是PCIe Extended Capability（ID=0x0E），位于Extended Config Space中。它只有一个关键寄存器：
 
-```
+```text
 ARI Capability (Extended Config Space):
 ├── Cap ID = 0x0E
 ├── Next Capability Offset
@@ -210,7 +210,7 @@ ARI Capability (Extended Config Space):
 
 ARI改变了Function扫描方式：
 
-```
+```text
 标准PCIe扫描:
   for (fn = 1; fn < 8; fn++)       // 固定扫描Func 0-7
     pci_scan_single_device(bus, devfn + fn)
@@ -223,7 +223,7 @@ ARI扫描:
   }
 ```
 
-`next_ari_fn()` 读取设备的ARI Capability中的**Next Function Number**字段（PCIe Spec §7.32），该字段由硬件自动维护，指向下一个已实现的Function号。这避免了扫描未实现的Function号，也突破了8个Function的限制。
+`next_fn()` 是内核的实际入口，它内部在 ARI 启用时委托给 `next_ari_fn()`（否则按 3 位 Function 号递增扫描）；`next_ari_fn()` 读取设备的 ARI Capability 中的 **Next Function Number** 字段（PCIe Spec §7.32），该字段由硬件自动维护，指向下一个已实现的 Function 号。这避免了扫描未实现的 Function 号，也突破了 8 个 Function 的限制。
 
 > ARI主要用于SR-IOV场景：一个PF可能创建数十个VF，标准3位Function号不够用。ARI要求整条链路（从Root Port到Endpoint）都支持ARI，由桥的ARI Capable Hierarchy位控制。详见 [SR-IOV虚拟化](./sriov-virtualization.md)。
 
@@ -287,15 +287,16 @@ static struct pci_dev *pci_scan_device(struct pci_bus *bus, int devfn)
 ```
 
 **pci_bus_read_dev_vendor_id()** 的等待机制：
-- 读取Vendor ID返回0xFFFFFFFF表示设备不存在或未就绪
+- 读取Vendor ID返回0xFFFFFFFF表示设备不存在（或链路未就绪时无法区分）
+- 返回 0x0001（CRS/RRS Vendor ID）表示设备**存在但未就绪**，内核进入重试等待
 - PCIe设备可能需要时间完成初始化（如FW加载）
-- 内核最多等待60秒（CRS Software Visibility机制）
+- 内核最多等待60秒（默认 `pci_bus_wait_rrs()` 硬编码超时）
 
-### 2.4.1 CRS (Configuration Request Retry Status)
+### 2.5 CRS (Configuration Request Retry Status)
 
 当设备尚未就绪时，它可能返回**CRS Completion**而非正常数据：
 
-```
+```text
 正常响应:  Completion with Vendor ID
 设备忙:    Completion with CRS (Status=0x10)
 设备不存在: Completion with Unsupported Request (UR)
@@ -305,6 +306,7 @@ CRS Software Visibility机制：
 - Root Port的CRS Software Visibility Enable位控制是否将CRS可见化
 - 启用后，RC收到CRS时向软件返回0x0001 (Vendor ID=1)
 - 软件据此判断设备存在但未就绪，应重试
+- **未启用时**：RC 直接返回 0xFFFFFFFF，软件无法区分"设备不存在"与"设备未就绪"，只能按不存在处理
 
 ```c
 // drivers/pci/probe.c — 以内核源码为准，添加注释说明
@@ -352,9 +354,9 @@ static bool pci_bus_wait_rrs(struct pci_bus *bus, int devfn, u32 *l,
 }
 ```
 
-> CRS是NVMe等设备启动慢时枚举不丢失的关键机制。
+> **核心要点**：CRS是NVMe等设备启动慢时枚举不丢失的关键机制——它让软件能把"设备存在但未就绪"与"设备不存在"区分开，从而耐心重试而不是直接放弃。
 
-### 2.5 pci_setup_device() —— 设备配置
+### 2.6 pci_setup_device() —— 设备配置
 
 ```c
 // drivers/pci/probe.c — 简化实现，省略了 fixup/quirk/电源/class检测 等非核心逻辑
@@ -417,7 +419,7 @@ bad:
 }
 ```
 
-### 2.6 pci_scan_bridge_extend() —— 桥扫描与递归
+### 2.7 pci_scan_bridge_extend() —— 桥扫描与递归
 
 ```c
 // drivers/pci/probe.c — 简化实现，省略了 CardBus、热插拔总线分配、固件总线验证等分支
@@ -492,7 +494,7 @@ out:
 
 ### 3.1 Bus号寄存器
 
-```
+```text
 PCI_PRIMARY_BUS (0x18):
 ┌──────────┬──────────────┬──────────────┬──────────────┐
 │ 31:24    │ 23:16        │ 15:8         │ 7:0          │
@@ -600,7 +602,7 @@ flowchart TD
 
 **具体示例**：假设 SoC 的 DDR 从 0x8000_0000 开始，RC 将 CPU 地址 [0x8000_0000, 0x8FFF_FFFF] 映射到 PCIe 总线地址 [0x0000_0000, 0x0FFF_FFFF]：
 
-```
+```text
 window->res  = [0x8000_0000, 0x8FFF_FFFF]  (CPU物理地址范围)
 window->offset = 0x8000_0000                  (偏移量)
 
@@ -649,7 +651,7 @@ void pcibios_resource_to_bus(struct pci_bus *bus,
 
 枚举时内核对设备电源状态的处理：
 
-```
+```text
 枚举前: 设备可能处于任意电源状态 (由固件决定)
   ├── D0 (全工作): 正常枚举
   ├── D3hot (低功耗): 配置空间仍可访问，但设备功能受限
@@ -820,7 +822,7 @@ flowchart TD
 
 ## 参考资料
 
-- [PCIe Base Specification 6.0](https://pcisig.com/specifications) — §2.2.6 配置请求, §7.5.1.1 Type 0/1 Header
+- [PCIe Base Specification 6.0](https://pcisig.com/specifications) — §2.2.6 配置请求， §7.5.1.1 Type 0/1 Header
 - [Linux Kernel Source](https://git.kernel.org/) — `drivers/pci/probe.c`, `drivers/pci/setup-bus.c`
 - [PCI Firmware Specification 3.3](https://uefi.org/specifications) — 固件与OS的枚举协作
 
