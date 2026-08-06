@@ -584,6 +584,14 @@ profile 解析时使用 debugger 的**解码能力**（而非执行能力）：�
 - [SG2260 TPU 寄存器规格书 (Excel)](./bigTpuProfile/refer/aks/) — AKS TIU/GDMA/CDMA 寄存器字段定义
 - [SG2260E TPU 寄存器规格书 (Excel)](./bigTpuProfile/refer/aksv/) — AKSV TIU/GDMA/CDMA 寄存器字段定义
 
+## 延伸阅读
+
+本文聚焦 bigTpuProfile 本身(离线解析侧)。要把视野扩展到整条 profiling 链路,继续读:
+
+- [2260 profiling 工具缺陷诊断](./2260-profiling工具缺陷诊断.md) — 把 bigTpuProfile 放回 2260 三层(固件/运行时/离线)全景中,诊断整条链路的架构缺陷(无关联 ID、无异步缓冲、无 NVTX),并给出改进选型。本文 §A.8 的"接口契约"在那里被归类为"职责折叠进固件"的后果之一。
+- [NVIDIA profiling 设计源码分析](./NVIDIA-profiling设计源码分析.md) — 设计参照系。bigTpuProfile 的"最小编辑距离匹配"对应 NVIDIA 的 correlationId 链;bigTpuProfile 的 Perfetto 导出对应 Nsight Systems 的 SQLite;bigTpuProfile 的硬编码指标对应 NVPerf 的 3 轴语法 + Python 公式。对照阅读可见哪些是"设计选择"、哪些是"缺失"。
+
+
 ---
 
 ## 附录 A：Firmware 侧 Profile 数据生成（TPU1686 源码分析）
