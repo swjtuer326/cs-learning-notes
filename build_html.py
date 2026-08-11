@@ -242,15 +242,259 @@ def rewrite_links(content: str, src_dir: Path, doc_stems: set) -> str:
     return LINK_RE.sub(repl, content)
 
 
+# ==================== 源码引用:内联 + 出处徽章 + 锚点 ====================
+#
+# 两种源码引用写法,build_html 都识别:
+#
+#   新语法(构建时从源码拉取,防漂移;agent 友好):
+#     ```c src="./src/tf-a-src/bl1/bl1_main.c" lines="51-175" anchor="bl1_main"
+#     ```
+#     (fence 体为空,构建时填入源码对应行)
+#
+#   旧写法(代码已手贴,块首注释标出处):
+#     ```c
+#     /* 摘自 [tf-a-src/bl1/bl1_main.c](./src/tf-a-src/bl1/bl1_main.c) 第 51-175 行 */
+#     void bl1_main(void) { ... }
+#     ```
+#
+# 两种都渲染成:出处徽章(可点击 file:// 跳源码) + 带行号的代码块 + 锚点 id
+# (供文中 `[fn()](#anchor)` 跳转,call graph 雏形)。
+
+FENCE_OPEN_RE = re.compile(r"^```(\w+)(.*)$")
+# 摘自注释:`摘自 [name](path) 第 X-Y 行` / `摘自 name L X-Y` / `(节选)` `(简化)` 等尾巴
+CITATION_RE = re.compile(
+    r"摘自\s+"
+    r"(?:\[([^\]]*)\]\(([^)]+)\)|(\S+))"   # [name](path) 或 bare path
+    r"(?:[^\d]*?)"                          # "第" / "L" / 空格
+    r"(\d+)\s*[-–]\s*(\d+)"                 # 51-175
+)
+
+
+def _parse_fence_attrs(attr_str: str) -> dict:
+    """从 fence info string 的尾巴解析 key=\"value\" 属性。"""
+    attrs = {}
+    for m in re.finditer(r'(\w+)\s*=\s*"([^"]*)"', attr_str):
+        attrs[m.group(1)] = m.group(2)
+    return attrs
+
+
+def _resolve_src_path(raw_path: str, src_dir: Path) -> Path | None:
+    """把引用里的路径解析到真实文件。尝试 src_dir 为基,再试 src_dir/src,再试仓库根。"""
+    raw = raw_path.strip()
+    if raw.startswith("./"):
+        raw = raw[2:]
+    cands = []
+    if raw.startswith("/"):
+        cands.append(Path(raw))
+    else:
+        cands.append((src_dir / raw).resolve())
+        cands.append((src_dir / "src" / raw).resolve())
+        cands.append((REPO_ROOT / raw).resolve())
+    for c in cands:
+        try:
+            if c.is_file():
+                return c
+        except OSError:
+            pass
+    return None
+
+
+def _src_anchor_id(raw_path: str, start: int) -> str:
+    """为源码引用块生成锚点 id(供文中链接跳转)。"""
+    raw = raw_path.strip()
+    if raw.startswith("./"):
+        raw = raw[2:]
+    stem = re.sub(r"[^一-龥A-Za-z0-9]+", "-", raw).strip("-")
+    return f"src-{stem}-{start}"
+
+
+def _render_src_block(display: str, fpath: Path, start: int, end: int,
+                      body: str, lang: str, anchor_id: str) -> str:
+    """把一段源码引用渲染成带出处徽章 + 行号 + 锚点的 HTML 块。"""
+    href = f"file://{fpath}"
+    badge = (f'<div class="src-block" id="{html.escape(anchor_id)}">'
+             f'<div class="src-badge">'
+             f'<a href="{html.escape(href)}">{html.escape(display)} '
+             f'第 {start}-{end} 行</a>'
+             f'</div>')
+    code = html.escape(body)
+    pre = (f'<pre class="src-pre" data-start="{start}">'
+           f'<code class="language-{html.escape(lang)}">{code}</code></pre></div>')
+    return badge + "\n" + pre
+
+
+def process_source_blocks(content: str, src_dir: Path, problems: list, doc_name: str) -> str:
+    """识别并转换源码引用代码块(新语法 + 旧注释)。
+
+    新语法空体 fence 从源码拉取填入;两种写法都渲染成带徽章/行号/锚点的 HTML。
+    问题(文件缺失、行区间越界)记入 problems。
+    """
+    lines = content.split("\n")
+    out: list[str] = []
+    i = 0
+    n = len(lines)
+    while i < n:
+        m = FENCE_OPEN_RE.match(lines[i])
+        if not m:
+            out.append(lines[i])
+            i += 1
+            continue
+        lang = m.group(1)
+        attrs_str = m.group(2)
+        attrs = _parse_fence_attrs(attrs_str)
+        # 收集 fence 体直到闭合 ```
+        body_start = i + 1
+        j = body_start
+        while j < n and not lines[j].startswith("```"):
+            j += 1
+        body = "\n".join(lines[body_start:j])
+        close = j  # 闭合 ``` 行号(或 n)
+
+        src_attr = attrs.get("src")
+        citation = None  # (display, fpath, start, end, anchor_id, body)
+        if src_attr:
+            lines_attr = attrs.get("lines", "")
+            rng = re.match(r"\s*(\d+)\s*[-–]\s*(\d+)\s*", lines_attr)
+            fpath = _resolve_src_path(src_attr, src_dir)
+            if fpath is None:
+                problems.append({
+                    "severity": "error", "doc": doc_name, "line": i + 1,
+                    "kind": "src_ref_missing",
+                    "msg": f"源码引用文件不存在:{src_attr}",
+                })
+                # 保留原 fence,体保持空
+                out.append(f"```{lang}")
+                if close < n:
+                    out.append("```")
+                i = close + 1
+                continue
+            if not rng:
+                problems.append({
+                    "severity": "error", "doc": doc_name, "line": i + 1,
+                    "kind": "src_ref_lines",
+                    "msg": f"源码引用缺 lines=\"X-Y\":{src_attr}",
+                })
+                start = end = 1
+            else:
+                start, end = int(rng.group(1)), int(rng.group(2))
+            src_lines = fpath.read_text(encoding="utf-8", errors="replace").splitlines()
+            if end > len(src_lines) or start < 1 or start > end:
+                problems.append({
+                    "severity": "error", "doc": doc_name, "line": i + 1,
+                    "kind": "src_ref_range",
+                    "msg": f"行区间 {start}-{end} 越界(文件 {src_attr} 共 {len(src_lines)} 行)",
+                })
+                body = "\n".join(src_lines[max(0, start - 1):end])
+            else:
+                body = "\n".join(src_lines[start - 1:end])
+            anchor_id = attrs.get("anchor") or _src_anchor_id(src_attr, start)
+            citation = (src_attr, fpath, start, end, anchor_id, body)
+        else:
+            # 旧写法:检查体首行是否 摘自 注释
+            cit_m = CITATION_RE.search(body.split("\n", 1)[0] if body else "")
+            if cit_m:
+                display = cit_m.group(1) or cit_m.group(3) or ""
+                raw_path = cit_m.group(2) or cit_m.group(3) or ""
+                start, end = int(cit_m.group(4)), int(cit_m.group(5))
+                # 体里去掉那行注释(徽章已替代它)
+                body_lines = body.split("\n")
+                if body_lines and "摘自" in body_lines[0]:
+                    body = "\n".join(body_lines[1:]).lstrip("\n")
+                fpath = _resolve_src_path(raw_path, src_dir)
+                if fpath is None:
+                    problems.append({
+                        "severity": "warn", "doc": doc_name, "line": body_start,
+                        "kind": "src_ref_missing",
+                        "msg": f"出处文件不存在:{raw_path}(徽章仍渲染但链接无效)",
+                    })
+                    fpath = src_dir / raw_path  # 占位
+                anchor_id = _src_anchor_id(raw_path, start)
+                citation = (display or raw_path, fpath, start, end, anchor_id, body)
+
+        if citation:
+            display, fpath, start, end, anchor_id, body = citation
+            # 确保 HTML 块前有空行,marked 才能识别为 HTML block 原样透传
+            if out and out[-1].strip() != "":
+                out.append("")
+            out.append(_render_src_block(display, fpath, start, end, body, lang, anchor_id))
+            i = close + 1
+            continue
+
+        # 普通代码块:原样保留(fence 尾巴若有非 src 属性,剥到只剩 lang)
+        out.append(f"```{lang}" if attrs_str.strip() else lines[i])
+        out.extend(lines[body_start:close])
+        if close < n:
+            out.append("```")
+        i = close + 1
+    return "\n".join(out)
+
+
+# ==================== 校验与统计 ====================
+
+
+def count_stats(content: str) -> dict:
+    """统计一篇文档的渲染元素数量(供 --json 可解析输出)。"""
+    return {
+        "figures": len(IMAGE_RE.findall(content)),
+        "mermaid": len(re.findall(r"^```mermaid\b", content, re.MULTILINE)),
+        "codeblocks": len(re.findall(r"^```\w+", content, re.MULTILINE)),
+        "formulas": len(re.findall(r"\$\$[^\n]+?\$\$", content)) + content.count("\\("),
+    }
+
+
+def check_links_images(content: str, src_dir: Path, doc_stems: set,
+                       problems: list, doc_name: str):
+    """校验文档内链接与图片:死链、缺图。"""
+    # 图片
+    for m in IMAGE_RE.finditer(content):
+        url = m.group(2).strip().split("#", 1)[0].split("?", 1)[0]
+        if url.startswith(("http://", "https://", "data:", "mailto:")):
+            continue
+        img_path = Path(url) if url.startswith("/") else (src_dir / url).resolve()
+        if not img_path.is_file():
+            problems.append({
+                "severity": "error", "doc": doc_name, "line": content[:m.start()].count("\n") + 1,
+                "kind": "image_missing", "msg": f"图片不存在:{url}",
+            })
+    # 链接
+    for m in LINK_RE.finditer(content):
+        url = m.group(2).strip()
+        if url.startswith(("http://", "https://", "mailto:", "#", "data:", "file:")):
+            continue
+        path_part, _, anchor = url.partition("#")
+        pp = path_part.strip()
+        if pp.startswith("./"):
+            pp = pp[2:]
+        if not pp:
+            continue
+        stem = pp[:-3] if pp.endswith(".md") else pp
+        if stem in doc_stems:
+            continue  # 文档集内,有效
+        # 本地文件链接
+        target = (src_dir / path_part).resolve() if not path_part.startswith("/") else Path(path_part)
+        if not target.is_file() and not target.is_dir():
+            problems.append({
+                "severity": "warn", "doc": doc_name, "line": content[:m.start()].count("\n") + 1,
+                "kind": "link_dead", "msg": f"链接目标不存在:{url}",
+            })
+
+
 # ==================== 文档加载 ====================
 
 
 def load_documents(src_dir: Path):
-    """加载 README.md + 编号章节。返回 [(stem, title, content, toc), ...]。
+    """加载 README.md + 编号章节。
 
-    content 已内嵌图片、重写链接、转义为可安全嵌入 <script> 的文本。
+    返回 (docs, problems, stats):
+      docs    — [(stem, title, content, toc), ...]
+      problems — [{severity, doc, line, kind, msg}, ...](校验问题)
+      stats   — {stem: {figures, mermaid, codeblocks, formulas}}
+
+    content 已处理源码引用(内联/徽章)、内嵌图片、重写链接、转义。
     """
     docs = []
+    problems = []
+    stats = {}
     doc_stems = set()
 
     # 先收集所有 stem(供 rewrite_links 判断文档集内引用)
@@ -260,24 +504,25 @@ def load_documents(src_dir: Path):
     for p in sorted(src_dir.glob(DOC_GLOB)):
         doc_stems.add(p.stem)
 
-    # README 放最前
-    if readme.is_file():
-        raw = readme.read_text(encoding="utf-8")
-        content = rewrite_links(embed_images(raw, src_dir), src_dir, doc_stems)
+    def _process_one(stem: str, raw: str, fallback_title: str):
+        stats[stem] = count_stats(raw)
+        # 源码引用处理在前:见原始 ./src/ 路径,emit 原始 HTML(rewrite_links 不再动它)
+        content = process_source_blocks(raw, src_dir, problems, stem)
+        content = rewrite_links(embed_images(content, src_dir), src_dir, doc_stems)
         content = escape_for_script(content)
-        title = extract_title(raw, "README")
+        # 链接/图片校验(对原始文本,避免被重写干扰)
+        check_links_images(raw, src_dir, doc_stems, problems, stem)
+        title = extract_title(raw, fallback_title)
         toc = extract_toc(raw)
-        docs.append(("README", title, content, toc))
+        return (stem, title, content, toc)
+
+    if readme.is_file():
+        docs.append(_process_one("README", readme.read_text(encoding="utf-8"), "README"))
 
     for p in sorted(src_dir.glob(DOC_GLOB)):
-        raw = p.read_text(encoding="utf-8")
-        content = rewrite_links(embed_images(raw, src_dir), src_dir, doc_stems)
-        content = escape_for_script(content)
-        title = extract_title(raw, p.stem)
-        toc = extract_toc(raw)
-        docs.append((p.stem, title, content, toc))
+        docs.append(_process_one(p.stem, p.read_text(encoding="utf-8"), p.stem))
 
-    return docs
+    return docs, problems, stats
 
 
 # ==================== HTML 构建 ====================
@@ -590,6 +835,30 @@ body {
 .content .mermaid { display: flex; justify-content: center; margin: 1em 0; }
 .content .mermaid svg { max-width: 100%; height: auto; }
 
+/* 源码引用块:出处徽章 + 行号 */
+.content .src-block { margin: 1em 0; }
+.content .src-badge {
+  font-size: 12px; color: var(--text-soft);
+  background: var(--bg-soft); border: 1px solid var(--border-soft);
+  border-bottom: none; border-radius: 6px 6px 0 0;
+  padding: 4px 10px; display: inline-block;
+}
+.content .src-badge a { color: var(--accent); text-decoration: none; }
+.content .src-badge a:hover { text-decoration: underline; }
+.content .src-pre {
+  margin-top: 0; border-radius: 0 6px 6px 6px;
+  counter-reset: src-ln 0;
+}
+.content .src-pre[data-start] { counter-reset: src-ln calc(var(--start, 1) - 1); }
+.content .src-pre .src-line { display: block; }
+.content .src-pre .src-line::before {
+  counter-increment: src-ln; content: counter(src-ln);
+  display: inline-block; width: 3em; margin-right: 12px;
+  text-align: right; color: var(--text-muted);
+  user-select: none; border-right: 1px solid var(--border-soft);
+  padding-right: 8px; font-variant-numeric: tabular-nums;
+}
+
 /* KaTeX 行内公式不要被 code 样式覆盖 */
 .content .katex { font-size: 1.05em; }
 
@@ -778,10 +1047,18 @@ function highlightCode(root) {
     if (block.classList.contains('hljs')) return;              // 已处理
     try { hljs.highlightElement(block); } catch (e) {}
   });
-  // 额外语言注册
-  if (typeof hljs !== 'undefined' && typeof hljs.registerLanguage === 'function') {
-    // armasm / x86asm 在独立 <script> 里会自行注册到 window.hljs
-  }
+  // 源码引用块:按行包裹 + 行号(CSS counter),起始行号由 data-start 控制
+  root.querySelectorAll('pre.src-pre').forEach(function (pre) {
+    var start = parseInt(pre.getAttribute('data-start') || '1', 10);
+    pre.style.setProperty('--start', start);
+    var code = pre.querySelector('code');
+    if (!code) return;
+    var html = code.innerHTML.split('\n');
+    code.innerHTML = html.map(function (line) {
+      // 空行也要占位,否则行号错位
+      return '<span class="src-line">' + (line || ' ') + '</span>';
+    }).join('\n');
+  });
 }
 
 // ==================== KaTeX 数学公式 ====================
@@ -1027,7 +1304,9 @@ def main():
                "  python3 build_html.py trusted-firmware\n"
                "  python3 build_html.py nccl --output nccl/index.html --title 'NCCL 学习笔记'\n"
                "  python3 build_html.py zephyr-rtos --output zephyr-rtos-html/index.html\n"
-               "  python3 build_html.py trusted-firmware --cdn   # 不内嵌前端库,使用 CDN",
+               "  python3 build_html.py trusted-firmware --cdn   # 不内嵌前端库,使用 CDN\n"
+               "  python3 build_html.py trusted-firmware --check # 只校验不构建\n"
+               "  python3 build_html.py trusted-firmware --check --json  # 机器可读校验结果",
     )
     ap.add_argument("src_dir", type=str, help="Markdown 文档目录(含 README.md + 编号章节)")
     ap.add_argument("-o", "--output", type=str, default=None,
@@ -1038,6 +1317,10 @@ def main():
                     help=f"前端库缓存目录(默认:{DEFAULT_VENDOR_DIR})")
     ap.add_argument("--cdn", action="store_true",
                     help="不内嵌前端库,使用 CDN 链接(文件小,但查看时需联网)")
+    ap.add_argument("--check", action="store_true",
+                    help="只校验(死链/缺图/坏 mermaid/源码引用问题),不写 HTML。有 error 退出码非 0。")
+    ap.add_argument("--json", action="store_true",
+                    help="输出机器可读 JSON(每篇渲染统计 + 问题列表),供 agent 解析。")
     args = ap.parse_args()
 
     src_dir = Path(args.src_dir).resolve()
@@ -1045,6 +1328,38 @@ def main():
         print(f"错误:源目录不存在:{src_dir}", file=sys.stderr)
         sys.exit(1)
 
+    # 加载文档(同时校验、收集统计、处理源码引用)
+    docs, problems, stats = load_documents(src_dir)
+    if not docs:
+        print(f"错误:未在 {src_dir} 找到 README.md 或 {DOC_GLOB}", file=sys.stderr)
+        sys.exit(1)
+
+    n_err = sum(1 for p in problems if p["severity"] == "error")
+    n_warn = sum(1 for p in problems if p["severity"] == "warn")
+
+    # ---- --check / --json:只输出不构建 ----
+    if args.check:
+        if args.json:
+            payload = {
+                "src_dir": str(src_dir),
+                "docs": [
+                    {"name": s, "title": t, "stats": stats.get(s, {})}
+                    for s, t, _, _ in docs
+                ],
+                "problems": problems,
+                "summary": {"docs": len(docs), "errors": n_err, "warnings": n_warn},
+            }
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+        else:
+            print(f"校验 {src_dir}:{len(docs)} 篇文档,{n_err} 错误,{n_warn} 警告", file=sys.stderr)
+            for p in sorted(problems, key=lambda x: (x["severity"] != "error", x["doc"], x["line"])):
+                sev = "✖" if p["severity"] == "error" else "⚠"
+                print(f"  {sev} {p['doc']}:{p['line']} [{p['kind']}] {p['msg']}", file=sys.stderr)
+            if n_err == 0:
+                print("✅ 校验通过(无 error)", file=sys.stderr)
+        sys.exit(1 if n_err else 0)
+
+    # ---- 正常构建 ----
     # 输出路径
     if args.output:
         output_file = Path(args.output).resolve()
@@ -1065,16 +1380,13 @@ def main():
     print(f"源目录:  {src_dir}", file=sys.stderr)
     print(f"输出:    {output_file}", file=sys.stderr)
     print(f"标题:    {site_title}", file=sys.stderr)
-
-    # 加载文档
-    print(f"\n加载文档 ...", file=sys.stderr)
-    docs = load_documents(src_dir)
-    if not docs:
-        print(f"错误:未在 {src_dir} 找到 README.md 或 {DOC_GLOB}", file=sys.stderr)
-        sys.exit(1)
-    print(f"  共 {len(docs)} 篇文档", file=sys.stderr)
+    print(f"\n加载文档 ... {len(docs)} 篇", file=sys.stderr)
     for stem, title, _, toc in docs:
-        print(f"    - {stem}: {title} ({len(toc)} H2)", file=sys.stderr)
+        st = stats.get(stem, {})
+        print(f"    - {stem}: {title} ({len(toc)} H2, "
+              f"{st.get('mermaid', 0)} 图, {st.get('codeblocks', 0)} 代码块)", file=sys.stderr)
+    if problems:
+        print(f"  校验:{n_err} 错误,{n_warn} 警告(详见 --check)", file=sys.stderr)
 
     # 前端库
     vendor_dir = Path(args.vendor_dir).resolve()
