@@ -393,12 +393,13 @@ fiptool remove --nt-fw fip.bin
 
 TBBR 的方案是**证书链**:
 
-1. 厂商把 ROTPK(根公钥)烧录到芯片 Fuse 中,不可修改
-2. 用 ROTPK 对应的私钥签名"ROT 证书",证书中包含"Trusted Key"(中间密钥的公钥)
-3. 用 Trusted Key 的私钥签名"BL3x Content Certificate",证书中包含 BL3x 镜像的哈希
-4. BL2 加载镜像时:先用 ROTPK 验证 ROT 证书,再用 ROT 证书中的 Trusted Key 验证 Content Certificate,最后用 Content Certificate 中的哈希验证镜像
+1. 厂商把 ROTPK(根公钥的哈希)烧录到芯片 Fuse 中,不可修改——这是唯一无条件信任的东西
+2. 用 ROT 私钥签名「Trusted Key 证书」,里面装 Trusted World Key(TW)和 Non-Trusted World Key(NTW)两个公钥
+3. 用 TW/NTW 私钥分别签名各镜像的「Key 证书」,里面装对应 Content 证书的公钥
+4. 用各 content 私钥签名「Content 证书」,里面装对应镜像的哈希
+5. BL2 加载镜像时:ROTPK 验 Trusted Key 证书 → 取 TW/NTW → 验 Key 证书 → 取 content 公钥 → 验 Content 证书 → 取哈希 → 比对镜像
 
-这样,信任就从硬件 ROTPK 传递到了每个镜像。
+这样,信任就从硬件 ROTPK 逐级传递到了每个镜像。完整的签名侧/验证侧走查见 §4.3。
 
 ### 4.2 证书链结构
 
@@ -406,35 +407,94 @@ TBBR 的方案是**证书链**:
 %%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 flowchart TD
     ROTPK[("ROTPK<br/>芯片 Fuse<br/>不可变")]
-    RotCert[ROT Key Certificate<br/>用 ROTPK 私钥签名<br/>包含 Trusted Key 公钥]
-    TrustedCert[Trusted Key Certificate<br/>用 Trusted Key 私钥签名<br/>包含各子密钥公钥]
-    Bl31Cert[BL31 Content Certificate<br/>用 SoC FW Key 签名<br/>包含 BL31 哈希]
-    Bl32Cert[BL32 Content Certificate<br/>用 TOS FW Key 签名<br/>包含 BL32 哈希]
-    Bl33Cert[BL33 Content Certificate<br/>用 NT FW Key 签名<br/>包含 BL33 哈希]
+    TrustedKeyCert[Trusted Key Certificate<br/>ROT 私钥签名<br/>包含 TW + NTW 公钥]
+    Bl2Cert[BL2 Content Certificate<br/>ROT 私钥签名<br/>包含 BL2 哈希]
+    Bl31KeyCert[BL31 Key Certificate<br/>TW 私钥签名<br/>包含 BL31 content 公钥]
+    Bl32KeyCert[BL32 Key Certificate<br/>TW 私钥签名<br/>包含 BL32 content 公钥]
+    Bl33KeyCert[BL33 Key Certificate<br/>NTW 私钥签名<br/>包含 BL33 content 公钥]
+    Bl31Cert[BL31 Content Certificate<br/>content 私钥签名<br/>包含 BL31 哈希]
+    Bl32Cert[BL32 Content Certificate<br/>content 私钥签名<br/>包含 BL32 哈希]
+    Bl33Cert[BL33 Content Certificate<br/>content 私钥签名<br/>包含 BL33 哈希]
+    BL2[(BL2 镜像)]
     BL31[(BL31 镜像)]
     BL32[(BL32 镜像)]
     BL33[(BL33 镜像)]
 
-    ROTPK -->|验证签名| RotCert
-    RotCert -->|提取 Trusted Key| TrustedCert
-    TrustedCert -->|提取 SoC FW Key| Bl31Cert
-    TrustedCert -->|提取 TOS FW Key| Bl32Cert
-    TrustedCert -->|提取 NT FW Key| Bl33Cert
-    Bl31Cert -->|验证哈希| BL31
-    Bl32Cert -->|验证哈希| BL32
-    Bl33Cert -->|验证哈希| BL33
+    ROTPK -->|验签| TrustedKeyCert
+    ROTPK -->|验签| Bl2Cert
+    TrustedKeyCert -->|取 TW 公钥| Bl31KeyCert
+    TrustedKeyCert -->|取 TW 公钥| Bl32KeyCert
+    TrustedKeyCert -->|取 NTW 公钥| Bl33KeyCert
+    Bl31KeyCert -->|取 content 公钥| Bl31Cert
+    Bl32KeyCert -->|取 content 公钥| Bl32Cert
+    Bl33KeyCert -->|取 content 公钥| Bl33Cert
+    Bl2Cert -->|取哈希| BL2
+    Bl31Cert -->|取哈希| BL31
+    Bl32Cert -->|取哈希| BL32
+    Bl33Cert -->|取哈希| BL33
 
     classDef root fill:#fee2e2,stroke:#dc2626,color:#991b1b,stroke-width:2px
     classDef cert fill:#fef3c7,stroke:#d97706,color:#92400e,stroke-width:2px
     classDef image fill:#d1fae5,stroke:#059669,color:#065f46,stroke-width:2px
     class ROTPK root
-    class RotCert,TrustedCert,Bl31Cert,Bl32Cert,Bl33Cert cert
-    class BL31,BL32,BL33 image
+    class TrustedKeyCert,Bl2Cert,Bl31KeyCert,Bl32KeyCert,Bl33KeyCert,Bl31Cert,Bl32Cert,Bl33Cert cert
+    class BL2,BL31,BL32,BL33 image
 ```
 
 > **如何读这张图**:信任从红色(ROTPK,芯片 Fuse)出发,经过黄色(证书链逐级签名验证),最终到达绿色(镜像哈希验证)。每一步都是"用上一级的公钥验证下一级的签名"。ROTPK 是唯一不依赖证书的信任源——它直接从硬件读取。
 
-### 4.3 三种认证方法
+### 4.3 验签全过程:签名侧与验证侧
+
+> 4.1/4.2 给出了证书链的**结构**,但结构图看不出**过程**——签名在构建时离线做,验证在启动时逐步走。本节把两者分开,按时间顺序走一遍。先记住一个核心动作和两类证书。
+
+验签的每一步都是同一个动作:**用「已经信任的公钥」验证「下一张证书的签名」,验过后从证书里取出「下一个公钥」或「镜像哈希」。** 两类证书分工不同:
+
+| 证书类型 | 装的是什么 | 作用 |
+|----------|-----------|------|
+| **Key 证书** | 下一级的**公钥** | 传递信任("这个公钥是真的") |
+| **Content 证书** | 对应镜像的**哈希** | 绑定固件("BL31 的哈希是 0x…") |
+
+**签名侧(构建时,离线,厂商做一次)**——自顶向下签,每一层用上一层的私钥:
+
+```
+ROT 私钥 ──签──▶ Trusted Key 证书(装 TW + NTW 两个公钥)
+ROT 私钥 ──签──▶ BL2 Content 证书(装 BL2 哈希)
+TW  私钥 ──签──▶ BL31/BL32 Key 证书(装各自 content 公钥)
+NTW 私钥 ──签──▶ BL33 Key 证书(装 BL33 content 公钥)
+content 私钥 ──签──▶ 各 Content 证书(装 BL31/BL32/BL33 哈希)
+
+ROT 公钥的哈希 ──熔──▶ 芯片 Fuse(ROTPK)
+```
+
+签完后把「镜像 + 证书」打包进 FIP 烧进 Flash;芯片里额外只存一样东西——ROTPK(32 字节哈希)。
+
+**验证侧(启动时,自底向上逐级验)**——信任起点只有 ROTPK,每一步都做两件事:验「证书签名」+ 验「镜像哈希」。
+
+**BL1 验 BL2**(BL1 手里只有 ROTPK,BL2 必须锚在根上):
+
+1. 读 BL2 Content 证书
+2. 用 ROTPK 验这张证书的签名(BL2 证书由 ROT 私钥直接签)
+3. 从证书取出「BL2 哈希」
+4. 对实际 BL2 镜像算 SHA-256,与上一步取出的哈希比对
+5. 一致 → 执行 BL2
+
+**BL2 验 BL31**(BL2 要先拿到 TW 公钥):
+
+1. 读 Trusted Key 证书,用 ROTPK 验签 → 取出 TW/NTW 公钥
+2. 读 BL31 Key 证书,用 TW 公钥验签 → 取出 BL31 content 公钥
+3. 读 BL31 Content 证书,用 content 公钥验签 → 取出 BL31 哈希
+4. 对实际 BL31 镜像算哈希,比对
+5. 一致 → 加载 BL31
+
+BL32、BL33 走同样的路,分别换 TOS、NT 那条密钥链。
+
+**三个容易卡住的点**:
+
+1. **每张证书要验两次**:验「证书签名」防证书被换,验「镜像哈希」防固件被直接替换。两者解决不同问题,缺一不可。
+2. **为什么 BL2 锚在根上、BL31 却要经过 TW + 自己的 key**:分层解耦。换 BL31 只需重签它的 content 证书,不用动用最敏感的根私钥;反之若所有镜像都由 ROT 直签,每次更新固件都要碰根密钥。
+3. **为什么 Key 证书和 Content 证书分开**:Key 证书回答"这个公钥可信",Content 证书回答"这个镜像的哈希是这个"。分开后 key 可复用,镜像更新只重签 content 证书。
+
+### 4.4 三种认证方法
 
 TF-A 的认证模块 [tf-a-src/drivers/auth/auth_mod.c](./src/tf-a-src/drivers/auth/auth_mod.c) 实现了三种认证方法,每个镜像的认证方式由 CoT(Chain of Trust)描述符定义:
 
@@ -479,32 +539,52 @@ int auth_mod_verify_img(unsigned int img_id, void *img_ptr, unsigned int img_len
 }
 ```
 
-### 4.4 根证书的 ROTPK 验证
+### 4.5 根证书的 ROTPK 验证
 
-根证书(ROT Key Certificate)没有父证书——它的签名用 ROTPK 对应的私钥签发。验证时,`auth_signature()` 函数从平台读取 ROTPK:
+BL2 证书、Trusted Key 证书这类「根证书」没有父证书,签名直接用 ROT 私钥签。但验证时手里只有 Fuse 里的 ROTPK hash——**hash 验不了签,得先拿完整公钥**。完整公钥就装在证书里(X.509 证书自带 subject 公钥),所以验证分两步:
 
-```c
-/* 摘自 tf-a-src/drivers/auth/auth_mod.c 第 204-282 行(节选) */
-if (img_desc->parent != NULL) {
-    /* 非根证书:从父证书提取公钥 */
-    rc = auth_get_param(param->pk, img_desc->parent, &pk_ptr, &pk_len);
-} else {
-    /* 根证书:从平台读取 ROTPK */
-    rc = plat_get_rotpk_info(param->pk->cookie, &pk_plat_ptr, &pk_plat_len, &flags);
-
-    if ((flags & ROTPK_IS_HASH) != 0U) {
-        /* 平台存储的是 ROTPK 的哈希:计算证书公钥的哈希,与平台比对 */
-        rc = crypto_mod_verify_hash(pk_ptr, pk_len, pk_plat_ptr, pk_plat_len);
-    } else {
-        /* 平台存储完整 ROTPK:直接比对 */
-        if (memcmp(pk_plat_ptr, pk_ptr, pk_len) != 0) return -1;
-    }
-}
+```
+① 验钥:从证书取出完整 ROT 公钥 → 算 hash → 和 Fuse 里的 ROTPK hash 比对
+② 验签:用这把已被确认的完整公钥 → 验证证书的签名
 ```
 
-**为什么平台可以只存 ROTPK 的哈希而不是完整公钥?** Fuse 空间有限(通常每格 32-64 位),RSA-2048 公钥需要 256 字节,存储成本高。SHA-256 哈希只需 32 字节。平台存哈希,验证时计算证书中公钥的哈希再比对——等价安全性,更低存储成本。
+对应 `auth_signature()` 源码(`drivers/auth/auth_mod.c:204-299`):
 
-### 4.5 反回滚保护
+```c
+if (img_desc->parent != NULL) {
+    /* 非根证书:从父证书取公钥 */
+    rc = auth_get_param(param->pk, img_desc->parent, &pk_ptr, &pk_len);
+} else {
+    /* 根证书:① 从平台(Fuse)读 ROTPK hash */
+    rc = plat_get_rotpk_info(param->pk->cookie, &pk_plat_ptr, &pk_plat_len, &flags);
+
+    /* ② 从证书里取出完整 ROT 公钥 */
+    rc = img_parser_get_auth_param(img_desc->img_type, param->pk,
+                                   img, img_len, &pk_ptr, &pk_len);
+
+    /* ③ 验钥:算证书公钥的 hash,和 Fuse hash 比对 */
+    if ((flags & ROTPK_IS_HASH) != 0U) {
+        rc = crypto_mod_convert_pk(pk_ptr, pk_len, &cnv_pk_ptr, &cnv_pk_len);
+        rc = crypto_mod_verify_hash(cnv_pk_ptr, cnv_pk_len, pk_plat_ptr, pk_plat_len);
+    } else {
+        /* 平台存完整 ROTPK:直接 memcmp */
+        if ((pk_len != pk_plat_len) || (memcmp(pk_plat_ptr, pk_ptr, pk_len) != 0)) return -1;
+    }
+}
+
+/* ④ 验签:用完整公钥 pk_ptr 验证签名 */
+rc = crypto_mod_verify_signature(data_ptr, data_len, sig_ptr, sig_len,
+                                 sig_alg_ptr, sig_alg_len, pk_ptr, pk_len);
+```
+
+**为什么 Fuse 只存 hash?** 完整公钥已经装在证书里(Flash 空间大),Fuse 只需存 32 字节 hash 来"认证这把公钥是真的"。这层 hash 不做验签、只做验钥,但安全性不降:
+
+- 攻击者换公钥 → `hash(假公钥) ≠ Fuse hash`,验钥失败
+- 攻击者换签名 → 真公钥验不过假签名,验签失败
+
+> **核心要点**:ROTPK hash 的职责是「认证证书里的完整公钥」,不是「验证签名」。先验钥(确认公钥可信),再验签(确认证书可信),两步缺一不可。
+
+### 4.6 反回滚保护
 
 NV Counter 是一个只能递增的硬件计数器,烧录在 eFuse 中。每个证书包含一个 NV Counter 值,验证时要求:
 
