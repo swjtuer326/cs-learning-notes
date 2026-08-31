@@ -2,6 +2,8 @@
 
 > RISC-V 的模块化设计意味着你可以按需添加功能。这些标准扩展覆盖了乘除法、原子操作、浮点和代码密度。
 >
+> **扩展全称速查**：M = Multiply/Division（乘除法）、A = Atomic（原子操作）、F = Single-Precision Floating-Point（单精度浮点）、D = Double-Precision Floating-Point（双精度浮点）、C = Compressed（压缩指令）
+>
 > **工程师视角**：扩展不是"越多越好"。服务器芯片需要 A（原子操作）和 V（向量）扩展；实时嵌入式系统可能只需要 M 扩展；而 Boot ROM 为了最小体积，可能连 M 都不要。理解每个扩展的代价和收益，是架构设计的基础决策。
 
 ### 关键术语
@@ -49,7 +51,7 @@
 
 ---
 
-## 1. M 扩展：整数乘除法
+## 1. M 扩展：整数乘除法（Multiply/Division）
 
 M 扩展添加了 8 条乘除法指令，分为有符号和无符号两类。
 
@@ -96,7 +98,7 @@ M 扩展的 8 条指令可分为两类：**乘法**（4 条）解决了从"获�
 
 ---
 
-## 2. A 扩展：原子操作
+## 2. A 扩展：原子操作（Atomic）
 
 A 扩展提供两种原子操作机制：**LR/SC**（保留加载/条件存储）和 **AMO**（原子内存操作）。
 
@@ -310,7 +312,10 @@ A 扩展中 `.AQ`/`.RL` 后缀的内存序控制与 FENCE 指令紧密关联—�
 
 ---
 
-## 3. F/D 扩展：浮点运算
+## 3. F/D 扩展：浮点运算（Floating-Point）
+
+- **F 扩展**：Single-Precision Floating-Point（单精度浮点，32-bit）
+- **D 扩展**：Double-Precision Floating-Point（双精度浮点，64-bit）
 
 ### 3.1 浮点寄存器
 
@@ -399,7 +404,7 @@ FCVT 的舍入行为由 fcsr.FRM 或指令中的 rm 字段控制。关键注意�
 - 越界值被钳位到目标类型的最大/最小值（不触发异常，只设置 NV 标志）
 - `FMV.X.W` 是位模式搬移，不做任何转换
 
-### 3.7 Zfa：额外浮点指令
+### 3.7 Zfa：额外浮点指令（Additional Floating-Point Instructions）
 
 Zfa 扩展为 F/D/Q 扩展添加了实用的浮点指令：
 
@@ -416,7 +421,10 @@ Zfa 扩展为 F/D/Q 扩展添加了实用的浮点指令：
 
 > **RVA23 必需。** FLI 指令避免了加载浮点常量时需要从内存读取的开销，一条指令即可加载 π、e、√2 等常用常量。
 
-### 3.8 Zfh/Zfhmin：半精度浮点
+### 3.8 Zfh/Zfhmin：半精度浮点（Half-Precision Floating-Point）
+
+- **Zfh**：完整半精度浮点支持（Full Half-Precision）
+- **Zfhmin**：最小半精度支持（Minimal Half-Precision）
 
 | 子扩展 | 说明 |
 |--------|------|
@@ -474,7 +482,7 @@ FRM (舍入模式):
 
 ---
 
-## 4. C 扩展：压缩指令
+## 4. C 扩展：压缩指令（Compressed）
 
 C 扩展将常用指令编码为 16-bit，可减少代码体积 25%-30%。
 
@@ -540,7 +548,7 @@ C 扩展是**使用门槛最低、收益最直观**的扩展。它利用 32-bit 
 
 ---
 
-## 5. B 扩展：位操作
+## 5. B 扩展：位操作（Bitmanipulation）
 
 B 扩展（Bitmanip）提供高效的位操作指令，对密码学、网络包处理、数据压缩等场景有显著加速。B 扩展由多个 Zb* 子扩展组成。
 
@@ -692,7 +700,7 @@ B 扩展看似是"杂项位操作"，但它有清晰的层次结构：**Zba** �
 
 ---
 
-## 6. V 扩展：可变长度向量
+## 6. V 扩展：可变长度向量（Vector）
 
 V 扩展是 RISC-V 最重要的扩展之一，提供可变长度向量（Vector）处理能力，对 AI 推理、信号处理、多媒体等场景至关重要。
 
@@ -961,11 +969,13 @@ V 扩展的学习曲线较陡，但一旦理解了 vsetvli 和四种访存模式
 
 ---
 
-## 7. PMU：性能监控单元
+## 7. PMU：性能监控单元（Performance Monitoring Unit）
 
 PMU (Performance Monitoring Unit) 是 RISC-V 的硬件性能监控机制，由三个子扩展组成：
 
-### 7.1 Zicntr：基本计数器
+### 7.1 Zicntr：基本计数器（Integer Counter）
+
+Zicntr 扩展提供三个基本的 64-bit 硬件计数器，用于性能分析和时间测量：
 
 | CSR | 地址 | 说明 |
 |-----|------|------|
@@ -983,7 +993,7 @@ csrr  t2, time        # 当前时间
 
 **访问控制**：M-mode 通过 `mcounteren` CSR 控制 S/U-mode 是否可以读取这些计数器。每个 bit 对应一个计数器，bit 0=cycle, bit 2=instret。如果 mcounteren 对应位为 0，S/U-mode 读取会触发非法指令异常。
 
-### 7.2 Zihpm：硬件性能监控计数器
+### 7.2 Zihpm：硬件性能监控计数器（Hardware Performance Monitoring）
 
 Zihpm 提供 29 个可编程事件计数器（mhpmcounter3-31），每个计数器有对应的事件选择寄存器：
 
@@ -1015,7 +1025,7 @@ csrw  mhpmcounter3, x0      # 清零计数器
 csrr  t0, mhpmcounter3      # 读取 L1 D-Cache miss 次数
 ```
 
-### 7.3 Sscofpmf：计数器溢出中断
+### 7.3 Sscofpmf：计数器溢出中断（Supervisor-level Counter Overflow and Privilege Mode Filtering）
 
 基本 HPM 计数器是 64-bit 宽，在高速运行时仍可能溢出。Sscofpmf 扩展为计数器添加了溢出检测和中断能力：
 
@@ -1076,7 +1086,10 @@ PMU 按能力分为三层：**Zicntr** 提供 cycle/time/instret 三个基础计
 
 除了上述主要扩展，RV64 服务器场景还有几个重要的子扩展：
 
-### 8.1 Zicbom / Zicboz：缓存管理
+### 8.1 Zicbom / Zicboz：缓存管理（Cache Block Operations）
+
+- **Zicbom**：Integer Cache Block Operation Maintenance（缓存块维护）
+- **Zicboz**：Integer Cache Block Operation Zero（缓存块零初始化）
 
 | 子扩展 | 功能 | 关键指令 |
 |--------|------|----------|
@@ -1097,7 +1110,7 @@ cbo.zero   (a0)     # 将缓存行清零（用于内存分配优化）
 
 > 详细内容见 [第 7 章 PMU](#7-pmu性能监控单元)。Zicntr 提供 cycle/time/instret 基本计数器，Zihpm 提供 29 个可编程事件计数器。RVA22 强制要求两者。
 
-### 8.3 Zicsr：CSR 指令
+### 8.3 Zicsr：CSR 指令（Control and Status Register）
 
 自 20191213 版规范起，CSR 指令从 I 扩展中拆分为独立的 **Zicsr** 扩展：
 
@@ -1110,7 +1123,9 @@ cbo.zero   (a0)     # 将缓存行清零（用于内存分配优化）
 
 > **实际影响：** GCC 工具链中 `-march=rv64i` 默认包含 Zicsr，但严格来说 `-march=rv64i_zicsr` 才是规范写法。在 RVA22/RVA23 Profile 中 Zicsr 是强制要求的。
 
-### 8.4 Zifencei：指令缓存刷新
+### 8.4 Zifencei：指令缓存刷新（Instruction Fence）
+
+Zifencei 扩展提供 `fence.i` 指令，用于保证指令缓存与数据缓存的一致性：
 
 ```asm
 fence.i              # 保证指令缓存与数据缓存的一致性
@@ -1119,7 +1134,7 @@ fence.i              # 保证指令缓存与数据缓存的一致性
 
 > **注意：** Zifencei 在 RVA22 中是**强制要求**的扩展（参见 RISC-V Profiles 规范 Table A.1）。即使操作系统可以通过 SBI 调用 `sbi_remote_fence_i()` 实现远程 fence.i，本地的 `fence.i` 指令仍然是必需的（例如自修改代码后刷新本地指令缓存）。
 
-### 8.5 Zicond：条件操作
+### 8.5 Zicond：条件操作（Integer Conditional Operations）
 
 Zicond 扩展提供两条条件选择指令，类似 x86 的 CMOV：
 
@@ -1139,7 +1154,7 @@ czero.nez t0, a1, a0    # a0!=0 → t0=0; a0==0 → t0=a1
 
 > **RVA23 必需。** Zicond 让编译器可以将简单的条件赋值转换为无分支代码，减少分支预测失败。GCC 12+ 和 LLVM 15+ 已支持。
 
-### 8.6 Svinval：细粒度 TLB 刷新
+### 8.6 Svinval：细粒度 TLB 刷新（Supervisor-level Invalidations）
 
 标准 `sfence.vma` 是一条"重量级"指令，会刷新整个 TLB 或大范围条目。Svinval 扩展将 TLB 刷新拆分为三步，允许在批量刷新时减少流水线停顿：
 
@@ -1160,7 +1175,7 @@ sfence.inval.ir             # 后置屏障，确保所有 sinval 生效
 
 > **性能意义：** 在进程切换或大范围页表更新时，Svinval 可以将 N 次 sfence.vma 的开销从 O(N) 次完整 TLB 刷新降低为 1 次 w.inval + N 次 sinval + 1 次 inval.ir，大幅减少流水线停顿。
 
-### 8.7 Zawrs：等待预约集
+### 8.7 Zawrs：等待预约集（Wait Reservation Set）
 
 Zawrs 提供两条等待指令，用于优化自旋锁的功耗：
 
@@ -1185,7 +1200,7 @@ spin_wait:
 
 > **功耗优化：** WRS 让 CPU 在等待锁释放时进入低功耗状态，而不是持续轮询。当其他核心释放锁（写入锁变量）时，LR 的预约集被破坏，WRS 自动唤醒。
 
-### 8.8 Ztso：全存储序
+### 8.8 Ztso：全存储序（Total Store Order）
 
 Ztso 扩展将处理器的内存模型从 RISC-V 默认的 RVWMO (RISC-V Weak Memory Ordering) 增强为 TSO (Total Store Order)，与 x86 的内存模型一致：
 
@@ -1216,6 +1231,42 @@ Ztso 扩展将处理器的内存模型从 RISC-V 默认的 RVWMO (RISC-V Weak Me
 | **RV64GC+V** | + 向量扩展 | AI/HPC 服务器 |
 | **RVA22** | RV64IMAFDC + Zba+Zbb+Zbs+Zicbom+Zicboz+Zicntr+Zihpm+Zicsr+... | 服务器 Profile |
 | **RVA23** | RVA22 + V + Zicond+Zfa+Zimop+Zcmop+Svinval+... | 服务器 Profile（含向量） |
+
+---
+
+## 附录：扩展全称速查表
+
+| 缩写 | 全称 | 中文含义 |
+|------|------|----------|
+| **M** | Multiply/Division | 乘除法 |
+| **A** | Atomic | 原子操作 |
+| **F** | Single-Precision Floating-Point | 单精度浮点 |
+| **D** | Double-Precision Floating-Point | 双精度浮点 |
+| **C** | Compressed | 压缩指令 |
+| **B** | Bitmanipulation | 位操作 |
+| **V** | Vector | 向量 |
+| **Zba** | Address Generation Acceleration | 地址生成加速 |
+| **Zbb** | Basic Bit-manipulation | 基本位操作 |
+| **Zbc** | Carry-less Multiplication | 无进位乘法 |
+| **Zbs** | Single-bit Operations | 单位操作 |
+| **Zbkb** | Cryptographic Bit-manipulation | 密码学位操作 |
+| **Zbkc** | Cryptographic Carry-less Multiplication | 密码学无进位乘法 |
+| **Zbkx** | Cryptographic Crossbar Permutation | 密码学交叉置换 |
+| **Zfa** | Additional Floating-Point Instructions | 额外浮点指令 |
+| **Zfh** | Half-Precision Floating-Point | 半精度浮点 |
+| **Zfhmin** | Minimal Half-Precision Floating-Point | 最小半精度浮点 |
+| **Zicntr** | Integer Counter | 基本计数器 |
+| **Zihpm** | Hardware Performance Monitoring | 硬件性能监控 |
+| **Zicsr** | Control and Status Register | 控制状态寄存器 |
+| **Zifencei** | Instruction Fence | 指令缓存刷新 |
+| **Zicbom** | Cache Block Operation Maintenance | 缓存块维护 |
+| **Zicboz** | Cache Block Operation Zero | 缓存块零初始化 |
+| **Zicond** | Integer Conditional Operations | 条件操作 |
+| **Ztso** | Total Store Order | 全存储序 |
+| **Zawrs** | Wait Reservation Set | 等待预约集 |
+| **Svinval** | Supervisor-level Invalidations | 细粒度 TLB 刷新 |
+| **Sscofpmf** | Supervisor-level Counter Overflow and Privilege Mode Filtering | 计数器溢出中断 |
+| **RVWMO** | RISC-V Weak Memory Ordering | RISC-V 弱内存序模型 |
 
 ---
 
