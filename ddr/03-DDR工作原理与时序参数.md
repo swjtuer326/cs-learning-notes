@@ -33,15 +33,7 @@
 
 每个 DRAM 存储单元由一个晶体管和一个电容器组成：
 
-```
-位线 (Bit Line)
-    │
-    ├── 晶体管 (开关)
-    │     │
-    │     └── 电容器 (存储电荷)
-    │
-  字线 (Word Line) ── 控制晶体管导通/截止
-```
+![DRAM 1T1C 存储单元：1 个晶体管（开关）+ 1 个电容器（存电荷）构成 1 bit](./images/dram-1t1c-cell.png)
 
 - **写操作**：字线激活 → 晶体管导通 → 位线电压写入电容器
 - **读操作**：字线激活 → 晶体管导通 → 电容器电荷共享到位线 → 灵敏放大器检测位线电压变化
@@ -56,7 +48,6 @@
 DRAM 内部存储阵列的工作频率远低于外部 I/O 总线频率。预取架构的解决思路是：**内部一次取出 N 个数据，然后在外部总线上用 N 倍频率逐个输出**。
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 flowchart LR
     subgraph "DRAM 内部 (慢)"
         Array["存储阵列\n200MHz"] -->|"128bit 宽\n一次取 8 个 16bit"| Mux["并串转换"]
@@ -89,12 +80,12 @@ flowchart LR
 
 ```
 DDR3-1600 (800MHz CK):
-  内部阵列频率: 100MHz (800MHz / 8n-prefetch)
-  tRCD = 13.75ns (11 cycles × 1.25ns)
+  内部阵列频率: 200MHz (1600MT/s ÷ 8n-prefetch)
+  tRCD = 13.75ns (11 nCK × 1.25ns)
   
 DDR4-3200 (1600MHz CK):
-  内部阵列频率: 200MHz (1600MHz / 8n-prefetch)
-  tRCD = 13.75ns (22 cycles × 0.625ns)
+  内部阵列频率: 400MHz (3200MT/s ÷ 8n-prefetch)
+  tRCD = 13.75ns (22 nCK × 0.625ns)
 ```
 
 频率翻倍，tRCD 的周期数也翻倍（11→22），但**绝对时间几乎不变**。这就是为什么 DDR 的"CL=22"看起来比"CL=11"大，但实际延迟差不多。
@@ -108,25 +99,23 @@ DDR4-3200 (1600MHz CK):
 DDR 上电后不能立即使用，必须经过严格的初始化序列。JEDEC 规范定义了每一步的时序要求。
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 flowchart TD
-    A([上电]) --> B[等待电源稳定\n≥200us]
-    B --> C[释放 RESET#]
-    C --> D[等待复位完成\ntINIT1 ≥500ns]
-    D --> E[使能 CKE]
+    A([上电]) --> B[等待电源稳定]
+    B --> C[RESET# 保持低 ≥200μs]
+    C --> D[CKE 低 ≥10ns 后释放 RESET#]
+    D --> E[时钟稳定后拉高 CKE]
     E --> F[发送 MRS: MR0\nDLL Reset=1]
-    F --> G[等待 DLL 锁定\ntDLLK ≥512 CK]
-    G --> H[配置 MR2-MR6]
-    H --> I[ZQ 校准\ntZQINIT ≥1us]
-    I --> J[配置 MR1]
-    J --> K[配置 MR0\nDLL Reset=0, 正常值]
-    K --> L([DDR 就绪])
+    F --> G[等待 DLL 锁定\ntDLLK ≈1024 nCK]
+    G --> H[配置其余 MR]
+    H --> I[ZQ 校准\ntZQinit=1024 nCK]
+    I --> J[配置 MR0\nDLL Reset=0, 正常值]
+    J --> K([DDR 就绪])
 
-    H -.- H1["MR2: CWL, 自刷新温度"]
-    H -.- H2["MR3: 特性配置"]
-    H -.- H3["MR4: 温度传感器"]
-    H -.- H4["MR5: CA 训练"]
-    H -.- H5["MR6: VrefDQ 校准"]
+    H -.- H1["MR2: CWL, ASR"]
+    H -.- H2["MR3: MPR, Geardown"]
+    H -.- H3["MR4: 温度控制刷新"]
+    H -.- H4["MR5: DBI, Rtt_PARK"]
+    H -.- H5["MR6: VrefDQ 训练"]
     I -.- I1["校准输出驱动阻抗和 ODT"]
 ```
 
@@ -137,7 +126,6 @@ flowchart TD
 一次完整的读操作包含四个阶段：
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 flowchart LR
     A["① ACTIVATE\n打开目标行\n灵敏放大器锁存整行数据"] -->|"等待 tRCD"| B["② READ\n指定 Bank + 列地址\n内部 8n-prefetch 取数据"]
     B -->|"等待 CL"| C["③ 数据传输\nDQS 边沿对齐 DQ\nBL8: 8 次传输"]
@@ -153,21 +141,7 @@ READ 命令 → 列地址解码 → 选中 8n 个灵敏放大器 →
 
 **时序图**（DDR4-2400, CL=17, tRCD=17）：
 
-```
-时钟周期:  1    2   ...   18   19   20   21   22   23   24   25
-
-CK      ─┐ ┌─┐ ┌─┐ ┌─┐ ┌─┐ ┌─┐ ┌─┐ ┌─┐ ┌─┐ ┌─┐ ┌─┐ ┌─┐ ┌─
-         └─┘ └─┘ └─┘ └─┘ └─┘ └─┘ └─┘ └─┘ └─┘ └─┘ └─┘ └─┘ └─
-
-CMD     ──< ACT >< NOP >< NOP >< RD  >< NOP >< NOP >< PRE >──
-          Row   ──── tRCD ────→       ──── CL ────→
-                                                      ─tRTP→
-
-DQS                             ──┐   ┌─┐   ┌─┐   ┌─┐   ┌─
-                                └─┘   └─┘   └─┘   └─┘   └─
-
-DQ                              ──< D0 D1 D2 D3 D4 D5 D6 D7 >
-```
+![DDR 读操作时序：CK 时钟、CMD 命令（ACT→RD→PRE）、DQS 选通与 DQ 数据，及 tRCD、CL 的位置](./images/ddr-read-timing.png)
 
 > **为什么 DQS 是差分信号？** 读操作时，DDR 颗粒用 DQS 的边沿告诉控制器"数据有效"。差分信号（DQS_t/DQS_c）抗共模干扰能力强，在 GHz 级频率下比单端信号可靠得多。
 
@@ -176,7 +150,6 @@ DQ                              ──< D0 D1 D2 D3 D4 D5 D6 D7 >
 写操作与读操作的关键区别：**写数据与 WRITE 命令同时发出**，不需要等待 CL。
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 flowchart LR
     A["① ACTIVATE\n打开目标行"] -->|"等待 tRCD"| B["② WRITE\n数据同时传输\nDQS 中心对齐 DQ"]
     B -->|"等待 tWR"| C["③ PRECHARGE\n等待写恢复完成\n关闭当前行"]
@@ -186,9 +159,9 @@ flowchart LR
 
 | 阶段 | 参数 | 说明 |
 |------|------|------|
-| Write Preamble | tWPRE | DQS 在数据前的准备时间（1-2 CK），让控制器准备好采样 |
+| Write Preamble | tWPRE | DQS 在数据前的准备时间（1 nCK，DDR4 可配 2 nCK），让控制器准备好采样 |
 | 数据传输 | — | DQS 中心对齐 DQ（与读操作的边沿对齐不同），控制器用 DQS 的上升/下降沿采样 DQ |
-| Write Postamble | tWPST | DQS 在数据后的保持时间（0.5 CK），确保最后一个数据被可靠写入 |
+| Write Postamble | tWPST | DQS 在数据后的保持时间（0.5 nCK），确保最后一个数据被可靠写入 |
 | Write Recovery | tWR | 写数据写入存储阵列的时间，PRECHARGE 必须等 tWR 结束 |
 | DM 掩码 | — | Data Mask 信号，可屏蔽不想要的字节（如只写 4 字节但 BL8 传 8 字节时） |
 
@@ -233,7 +206,6 @@ DRAM 用电容器存储数据，而电容器会**漏电**。漏电来源：
 刷新操作由 DRAM 内部的**刷新计数器**控制：
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 flowchart TD
     A["控制器发出 REF 命令"] --> B["DRAM 内部刷新计数器\n选择当前刷新行"]
     B --> C["激活字线\n灵敏放大器读出数据"]
@@ -295,7 +267,6 @@ Row Hammer: 64ms 内激活同一行 100K+ 次 → 相邻行来不及刷新就漏
 **DLL（Delay-Locked Loop，延迟锁定环）** 是 DDR 内部产生精确时钟相位的电路。它的作用是：让 DQS 的边沿与 CK 保持固定的相位关系。
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 flowchart TD
     CK["CK 输入"] --> VCDL["压控延迟链\n(VCDL)"]
     VCDL --> Out["DQS 输出\n(相位偏移后的时钟)"]
@@ -319,11 +290,11 @@ flowchart TD
 |------|------|------|
 | DLL 锁定 | DQS 与 CK 相位关系稳定 | 正常读写 |
 | DLL 失锁 | 相位关系漂移 | 数据错误，需重新锁定 |
-| DLL 关闭 | MR1[0]=1，DLL 不工作 | 仅用于低频调试（<125MHz），正常使用必须开启 |
+| DLL 关闭 | MR1[0]=0，DLL 不工作 | 仅用于特殊省电模式，正常使用必须开启 |
 
-**DLL 锁定时间**：tDLLK = max(512 CK, 10μs)。初始化时必须等待 DLL 锁定后才能正常访问。
+**DLL 锁定时间**：tDLLK 随速度分级变化（DDR4-3200 为 1024 nCK，低速档约 597 nCK）。初始化时必须等待 DLL 锁定后才能正常访问。
 
-> **LPDDR 的特殊性**：LPDDR4/5 在低频模式下可以关闭 DLL（节省功耗），此时用 WCK（Write Clock）信号代替 DQS 做写时序。这是 LPDDR 与标准 DDR 的重要架构差异。
+> **LPDDR 的特殊性**：LPDDR5 在低功耗模式下可关闭 DLL，此时用 **WCK（Write Clock）** 信号做写时序。注意 **WCK 是 LPDDR5 引入的，LPDDR4 没有**（LPDDR4 用 CK + DQS）。这是 LPDDR 与标准 DDR 的重要架构差异。
 
 ---
 
@@ -332,7 +303,6 @@ flowchart TD
 ### 5.1 功耗模式全景
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 stateDiagram-v2
     [*] --> Active
     Active --> Idle : 无命令
@@ -405,7 +375,6 @@ BL8 顺序: 0x2 → 0x3 → 0x4 → 0x5 → 0x6 → 0x7 → 0x0 → 0x1
 ### 7.1 时序参数全景
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 flowchart TD
     ACT["ACTIVATE"] -- "tRCD" --> READ["READ"]
     READ -- "tCL" --> Data["数据有效"]
@@ -426,10 +395,10 @@ flowchart TD
 | **tCL** | CAS Latency | READ 命令到第一个数据有效的时钟周期数 | 17 CK (14.16ns) |
 | **tRCD** | RAS to CAS Delay | ACTIVATE 到 READ/WRITE 的最小间隔 | 17 CK (14.16ns) |
 | **tRP** | RAS Precharge | PRECHARGE 到下一次 ACTIVATE 的最小间隔 | 17 CK (14.16ns) |
-| **tRAS** | RAS Active Time | ACTIVATE 到 PRECHARGE 的最小间隔 | 32 CK (26.67ns) |
-| **tRC** | Row Cycle Time | tRAS + tRP，同一行完整周期 | 49 CK (40.83ns) |
-| **tWR** | Write Recovery | WRITE 到 PRECHARGE 的最小间隔 | 15 CK (12.5ns) |
-| **tRFC** | Refresh Cycle Time | 一次 REF 命令占用的时间 | 350ns (~420 CK) |
+| **tRAS** | RAS Active Time | ACTIVATE 到 PRECHARGE 的最小间隔 | 39 nCK（32ns） |
+| **tRC** | Row Cycle Time | tRAS + tRP，同一行完整周期 | 56 nCK（45.75ns） |
+| **tWR** | Write Recovery | WRITE 到 PRECHARGE 的最小间隔 | 15ns（18 nCK） |
+| **tRFC** | Refresh Cycle Time | 一次 REF 命令占用的时间 | 350ns（8Gb，≈420 nCK） |
 
 ### 7.3 命令间时序
 
@@ -451,7 +420,6 @@ flowchart TD
 这是 Bank Group 架构的核心设计权衡：
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 flowchart LR
     subgraph "BG0: Bank 0-3"
         B0["Bank 0"]
@@ -507,23 +475,34 @@ flowchart LR
 
 | 寄存器 | Bit 位 | 功能 | 说明 |
 |--------|--------|------|------|
-| **MR0** | [1:0] | 突发长度 (BL) | 00=OTF, 01=BC4, 10=BL8 |
-| | [2] | CAS 延迟 MSB (A2) | 0: CL=9+A[6:4], 1: CL=18+2×A[6:4] |
-| | [6:4] | CAS 延迟 (CL) | CL[1:0]，与 A2 共同编码 |
-| | [7] | 测试模式 | 0=正常, 1=测试 |
-| | [9:8] | 写恢复 (tWR) | 编码查表 |
-| | [11] | DLL 复位 | 1=复位 DLL |
-| **MR1** | [0] | DLL 使能 | 0=使能, 1=禁止 |
-| | [2:1] | 输出驱动强度 | RZQ/1,2,3,4,6,7 |
-| | [4:3] | 附加延迟 (AL) | 0, CL-1, CL-2 |
-| | [6] | Qoff (禁止输出) | 0=使能输出 |
-| | [12] | 使能写均衡 (WL) | Write Leveling |
-| **MR2** | [3:0] | CAS 写延迟 (CWL) | CWL = 9 + n |
-| | [6:5] | 自刷新温度范围 | 0=标准, 1=扩展, 2=低 |
-| | [9:8] | 动态 ODT (RTT_WR) | 禁用, RZQ/2, RZQ/4 |
-| **MR3** | [2:0] | 特性配置 | 控制 DDR3 vs DDR4 模式 |
+| **MR0** | [1:0] | 突发长度 (BL) | 00=BL8(固定)、01=BC4/8(OTF)、10=BC4 |
+| | [2]+[6:4] | CAS 延迟 (CL) | 查表（如 DDR4-3200: A2=0、A[6:4]=101 → CL=22） |
+| | [3] | 读突发类型 | 0=顺序、1=交错 |
+| | [7] | 测试模式 (TM) | 0=正常 |
+| | [8] | DLL Reset | 1=复位（自清） |
+| | [11:9] | 写恢复 (WR)/RTP | 000=10、001=12、010=14、011=16、100=18、101=20、110=24 |
+| **MR1** | [0] | DLL 使能 | 0=禁止、1=使能（与 DDR3 相反） |
+| | [2:1] | 输出驱动阻抗 (DIC) | 00=RZQ/7、01=RZQ/5 |
+| | [4:3] | 附加延迟 (AL) | 00=0、01=CL-1、10=CL-2 |
+| | [7] | Write Leveling 使能 | 0=禁止、1=使能 |
+| | [10:8] | RTT_NOM (ODT) | 查表（RZQ/1~RZQ/7） |
+| | [11] | TDQS 使能 | x8 颗粒用 |
+| | [12] | Qoff | 1=输出缓冲关闭 |
+| **MR2** | [5:3] | CAS 写延迟 (CWL) | 查表（与写前导码模式相关） |
+| | [7:6] | 低功耗自动自刷新 (LP ASR) | 00=手动正常、11=ASR |
+| | [10:9] | 动态 ODT (RTT_WR) | 禁用/RZQ/2/RZQ/4… |
+| | [12] | Write CRC | 0=禁止、1=使能 |
+| **MR3** | [1:0] | MPR page 选择 | 00~11 = Page0~3 |
+| | [2] | MPR 操作 | 0=正常、1=MPR 数据流 |
+| | [3] | Geardown 模式 | 0=1/2 速率、1=1/4 速率 |
+| | [4] | Per-DRAM 寻址 | 0=禁止、1=使能 |
+| | [5] | 温度传感器读出 | 0=禁止、1=使能 |
+| | [8:6] | Fine Granularity Refresh | 000=正常 1x… |
+| | [12:11] | MPR Read Format | 00=串行、01=并行、10=交错 |
 
-> 配置示例（DDR4-2400）：MR0: CL=17, WR=15；MR1: DLL=Enable, AL=0；MR2: CWL=12
+> 来源：JEDEC JESD79-4D §3.5 Mode Register（Table 14–22）。旧版多处位域错误（WR 写成 [9:8]、DLL Reset 写成 [11]、WL 写成 [12]、Qoff 写成 [6]、DLL 使能极性写反、MR3[2:0] 误写成「DDR3/DDR4 模式切换」），已按规范修正。
+
+> 配置示例（DDR4-2400）：MR0: CL=17、WR=15（A[11:9]=101）；MR1: DLL=Enable(A0=1)、AL=0；MR2: CWL=12
 
 ---
 

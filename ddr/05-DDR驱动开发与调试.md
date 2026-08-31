@@ -53,24 +53,26 @@ DDR 控制器在上电后处于未配置状态，软件需要向它提供一套�
 
 ### 1.2 时序参数：从 AC Characteristics 到寄存器
 
-颗粒数据手册的 AC Characteristics 表列出了该颗粒支持的所有时序参数。以 DDR4-3200 (tCK = 0.625ns) 为例：
+颗粒数据手册的 AC Characteristics 表列出了该颗粒支持的所有时序参数。以 **DDR4-3200、8Gb x8 颗粒**（tCK = 0.625ns）为例，取 JEDEC JESD79-4 / 厂商 datasheet 的 DDR4-3200 速度分级表：
 
-| 时序参数 | 数据手册值（CK 周期） | 实际时间 | 含义 |
-|----------|---------------------|---------|------|
-| tCL | 22 CK | 13.75 ns | 读命令到数据输出的延迟 |
-| tRCD | 22 CK | 13.75 ns | 行激活到读/写命令的延迟 |
-| tRP | 22 CK | 13.75 ns | 预充电到下一行激活的延迟 |
-| tRAS | 52 CK | 32.5 ns | 行激活到预充电的最小时间 |
-| tRC | 74 CK | 46.25 ns | 同一 Bank 两次激活的最小间隔（= tRAS + tRP） |
-| tWR | 24 CK | 15 ns | 写恢复时间 |
-| tRFC | 550 CK | 343.75 ns | 刷新周期时间 |
-| tFAW | 34 CK | 21.25 ns | 四激活窗口（限制短时间内跨 Bank 激活次数） |
+| 时序参数 | 值（nCK） | 实际时间 | 含义 |
+|----------|----------|---------|------|
+| tCL (CAS Latency) | 22 | 13.75 ns | 读命令到首笔数据输出的延迟 |
+| tRCD | 22 | 13.75 ns | 行激活（ACT）到读/写命令的延迟 |
+| tRP | 22 | 13.75 ns | 预充电（PRE）到下一行激活的延迟 |
+| tRAS | 52（⌈32ns÷0.625⌉） | 32 ns（min） | 行激活到预充电的最小时间 |
+| tRC | 74（⌈45.75÷0.625⌉） | 45.75 ns | 同一 Bank 两次激活的最小间隔（= tRAS + tRP） |
+| tWR | 24（⌈15ns÷0.625⌉） | 15 ns（min） | 写恢复时间 |
+| tRFC | 560（⌈350÷0.625⌉） | 350 ns（min，8Gb） | 刷新周期时间 |
+| tFAW | 34 | ≈21 ns（x8） | 四激活窗口（限制短时间内跨 Bank 激活次数） |
+
+> **tRFC 与颗粒容量相关，最容易被写错**：tRFC(min) 随颗粒密度变化——**8Gb 为 350ns，16Gb 为 550ns**。本文示例是 8Gb 颗粒，取 350ns ≈ 560 nCK；若换成 16Gb 颗粒，tRFC 要改成 550ns ≈ 880 nCK。容量变了却不改 tRFC，是 DDR 配置里典型的低级错误。
 
 > **工程师视角**：数据手册给出的通常是"该颗粒能跑的最紧时序"。实际配置时建议放宽 1-2 个周期作为裕量，等系统稳定后再收紧。另外注意：同一 PCB 上不同颗粒的时序参数可能不同，取最慢的那颗。
 
 ### 1.3 配置代码示例
 
-以下代码展示了如何将上述参数填入控制器寄存器。**注意**：这段代码是教学性质的伪代码，实际控制器的寄存器名和位域定义因 SoC 而异（Synopsys uMCTL2、Cadence DDRC 等各有不同的寄存器布局），但配置逻辑是通用的。
+以下代码展示了如何将上述参数填入控制器寄存器。**注意**：这是教学性质的**示意代码**——`MSTR`/`DRAMTMG` 等名字借用了 Synopsys uMCTL2 的风格，但位域偏移（`tRAS_SHIFT` 等）是简化的，不是真实寄存器定义；真实控制器的寄存器布局因 IP 而异（Synopsys uMCTL2、Cadence DDRC 等各有不同）。真实实现见下文 [`ddr_cfg_umctl2()`](#ddr_cfg_umctl2)。
 
 ```c
 /*
@@ -165,6 +167,13 @@ void ddr_init_controller(struct ddr_config *cfg)
 }
 ```
 
+> **真实实现不是逐位算移位，而是写一张预生成的「寄存器-值」配置表**。i.MX8M 的 DDR 配置由 NXP 的 DDR 工具离线算出（含 PHY 训练参数），运行时只做循环写入（[`ddr_cfg_umctl2()`](#ddr_cfg_umctl2)）：
+
+```c src="../trusted-firmware/src/u-boot-src/drivers/ddr/imx/imx8m/ddr_init.c" lines="18-26" anchor="ddr_cfg_umctl2"
+```
+
+也就是说，`tRAS_SHIFT` 这种运行时移位计算在真实代码里并不存在——偏移早已被 NXP 工具折算进 `ddrc_cfg[]` 表里了。这提示一个关键分工：**「参数怎么算」在离线工具里，「参数怎么写到寄存器」在驱动里**。
+
 ### 1.4 两种典型配置实例
 
 以下给出两个真实场景的配置参数，展示单 Rank 和双 Rank 的差异：
@@ -188,7 +197,7 @@ struct ddr_config ddr4_4gb_x8_single_rank = {
     .tRAS            = 52,
     .tRC             = 74,              /* tRAS + tRP */
     .tWR             = 24,
-    .tRFC            = 550,
+    .tRFC            = 560,              /* 8Gb 颗粒: tRFC=350ns ≈ 560nCK */
     .tFAW            = 34,
 };
 
@@ -210,7 +219,7 @@ struct ddr_config ddr4_16gb_x8_dual_rank = {
     .tRAS            = 52,
     .tRC             = 74,
     .tWR             = 24,
-    .tRFC            = 550,
+    .tRFC            = 560,              /* 8Gb 颗粒: tRFC=350ns ≈ 560nCK */
     .tFAW            = 34,
 };
 ```
@@ -222,7 +231,6 @@ struct ddr_config ddr4_16gb_x8_dual_rank = {
 地址映射是控制器配置中最容易出错的部分。CPU 发出的物理地址是线性的，但 DDR 内部是三维的（Row × Bank × Column）。控制器需要将线性地址拆分为这三个维度。
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 flowchart TD
     Addr["CPU 物理地址 [63:0]"] --> R["[33] Rank 选择<br/>单 Rank 时恒为 0"]
     Addr --> BG["[32:31] Bank Group 选择<br/>2 位 → 4 个 BG"]
@@ -236,44 +244,30 @@ flowchart TD
 
 ### 1.6 设备树中的 DDR 描述
 
-设备树不是用来"配置 DDR 控制器寄存器"的（那在 SPL 中完成），而是用来**告知操作系统 DDR 的物理范围和基本属性**。最关键的是 `memory` 节点——它告诉内核有多少内存可用。
+设备树不是用来"配置 DDR 控制器寄存器"的（那在 SPL 中完成），而是用来**告知操作系统 DDR 的物理范围和基本属性**。最关键的是 `memory` 节点——它告诉内核有多少内存可用。以 i.MX8M 为例（DDR 起始地址 0x40000000，来自真实的 `imx8mq-cm.dts` / `imx8mm.dtsi`）：
 
 ```dts
-/*
- * 设备树中的 DDR 描述
- * 注意: memory 节点描述的是"OS 可用的内存范围"，
- * 不是控制器的寄存器配置（寄存器配置在 SPL 中完成）
- */
+/* 摘自 i.MX8M 板级 dts（u-boot-src/arch/arm/dts/imx8mq-cm.dts） */
+memory@40000000 {
+    device_type = "memory";
+    reg = <0x00000000 0x40000000 0 0x40000000>;  /* 起始 0x40000000, 大小 1GB */
+};
+```
 
-/ {
-    /*
-     * memory 节点: 告诉内核 DDR 的物理地址范围和大小
-     * 这是设备树中最重要的 DDR 相关节点
-     * reg = <起始地址高32位 起始地址低32位 大小高32位 大小低32位>
-     */
-    memory@80000000 {
-        device_type = "memory";
-        reg = <0x0 0x80000000 0x0 0x80000000>;  /* 起始 0x80000000, 大小 2GB */
-    };
+> 注：上一版这里写的是 `memory@80000000` + 一个假造的 `ddr@ff780000` 控制器节点。真实 SoC 的 DDR 起始地址是 **SoC 相关的**（i.MX8M 是 0x40000000，不少 ARM64 SoC 是 0x80000000），务必对照该 SoC 的内存映射表，不要照抄。
 
-    /*
-     * DDR 控制器节点: 用于 DDR PMU (性能监控) 和 DFS (动态调频)
-     * 注意: 这个节点不用于初始化——初始化在 SPL 中已完成
-     */
-    ddr_controller: ddr@ff780000 {
-        compatible = "vendor,ddr4-controller";
-        reg = <0x0 0xff780000 0x0 0x10000>;
+DDR 控制器节点本身**不用于初始化**（初始化在 SPL 已完成），它出现是为了挂 DDR PMU 或 DFS 驱动。i.MX8M 真实写法：
 
-        /* 以下属性供 DFS 驱动使用，不是初始化参数 */
-        clock-frequency = <1600000000>;     /* 当前 DDR 频率 (Hz) */
-        ddr-type = "DDR4";
-
-        /* PHY 子节点: 供训练状态查询 */
-        phy {
-            compatible = "vendor,ddr4-phy";
-            reg = <0x0 0xff790000 0x0 0x10000>;
-        };
-    };
+```dts
+/* 摘自 imx8mm.dtsi */
+ddrc: memory-controller@3d400000 {
+    compatible = "fsl,imx8mm-ddrc", "fsl,imx8m-ddrc";
+    reg = <0x3d400000 0x400000>;
+    clock-names = "core", "pll", "alt", "apb";
+    clocks = <&clk IMX8MM_CLK_DRAM_CORE>,
+             <&clk IMX8MM_DRAM_PLL>,
+             <&clk IMX8MM_CLK_DRAM_ALT>,
+             <&clk IMX8MM_CLK_DRAM_APB>;
 };
 ```
 
@@ -288,7 +282,6 @@ DDR 初始化发生在 U-Boot SPL（或 TPL）阶段，此时系统还没有完�
 ### 2.1 初始化流程概览
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 flowchart TD
     BootROM["BootROM 启动"] --> LoadSPL["加载 SPL 到 SRAM"]
     LoadSPL --> ClkInit["配置 DDR PLL<br/>设置目标频率"]
@@ -306,39 +299,36 @@ flowchart TD
 
 ### 2.2 上电时序要求
 
-DDR 芯片在上电后必须严格遵循 JEDEC 规定的时序要求。DRAM 内部状态机需要时间从上电默认状态转换到可操作状态；内部 PLL/DLL 需要时间锁定；内部电压调节器需要时间稳定；存储单元需要完成初始充电。如果时序不满足，DRAM 可能进入未定义状态。
+DDR 芯片在上电后必须严格遵循 JEDEC 规定的时序要求。DRAM 内部状态机需要时间从上电默认状态转换到可操作状态；内部 PLL/DLL 需要时间锁定；内部电压调节器需要时间稳定；存储单元需要完成初始充电。如果时序不满足，DRAM 可能进入未定义状态。DDR4 的上电/复位顺序（JEDEC JESD79-4 §Power-up and Initialization）：
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 sequenceDiagram
-    participant VDD as VDD/VDDQ
+    participant PWR as VDD/VDDQ/VPP
+    participant RST as RESET#
     participant CKE as CKE
-    participant RST as RESET
     participant CK as CK_t/CK_c
-    participant CS as CS
+    participant CMD as 命令总线
 
-    Note over VDD: 上电
-    VDD->>VDD: 达到稳定 1.2V
-    Note right of VDD: tINIT0 ≥ 200μs
-    Note over CKE: 保持 Low
-    RST->>RST: 释放拉高
-    Note right of RST: tINIT3 ≥ 2 CK
-    Note over CK: 时钟开始稳定
+    PWR->>PWR: 上电爬升，电压稳定
+    Note over RST: RESET# 保持 LOW ≥ 200μs
+    Note over CKE: CKE 保持 LOW ≥ 10ns（RESET# 释放前）
+    RST->>RST: 释放（拉高）
+    Note over CK: 时钟需稳定（≥ 5 tCK）
     CKE->>CKE: 拉高
-    Note right of CKE: tINIT1 ≥ 500ns
-    Note right of CKE: tXPR ≥ max(5μs, nCK·tCK)
-    Note over CK: tINIT5 ≥ 2 CK
-    CS->>CS: NOP → 首次 MRS 命令
+    Note over CKE: 等待 tXPR 后才能发有效命令
+    CMD->>CMD: NOP → 首次 MRS 命令
 ```
 
-| 参数 | 最小值 | 说明 |
+| 阶段 | 最小值 | 说明 |
 |------|--------|------|
-| tINIT0 | ≥ 200μs | VDD/VDDQ 达到稳定后需等待的时间 |
-| tINIT1 | ≥ 500ns | CKE 拉高后需等待的时间 |
-| tINIT3 | ≥ 2 CK | RESET# 释放后需等待的时钟周期数 |
-| tINIT5 | ≥ 2 CK | CKE 拉高后到首次 MRS 命令的等待时间 |
-| tPWRESET | ≥ 1μs | RESET# 脉冲最小宽度 |
-| tXPR | max(5μs, nCK·tCK) | CKE 拉高到可发送有效命令的时间 |
+| RESET# 保持 LOW | ≥ 200μs | 电源稳定后 RESET# 需保持 LOW（旧版误叫 tINIT0，实为 LPDDR 命名） |
+| CKE 保持 LOW | ≥ 10ns | RESET# 释放前 CKE 需保持 LOW |
+| CK 稳定 | ≥ 5 tCK | CKE 拉高前时钟需稳定 |
+| tXPR | 见 datasheet | CKE 拉高到可发有效命令（MRS）的等待 |
+| tZQinit | 1024 nCK | 上电 ZQ 校准（首次 ZQCL）时间 |
+| tDLLK | 1024 nCK @DDR4-3200 | DLL 锁定时间 |
+
+> **命名澄清**：tINIT0~tINIT5 这套名字是 **LPDDR4/LPDDR2** 的写法，DDR4 用 RESET#/CKE 时序直接描述。旧版把 tINIT0 说成「VDD 稳定后等待」、tINIT1 说成「CKE 拉高后 500ns」都是错的——**200μs 是 RESET# 保持 LOW 的时间**，不是 VDD 等待时间。
 
 ### 2.3 10 步初始化序列详解
 
@@ -405,58 +395,51 @@ static void ddr_enable_cke(void)
 
 #### 步骤 4: DRAM 复位 (通过 MR0 DLL Reset)
 
-通过写入 MR0[11]=1 触发 DLL 复位。DLL (Delay-Locked Loop) 用于对齐 DQS 与 DQ 信号，复位后需等待 tDLLK = max(512 CK, 10μs) 让其重新锁定。
+通过写入 **MR0[8]=1** 触发 DLL 复位。DLL (Delay-Locked Loop) 用于对齐 DQS 与 DQ 信号，复位后需等待 tDLLK（DDR4-3200 约 1024 nCK）让其重新锁定。注意 DLL Reset 位在 **MR0 的 A8**（不是 A11），复位位是自清的。
 
 ```c
 static void ddr_reset_via_mr0(void)
 {
-    ddr_mr_write(0, 0x0800);  /* MR0[11]=1 → DLL Reset */
-    udelay(10);                /* tDLLK = max(512 CK, 10μs) */
+    ddr_mr_write(0, 0x0100);  /* MR0[8]=1 → DLL Reset（A8 位） */
+    udelay(10);                /* tDLLK = 1024 nCK @ DDR4-3200，留裕量 */
     debug("DDR: DLL reset issued\n");
 }
 ```
 
 | 常见错误 | 排查方法 |
 |---------|---------|
-| 将 DLL Reset 写入 MR1 而非 MR0 | 确认 MR 编号 |
-| 忘记等待 DLL 锁定 | 增加等待时间 |
+| 把 DLL Reset 写到 MR0[11] 而非 [8] | 核对 JEDEC MR0 位域表，A8 才是 DLL Reset |
+| 忘记等待 DLL 锁定 | 增加等待时间（tDLLK） |
 | DLL 永远无法锁定 | 检查时钟信号质量，降低频率测试 |
 
 #### 步骤 5: 配置模式寄存器
 
-模式寄存器 (MR0~MR6) 定义 DRAM 的操作模式：突发长度、CAS Latency、ODT 阻抗、驱动强度等。JEDEC 规定配置顺序为 MR2→MR3→MR1→MR5→MR4→MR6→MR0（MR0 最后，因为它包含 DLL Reset 位）。
+模式寄存器 (MR0~MR6) 定义 DRAM 的操作模式：突发长度、CAS Latency、ODT 阻抗、驱动强度等。DDR4 对各 MR 的写入顺序**没有强制规定**，关键约束是含 DLL Reset 位的 MR0 要最后写（写 MR0 会触发/释放复位）；MR2→MR3→MR1→MR5→MR4→MR6→MR0 只是常见顺序。各 MR 位域编码见 JEDEC JESD79-4 Mode Register 表（`reference/` 里的 datasheet 也有完整表）。
 
-每个 MR 的位域定义在 JEDEC 标准中有详细说明。以 MR0 为例：
+每个 MR 的位域定义在 JEDEC 标准中有详细说明。以 MR0 为例（DDR4 位域，来源：JEDEC JESD79-4 §Mode Registers / 厂商 datasheet 的 Mode Register 表）：
 
 | MR0 位域 | 功能 | DDR4-3200 典型值 |
 |----------|------|-----------------|
-| [1:0] | 突发长度 | 00 = BL8 (on-the-fly) |
-| [2], [6:4] | CAS Latency | A2=0, A[6:4]=13 → CL = 9+13 = 22 |
-| [9:7] | 写恢复 (WR) | 011 → WR = 16 |
-| [11] | DLL Reset | 0（已在步骤 4 中复位） |
-| [12] | 电源 down 模式 | 0 = 禁用 |
+| [1:0] | 突发长度 (BL) | 00 = BL8（固定 8） |
+| [2] + [6:4] | CAS Latency (CL) | A2=0、A[6:4]=101 → CL=22 |
+| [3] | 读突发类型 | 0 = 顺序（nibble sequential） |
+| [7] | 测试模式 (TM) | 0 = 正常 |
+| [8] | DLL Reset | 1 = 复位（自清，已在步骤 4 中用） |
+| [11:9] | 写恢复 (WR) / RTP | 如 101 → WR=20 nCK |
+| [12] | 保留 (RFU) | 0 |
 
-```c
-static void ddr_config_mode_registers(void)
-{
-    /*
-     * 严格按 JEDEC 顺序写入:
-     * MR2 → MR3 → MR1 → MR5 → MR4 → MR6 → MR0
-     */
-    ddr_mr_write(2, 0x0020);  /* MR2: CWL=12, RTT_WR=60Ω */
-    ddr_mr_write(3, 0x0000);  /* MR3: 默认值 */
-    ddr_mr_write(1, 0x0006);  /* MR1: DLL=1, RTT_NOM=60Ω */
-    ddr_mr_write(5, 0x0000);  /* MR5: CA Parity 禁用 */
-    ddr_mr_write(4, 0x0000);  /* MR4: 内部 Vref 默认 */
-    ddr_mr_write(6, 0x0000);  /* MR6: VrefDQ 范围默认 */
-    ddr_mr_write(0, 0x01F0);  /* MR0: BL8, CL=16, WR=16 (最后) */
-    debug("DDR: mode registers configured\n");
-}
+> **注意**：DDR4 的 WR 在 **A[11:9]**（不是 A[9:7]）；DLL Reset 在 **A8**（不是 A11）。MR0 编码表见 `reference/` 里的 DDR4 datasheet 或 JEDEC JESD79-4。
+
+真正发起一次 Mode Register Write 不是写一个「magic number」，而是通过控制器寄存器把 MR 地址/数据发出去。i.MX8M uMCTL2 的真实写法（[`lpddr4_mr_write()`](#lpddr4_mr_write)）：
+
+```c src="../trusted-firmware/src/u-boot-src/drivers/ddr/imx/imx8m/ddr_init.c" lines="98-118" anchor="lpddr4_mr_write"
 ```
+
+注意这里走的是 uMCTL2 的 `MRCTRL0`/`MRCTRL1` 寄存器（写 MR 地址、写数据、置发起位 bit31），而不是上一节示意代码里的 `(mr<<0)|(val<<3)` 那种凭空编造的编码。**MR 写入的具体机制是控制器 IP 相关的，要查该 IP 的寄存器手册**；MR 的地址/数据位域本身才是 JEDEC 规定的。
 
 | 常见错误 | 排查方法 |
 |---------|---------|
-| 配置顺序错误 | 严格按 JEDEC 顺序 |
+| 配置顺序错误 | 关键是含 DLL Reset 的 MR0 最后写 |
 | CL/CWL 与频率不匹配 | 查数据手册确认对应关系 |
 | ODT 配置错误 | 尝试不同 ODT 值（40Ω/60Ω/120Ω） |
 
@@ -543,11 +526,11 @@ static int ddr_training(void)
 训练完成后，控制器打开 DRAM 访问通道并启动自动刷新。刷新间隔的计算：
 
 ```
-tREFI = 64ms / 8192 rows = 7.8125μs (标准温度, ≤85°C)
-tREFI = 32ms / 8192 rows = 3.90625μs (扩展温度, >85°C)
+tREFI = 64ms / 8192 行 = 7.8125μs（标准温度，≤85°C）
+tREFI = 32ms / 8192 行 = 3.90625μs（扩展温度，85–95°C）
 
 寄存器值 = tREFI / tCK
-例: 7.8125μs / 1.25ns (800MHz) = 6250 CK
+例: 7.8125μs / 0.625ns (DDR4-3200，tCK=0.625ns) = 12500 CK
 ```
 
 ```c
@@ -614,108 +597,17 @@ static int ddr_memory_test(void)
 
 ### 2.4 完整初始化代码
 
-以下将上述 10 个步骤整合为一个完整的 `dram_init()` 函数，这是 U-Boot SPL 中 DDR 初始化的典型实现：
+上一节的 10 步是**示意图**，这里直接看真实实现。i.MX8M 的 [`ddr_init()`](#ddr_init) 是 U-Boot SPL 里 DDR 初始化的完整入口，按 JEDEC 上电流程 + uMCTL2 配置 + PHY 训练组织（注释里的 Step1~Step26 是比上面 10 步更细的粒度）：
 
-```c
-/* DDR 控制器基地址 (SoC 相关) */
-#define DDR_CTRL_BASE    0xFF780000
-#define DDR_PHY_BASE     0xFF790000
-
-/* 控制器寄存器偏移 (Synopsys uMCTL2 风格, 简化) */
-#define DDR_CTRL_RSTN        0x0000
-#define DDR_CTRL_CKE         0x0004
-#define DDR_CTRL_CTRL        0x0008
-#define DDR_CTRL_ZQCR        0x0010
-#define DDR_CTRL_RFSHCTL     0x0020
-#define DDR_CTRL_STATUS      0x0100
-#define DDR_CTRL_MRS         0x0030
-
-#define DDR_CTRL_CKE_EN      BIT(0)
-#define DDR_CTRL_ACCESS_EN   BIT(0)
-#define DDR_CTRL_RFSH_EN     BIT(0)
-#define DDR_CTRL_ZQCL_CMD    BIT(0)
-#define DDR_STATUS_DLL_LOCKED BIT(8)
-
-#define DDR_PHY_TRAIN_CTRL   0x0000
-#define DDR_PHY_TRAIN_STATUS 0x0004
-#define DDR_PHY_TRAIN_RESULT 0x0008
-#define DDR_PHY_TRAIN_START  BIT(0)
-#define DDR_PHY_TRAIN_DONE   BIT(0)
-#define DDR_PHY_TRAIN_PASS   0x0
-
-/* 刷新间隔: 7.8125μs @ 800MHz = 6250 CK */
-#define DDR_REFRESH_INTERVAL 6250
-
-static u32 dram_size_mb;
-
-static void ddr_mr_write(u32 mr, u32 val)
-{
-    writel((mr << 0) | (val << 3), DDR_CTRL_BASE + DDR_CTRL_MRS);
-    udelay(1);
-}
-
-int dram_init(void)
-{
-    int ret;
-
-    printf("DDR: initializing...\n");
-
-    /* 步骤1: 等待电源稳定 */
-    udelay(200);
-
-    /* 步骤2: 释放 DDR 复位 */
-    writel(0, DDR_CTRL_BASE + DDR_CTRL_RSTN);
-    udelay(10);
-    writel(1, DDR_CTRL_BASE + DDR_CTRL_RSTN);
-    udelay(500);
-
-    /* 步骤3: 使能 CKE */
-    writel(DDR_CTRL_CKE_EN, DDR_CTRL_BASE + DDR_CTRL_CKE);
-    udelay(10);
-
-    /* 步骤4: DRAM 复位 (MR0 DLL Reset) */
-    ddr_mr_write(0, 0x0800);
-    udelay(200);
-
-    /* 步骤5: 配置模式寄存器 (JEDEC 顺序) */
-    ddr_mr_write(2, 0x0020);  /* MR2: CWL=12, RTT_WR=60Ω */
-    ddr_mr_write(3, 0x0000);  /* MR3 */
-    ddr_mr_write(1, 0x0006);  /* MR1: DLL=1, RTT_NOM=60Ω */
-    ddr_mr_write(5, 0x0000);  /* MR5 */
-    ddr_mr_write(4, 0x0000);  /* MR4 */
-    ddr_mr_write(6, 0x0000);  /* MR6 */
-    ddr_mr_write(0, 0x01F0);  /* MR0: BL8, CL=16, WR=16 (最后) */
-
-    /* 步骤6: ZQ 校准 */
-    writel(DDR_CTRL_ZQCL_CMD, DDR_CTRL_BASE + DDR_CTRL_ZQCR);
-    udelay(10);
-
-    /* 步骤7: 等待 DLL 锁定 */
-    udelay(200);
-
-    /* 步骤8: 训练 */
-    ret = ddr_training();
-    if (ret) {
-        printf("DDR: training failed! (ret=%d)\n", ret);
-        return ret;
-    }
-
-    /* 步骤9: 使能 DRAM 访问 */
-    writel(DDR_REFRESH_INTERVAL, DDR_CTRL_BASE + DDR_CTRL_RFSHCTL);
-    writel(DDR_CTRL_RFSH_EN, DDR_CTRL_BASE + DDR_CTRL_RFSHCTL);
-    writel(DDR_CTRL_ACCESS_EN, DDR_CTRL_BASE + DDR_CTRL_CTRL);
-
-    /* 步骤10: 内存测试 */
-    if (ddr_memory_test()) {
-        printf("DDR: memory test FAILED!\n");
-        return -1;
-    }
-
-    gd->ram_size = dram_size_mb * 1024 * 1024;
-    printf("DDR: %dMB initialized successfully\n", dram_size_mb);
-    return 0;
-}
+```c src="../trusted-firmware/src/u-boot-src/drivers/ddr/imx/imx8m/ddr_init.c" lines="313-471" anchor="ddr_init"
 ```
+
+对照上一节的 10 步，真实代码的几处关键差异：
+
+1. **复位/CKE 不是写一个"复位寄存器"**，而是通过 SoC 的 `SRC_DDRC_RCR`（复位控制）寄存器完成（Step1 的 `reg32_write(SRC_DDRC_RCR_ADDR, ...)`）。
+2. **控制器时序参数不是运行时算移位**，而是 [`ddr_cfg_umctl2()`](#ddr_cfg_umctl2) 循环写预生成的配置表（Step2，见 §1.3）。
+3. **训练由 PHY 硬件/固件自动完成**，软件只启动并轮询 `DDRPHY_CalBusy`（Step14），不是上一节示意里"读训练结果寄存器"那样由软件控制每个阶段。
+4. i.MX8M 这套代码同时支持 DDR4/LPDDR4，靠 `DDRC_MSTR` 寄存器位区分（Step 里的 `if ddr type is LPDDR4`）；MR 写入的控制器侧机制相同（写 MRCTRL0/MRCTRL1，见 [`lpddr4_mr_write()`](#lpddr4_mr_write)）。
 
 ### 2.5 初始化失败排查表
 
@@ -879,7 +771,6 @@ DDR 问题在不同阶段表现为不同的症状。以下按故障出现的阶�
 ### 4.1 故障分类与排查路线
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 flowchart TD
     Start(["DDR 故障"]) --> Stage{故障阶段?}
 
@@ -906,12 +797,14 @@ flowchart TD
 
 **第一步：确认电源**
 
-用万用表/示波器测量 DDR 相关电源轨：
-- VDD (核心电压): DDR4 = 1.2V ±5%, LPDDR4 = 1.1V/0.6V
+用万用表/示波器测量 DDR 相关电源轨（DDR4 数值来源：JEDEC JESD79-4 DC 参数 / 厂商 datasheet）：
+- VDD (核心电压): DDR4 = 1.2V ±5%
 - VDDQ (I/O 电压): DDR4 = 1.2V ±5%
+- VPP (字线升压): DDR4 = 2.5V ±5%（DDR4 特有，DDR3 无此轨）
 - VREF (参考电压): 通常为 VDDQ/2
-- VPP (字线升压): DDR4 = 2.5V ±5%
 - VTT (终端电压): 通常为 VDDQ/2，仅用于地址/命令线
+
+> LPDDR4 的电压是**多电源域**（VDD1=1.8V、VDD2H/VDD2L 分档），不是简单的「1.1V/0.6V」，详见 01/07 篇（本轮未改，先标 `> **待确认**`）。
 
 **第二步：确认时钟**
 

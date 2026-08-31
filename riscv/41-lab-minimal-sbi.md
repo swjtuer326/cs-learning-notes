@@ -16,9 +16,9 @@
 
 ## 前置知识
 
-- [特权模式与 CSR](../03-privileged/privileged-modes-and-csr.md)
-- [启动流程](../03-privileged/boot-process.md)
-- [实验一：裸机 Trap Handler](./lab01-baremetal-trap-handler.md)
+- [特权模式与 CSR](./03-privileged-modes-and-csr.md)
+- [启动流程](./10-boot-chain-overview.md)
+- [实验一：裸机 Trap Handler](./40-lab-baremetal-trap-handler.md)
 
 ---
 
@@ -493,4 +493,4 @@ s_timer_irq:
 | SBI 是 M/S 契约 | ecall 是调用方式，EID/FID 是接口编号 |
 | 返回值 | a0=错误码，a1=返回值（如有） |
 
-→ 下一实验：[实验三：Sv39 页表建立与缺页处理](./lab03-sv39-page-table.md)
+→ 下一实验：[实验三：Sv39 页表建立与缺页处理](./42-lab-sv39-page-table.md)

@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 440 320" font-family="Noto Sans CJK SC, sans-serif">
+  <!-- 位线 -->
+  <line x1="200" y1="44" x2="200" y2="150" stroke="#1e293b" stroke-width="2"/>
+  <text x="200" y="28" text-anchor="middle" font-size="16" fill="#1e293b" font-weight="600">位线 Bit Line</text>
+
+  <!-- 字线（晶体管栅极） -->
+  <line x1="108" y1="108" x2="330" y2="108" stroke="#1e293b" stroke-width="2"/>
+  <text x="108" y="94" font-size="16" fill="#1e293b" font-weight="600">字线 Word Line</text>
+
+  <!-- 晶体管栅极覆盖段 -->
+  <rect x="190" y="97" width="20" height="22" rx="2" fill="#0e7490" opacity="0.9"/>
+  <text x="232" y="126" font-size="13" fill="#64748b">晶体管（NMOS 开关）</text>
+
+  <!-- 存储节点 -->
+  <line x1="200" y1="150" x2="200" y2="188" stroke="#1e293b" stroke-width="2"/>
+  <text x="212" y="172" font-size="13" fill="#64748b">存储节点</text>
+
+  <!-- 电容器 -->
+  <line x1="140" y1="188" x2="260" y2="188" stroke="#1e293b" stroke-width="2.5"/>
+  <g stroke="#94a3b8" stroke-width="1">
+    <line x1="146" y1="193" x2="150" y2="203"/>
+    <line x1="166" y1="193" x2="170" y2="203"/>
+    <line x1="186" y1="193" x2="190" y2="203"/>
+    <line x1="206" y1="193" x2="210" y2="203"/>
+    <line x1="226" y1="193" x2="230" y2="203"/>
+    <line x1="246" y1="193" x2="250" y2="203"/>
+  </g>
+  <line x1="140" y1="208" x2="260" y2="208" stroke="#1e293b" stroke-width="2.5"/>
+  <text x="278" y="204" font-size="13" fill="#64748b">电容器</text>
+
+  <!-- 单元极板 -->
+  <line x1="200" y1="208" x2="200" y2="240" stroke="#64748b" stroke-width="1.5" stroke-dasharray="5,4"/>
+  <line x1="140" y1="240" x2="260" y2="240" stroke="#64748b" stroke-width="1.5" stroke-dasharray="5,4"/>
+  <text x="278" y="244" font-size="13" fill="#64748b">单元极板 Cell Plate</text>
+
+  <!-- 脚注 -->
+  <text x="36" y="300" font-size="12" fill="#94a3b8">1 晶体管 + 1 电容器 = 1 bit；电荷的有无表示 0/1</text>
+</svg>

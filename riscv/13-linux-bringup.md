@@ -24,16 +24,15 @@
 
 | 需要了解 | 参考文档 |
 |----------|----------|
-| RISC-V 特权模式与 CSR 访问 | [特权模式与 CSR](../03-privileged/privileged-modes-and-csr.md) |
-| 内存管理 MMU 页表 (Sv39) | [内存管理](../03-privileged/memory-management.md) |
-| RISC-V 启动流程 (OpenSBI/U-Boot) | [启动流程](../03-privileged/boot-process.md) |
+| RISC-V 特权模式与 CSR 访问 | [特权模式与 CSR](./03-privileged-modes-and-csr.md) |
+| 内存管理 MMU 页表 (Sv39) | [内存管理](./05-memory-management-pmp-sv39.md) |
+| RISC-V 启动流程 (OpenSBI/U-Boot) | [启动流程](./10-boot-chain-overview.md) |
 
 ---
 
 ## 1. 操作系统移植概览
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph TD
     A[OS 移植] --> B[早期初始化<br/>汇编入口]
     A --> C[内存管理<br/>页表/TLB]
@@ -66,7 +65,6 @@ OpenSBI/U-Boot 传递给 Linux 内核的参数：
 ### 2.2 内核入口流程
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph TD
     ENTRY["_start<br/>head.S"] --> DISABLE["禁止中断<br/>mie=0, sip=0"]
     DISABLE --> SAVE["保存 hartid 和 FDT<br/>s0=hartid, s1=FDT"]
@@ -148,7 +146,6 @@ struct pt_regs {
 ### 3.2 上下文切换流程
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 sequenceDiagram
     participant SCHED as 调度器
     participant A as 进程 A
@@ -485,7 +482,7 @@ arch/riscv/
     └── 验证：benchmark 提升
 ```
 
-> **学习建议**：每个阶段都要有"可运行的产出"，不要停留在"看懂代码"。[Lab 系列](../08-labs/) 提供了阶段 1-4 的完整代码框架。
+> **学习建议**：每个阶段都要有"可运行的产出"，不要停留在"看懂代码"。[Lab 系列](./40-lab-baremetal-trap-handler.md) 提供了阶段 1-4 的完整代码框架。
 
 ---
 
@@ -513,4 +510,4 @@ arch/riscv/
 
 ---
 
-→ 下一节：[工具链与模拟器](../06-tools/toolchain-and-simulator.md)
+→ 下一节：[工具链与模拟器](./09-toolchain-and-simulator.md)

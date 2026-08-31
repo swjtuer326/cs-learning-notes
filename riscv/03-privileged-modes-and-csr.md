@@ -20,8 +20,8 @@
 
 | 需要了解 | 参考文档 |
 |----------|----------|
-| RISC-V 指令集基础（RV32I/RV64I） | [RV32I/RV64I 指令集详解](../02-isa/rv32i-rv64i-instructions.md) |
-| 32 个通用寄存器与 ABI 命名 | [汇编与 ABI](../05-system-software/assembly-and-abi.md) |
+| RISC-V 指令集基础（RV32I/RV64I） | [RV32I/RV64I 指令集详解](./01-isa-rv32i-rv64i.md) |
+| 32 个通用寄存器与 ABI 命名 | [汇编与 ABI](./08-assembly-and-abi.md) |
 
 ---
 
@@ -30,7 +30,6 @@
 RISC-V 定义了三级特权模式（M/S/U）；H 扩展在 S-mode 基础上增加虚拟化支持，新增 VS 和 VU 两个虚拟化模式，共五个运行模式：
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph TB
     M["Machine Mode (M)<br/>最高特权级<br/>完全控制硬件"]
     HS["HS-mode (Hypervisor Extended S)<br/>Hypervisor / Host OS<br/>管理虚拟机和两阶段翻译"]
@@ -93,9 +92,9 @@ U-mode = 普通员工
   - 不能直接访问其他工位
 ```
 
-> **服务器场景重点：** 在服务器虚拟化场景中，HS-mode 运行 Host Linux + KVM，VS-mode 运行 Guest OS，VU-mode 运行 Guest 用户态。理解 HS/VS/VU 的关系是掌握 RISC-V 服务器虚拟化的基础。详见 [虚拟化专题](./virtualization.md)。
+> **服务器场景重点：** 在服务器虚拟化场景中，HS-mode 运行 Host Linux + KVM，VS-mode 运行 Guest OS，VU-mode 运行 Guest 用户态。理解 HS/VS/VU 的关系是掌握 RISC-V 服务器虚拟化的基础。详见 [虚拟化专题](./06-virtualization-h-extension.md)。
 
-> **本节要点：** RISC-V 的特权模式本质上是按责任分层：M-mode 充当"硬件的代理人"处理所有平台级事务，S/HS-mode 作为"系统管理者"调度资源与进程，U/VU-mode 是普通的用户程序。H 扩展的 VS/VU 并非新增物理模式，而是通过 hstatus.SPV 位在现有的 S/U 编码上叠加一层虚拟化语境。这层设计让 Guest OS 以为自己运行在真正的 S-mode，实际上每次敏感操作都会被 Hypervisor 拦截。
+> **本节要点：** RISC-V 的特权模式是按责任分层：M-mode 充当"硬件的代理人"处理所有平台级事务，S/HS-mode 作为"系统管理者"调度资源与进程，U/VU-mode 是普通的用户程序。H 扩展的 VS/VU 并非新增物理模式，而是通过 hstatus.SPV 位在现有的 S/U 编码上叠加一层虚拟化语境。这层设计让 Guest OS 以为自己运行在真正的 S-mode，实际上每次敏感操作都会被 Hypervisor 拦截。
 
 ---
 ## 2. CSR 寄存器地址编码
@@ -131,7 +130,7 @@ CSR 地址: [11:10] [9:8] [7:0]
 | 0x500-0x5FF | M 级 | 只读 | mhpmcounter3-31 等 |
 | 0x600-0x6FF | HS 级 | 读/写 | hstatus, hgatp, hideleg, hie |
 
-> **H 扩展 CSR：** 地址 0x600-0x6FF 的 CSR 属于 Hypervisor（HS 级），如 hstatus、hgatp 等。VS-mode 的 CSR 位于 0x200-0x2FF（如 vsstatus=0x200, vsepc=0x241），与 S-mode CSR 地址不同但功能对称。详见 [虚拟化专题](./virtualization.md)。
+> **H 扩展 CSR：** 地址 0x600-0x6FF 的 CSR 属于 Hypervisor（HS 级），如 hstatus、hgatp 等。VS-mode 的 CSR 位于 0x200-0x2FF（如 vsstatus=0x200, vsepc=0x241），与 S-mode CSR 地址不同但功能对称。详见 [虚拟化专题](./06-virtualization-h-extension.md)。
 
 > **访问规则：** 低特权级不能访问高特权级的 CSR，否则触发非法指令异常。高特权级可以访问低特权级的 CSR。
 
@@ -304,7 +303,7 @@ mie / mip 布局（标准位，bits 15:0）:
 > 2. `mie` 对应位 = 1（中断被使能）
 > 3. `mstatus.MIE` = 1（全局中断使能）
 >
-> **注意：** 当中断委托给 S-mode 时（`mideleg` 对应位=1），中断是否触发还需检查 `sie`（而非 `mie`）和 `sstatus.SIE`（而非 `mstatus.MIE`）。详见 [中断与异常](./interrupts-and-exceptions.md) 中的中断路由部分。
+> **注意：** 当中断委托给 S-mode 时（`mideleg` 对应位=1），中断是否触发还需检查 `sie`（而非 `mie`）和 `sstatus.SIE`（而非 `mstatus.MIE`）。详见 [中断与异常](./04-interrupts-and-exceptions.md) 中的中断路由部分。
 
 ### 4.6 mscratch — 机器暂存寄存器
 
@@ -383,7 +382,7 @@ PPN:  页表根节点的物理页号
 
 > **satp 写入后不会立即生效！** 需要执行 `sfence.vma` 指令来刷新 TLB。
 
-> **本节要点：** S-mode 的 CSR 几乎与 M-mode 一一对称（m→s 前缀替换），这是 RISC-V 特权架构的优雅之处——学会一套，两套都会。唯一的例外是 satp，它只在 S-mode 有意义：M-mode 不使用虚拟内存。satp 的 MODE 字段决定地址翻译的模式（Sv39/Sv48/Sv57），是 MMU 的"总开关"。更多页表细节见 [内存管理](./memory-management.md)。
+> **本节要点：** S-mode 的 CSR 几乎与 M-mode 一一对称（m→s 前缀替换），这是 RISC-V 特权架构的优雅之处——学会一套，两套都会。唯一的例外是 satp，它只在 S-mode 有意义：M-mode 不使用虚拟内存。satp 的 MODE 字段决定地址翻译的模式（Sv39/Sv48/Sv57），是 MMU 的"总开关"。更多页表细节见 [内存管理](./05-memory-management-pmp-sv39.md)。
 
 ---
 
@@ -394,7 +393,6 @@ PPN:  页表根节点的物理页号
 ### 6.1 特权级提升（trap 进入）
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 stateDiagram-v2
     [*] --> U: 正常执行
     U --> S: ecall / 异常 / 中断
@@ -484,7 +482,6 @@ mideleg 示例:
 ```
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph TD
     TRAP[Trap 发生] --> CHECK{检查委托寄存器}
     CHECK --> |"已委托<br/>medeleg/mideleg 对应位=1"| S[S-mode 处理]
@@ -517,7 +514,6 @@ csrw    mideleg, t0
 在虚拟化场景中，存在两级委托链：
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph TD
     TRAP[Trap 发生] --> Q1{"M-mode 委托?"}
     Q1 --> |"medeleg/mideleg=1"| HS[HS-mode 处理]
@@ -592,4 +588,4 @@ graph TD
 
 ---
 
-→ 下一节：[中断与异常](./interrupts-and-exceptions.md)
+→ 下一节：[中断与异常](./04-interrupts-and-exceptions.md)

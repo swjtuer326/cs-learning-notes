@@ -20,8 +20,8 @@
 
 | 需要了解                               | 参考文档                                       |
 | ---------------------------------- | ------------------------------------------ |
-| RISC-V 特权模式与 M 模式 CSR              | [特权模式与 CSR](./privileged-modes-and-csr.md) |
-| Trap 处理流程（mepc/mcause/mtval 的写入时机） | [中断与异常](./interrupts-and-exceptions.md)    |
+| RISC-V 特权模式与 M 模式 CSR              | [特权模式与 CSR](./03-privileged-modes-and-csr.md) |
+| Trap 处理流程（mepc/mcause/mtval 的写入时机） | [中断与异常](./04-interrupts-and-exceptions.md)    |
 
 ***
 
@@ -64,7 +64,6 @@ Reserved [6:5]:
 ### 1.2 PMP 匹配模式
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph TB
     subgraph tor ["TOR (Top of Range)"]
         TOR1["pmpaddr i-1 = 0x2000"]
@@ -151,7 +150,7 @@ PMP 解决的是"谁能在物理地址上做什么"——它是一个低层次�
 
 ### 2.2 satp 寄存器：页表的入口
 
-要理解页表翻译，首先要找到页表在哪。这个入口就是 `satp` 寄存器——它存储了页表模式（MODE）、地址空间标识符（ASID）和页表根节点的物理页号（PPN）。satp 的完整布局和字段含义见 [特权模式与 CSR — satp](./privileged-modes-and-csr.md#satp--地址翻译与保护)。
+要理解页表翻译，首先要找到页表在哪。这个入口就是 `satp` 寄存器——它存储了页表模式（MODE）、地址空间标识符（ASID）和页表根节点的物理页号（PPN）。satp 的完整布局和字段含义见 [特权模式与 CSR — satp](./03-privileged-modes-and-csr.md#satp--地址翻译与保护)。
 
 ```
 satp 布局 (RV64):
@@ -269,7 +268,6 @@ MXR 的用途：
 有了前面的基础——satp 指向根页表、VPN 作为索引、PTE 的 V/R/W/X 决定分支还是叶子——现在可以看完整的翻译流程。以 Sv39 为例，页表共 3 级，MMU 从根页表开始逐级查找：
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph TD
     VA["虚拟地址 39 位"] --> SPLIT["拆分: VPN[2] 9位 | VPN[1] 9位 | VPN[0] 9位 | Offset 12位"]
     SPLIT --> CALC2["计算地址: satp.PPN × 4096 + VPN[2] × 8"]
@@ -372,7 +370,6 @@ graph TD
 | **每级页表项数** | 1024 | 512        | 512                | 512                        |
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph LR
     subgraph Sv32
         S32_L1["L1: 10 bits 1024 项"]
@@ -421,7 +418,7 @@ satp.MODE = 9 (Sv48)
 
 > **兼容性：** Sv48 完全兼容 Sv39 的页表格式——Sv48 的低 3 级页表结构与 Sv39 完全一致，只是多了一级 L3 页表。操作系统可以在启动时先使用 Sv39，运行时检测硬件支持后切换到 Sv48。
 
-> **本节要点：** 四种页表模式的差异本质上是地址空间和级数的取舍。Sv32 是 RV32 的唯一选择（2 级、4 GB）；Sv39 是 RV64 的最常用模式（3 级、512 GB），足以覆盖大多数通用场景；Sv48（4 级、256 TB）和 Sv57（5 级、128 PB）面向大内存服务器。关键洞察：各级页表的 PTE 格式完全相同（V/R/W/X 等位的语义不变），因此从 Sv39 扩展到 Sv48/Sv57 只是"多查一张表"。
+> **本节要点：** 四种页表模式的差异是地址空间宽度和查表级数之间的取舍。Sv32 是 RV32 的唯一选择（2 级、4 GB）；Sv39 是 RV64 的最常用模式（3 级、512 GB），足以覆盖大多数通用场景；Sv48（4 级、256 TB）和 Sv57（5 级、128 PB）面向大内存服务器。关键洞察：各级页表的 PTE 格式完全相同（V/R/W/X 等位的语义不变），因此从 Sv39 扩展到 Sv48/Sv57 只是"多查一张表"。
 
 ***
 
@@ -471,7 +468,6 @@ satp.ASID = 0x5678  →  进程 B 的 TLB 项标记为 ASID=0x5678
 在 H 扩展虚拟化场景下，地址翻译分为两个阶段：
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph LR
     GVA["Guest 虚拟地址 GVA"] -->|"第一阶段 VS-mode 页表 vsatp"| GPA["Guest 物理地址 GPA"]
     GPA -->|"第二阶段 Host 页表 hgatp"| HPA["Host 物理地址 HPA"]
@@ -490,33 +486,32 @@ graph LR
 
 ### 5.2 Sv39x4：第二阶段页表
 
-第二阶段翻译使用 `Sv39x4` 模式（由 `hgatp.MODE` 设置），与 Sv39 级数相同，但根页表从 512 项扩展为 1024 项：
+第二阶段翻译使用 `Sv39x4` 模式（由 `hgatp.MODE` 设置）。与 Sv39 相比**级数不变（3 级）、PTE 仍是 8 字节**，唯一区别是**仅根页表扩大 4 倍**：512 项 → 2048 项（16 KiB，须 16 KiB 对齐），根级索引从 9 位变 11 位，从而把可翻译的 GPA 从 39 位拓宽到 41 位（Privileged Spec §8.5.1）：
 
 ```
-Sv39x4 的 Guest 物理地址 (41-bit 有效，页表 VPN 结构为 40-bit):
+Sv39x4 的 Guest 物理地址 (41-bit):
 
- 39    30 29    21 20    12 11         0
-┌─────────┬─────────┬─────────┬───────────┐
-│ VPN[2]  │ VPN[1]  │ VPN[0]  │ Page Offset│
-│ 10 bits │  9 bits │  9 bits │  12 bits   │
-└─────────┴─────────┴─────────┴───────────┘
+ 40        30 29    21 20    12 11         0
+┌─────────────┬─────────┬─────────┬───────────┐
+│ 根级索引      │ VPN[1]  │ VPN[0]  │ Page Offset│
+│ 11 bits     │  9 bits │  9 bits │  12 bits   │
+└─────────────┴─────────┴─────────┴───────────┘
 
-注意：比 Sv39 多了 2 位有效 GPA（41-bit vs 39-bit）。根页表有 1024 项
-→ 每条 PTE 扩展为 16 字节（而非标准 8 字节），根页表共占 16 KiB
-→ 仍为 3 级页表，VPN 结构 40-bit，额外 1 位通过 PPN 字段编码获得
+根页表: 2048 项 × 8 字节 PTE = 16 KiB(16 KiB 对齐)
+其余各级: 512 项 × 8 字节 PTE = 4 KiB(与 Sv39 相同)
 ```
 
 | 特性     | Sv39（第一阶段）   | Sv39x4（第二阶段）            |
 | ------ | ------------ | ----------------------- |
 | 有效地址宽度 | 39 bit (GVA) | 41 bit (GPA)            |
-| 页表级数   | 3            | 3（PTE 16 字节，根页表 1024 项） |
-| 根页表项数  | 512          | 1024（16 KiB 根页表）        |
+| 页表级数   | 3            | 3（PTE 均为 8 字节）         |
+| 根页表项数  | 512（4 KiB）   | 2048（16 KiB，16 KiB 对齐） |
 | 非根页表项数 | 512          | 512                     |
 | 页大小    | 4 KB         | 4 KB                    |
 | 超级页    | 2 MB, 1 GB   | 2 MB, 1 GB              |
 | 地址空间   | 512 GB       | 2 TB                    |
 
-> **为什么需要 x4？** 第二阶段翻译需要覆盖更大的地址空间。多个 Guest 的物理地址空间可能超过 512 GB，因此 Sv39x4 将 GPA 从 39 位扩展到 41 位，提供了 2 TB 的 GPA 空间。
+> **为什么需要 x4？** Guest 的"物理"地址空间应当不小于它自己的虚拟地址空间，否则 Guest OS 无法把全部虚拟地址空间映射到物理内存上。Sv39x4 把 GPA 拓宽 2 位到 41 位（2 TB），保证比 Guest 的 39 位 GVA 空间更大；代价是根页表占 16 KiB 且对齐要求翻倍（从 4 KiB 边界变 16 KiB 边界）。
 
 ### 5.3 hgatp 寄存器
 
@@ -548,11 +543,10 @@ PPN: 第二阶段页表根节点的物理页号
 
 VMID 与 ASID 类似，用于避免 VM 切换时刷新全部 TLB：
 
-```
 VM 切换时：
-  无 VMID：全刷 TLB → Guest 热点页全部 miss → 性能差
-  有 VMID：只刷当前 VMID 的 TLB → 其他 VM 的 TLB 保留 → 性能好
-```
+
+- **无 VMID**：全刷 TLB → Guest 热点页全部 miss → 性能差
+- **有 VMID**：只刷当前 VMID 的 TLB → 其他 VM 的 TLB 保留 → 性能好
 
 ### 5.5 虚拟化 TLB 刷新指令
 
@@ -580,7 +574,6 @@ hfence.gvma x0, t1     # 刷新指定 VMID 的第二阶段 TLB
 ### 5.6 虚拟化内存管理流程
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 sequenceDiagram
     participant G as Guest OS (VS-mode)
     participant H as Hypervisor (HS-mode)
@@ -621,6 +614,6 @@ sequenceDiagram
 
 ***
 
-→ 下一节：[启动流程](./boot-process.md)
-→ 虚拟化专题：[虚拟化：H 扩展与 KVM](./virtualization.md)
-→ 实验：[Lab 3 — Sv39 页表建立](../08-labs/lab03-sv39-page-table.md)
+→ 下一节：[启动流程](./10-boot-chain-overview.md)
+→ 虚拟化专题：[虚拟化：H 扩展与 KVM](./06-virtualization-h-extension.md)
+→ 实验：[Lab 3 — Sv39 页表建立](./42-lab-sv39-page-table.md)

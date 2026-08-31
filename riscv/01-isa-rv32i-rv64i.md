@@ -8,8 +8,8 @@
 
 | 需要了解 | 参考文档 |
 |----------|----------|
-| RISC-V ISA 定位与模块化设计 | [RISC-V 概览](../01-basics/riscv-overview.md) |
-| CPU 寄存器文件与流水线概念 | [体系结构基础](../01-basics/computer-architecture-fundamentals.md) |
+| RISC-V ISA 定位与模块化设计 | [RISC-V 概览](./00-riscv-overview.md) |
+| CPU 寄存器文件与流水线概念 | [体系结构基础](./90-appendix-architecture-background.md) |
 
 ### 学习目标
 
@@ -50,7 +50,6 @@ RISC-V 有 32 个通用寄存器（x0-x31），其中 x0 硬连线为 0。
 ### Caller-saved vs Callee-saved
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph LR
     subgraph caller ["Caller-saved 临时/参数"]
         T["t0-t6<br/>a0-a7<br/>ra"]
@@ -391,4 +390,4 @@ RV64I 在 RV32I 基础上增加了 **W 后缀指令**（32 位运算并符号扩
 
 ---
 
-→ 下一节：[标准扩展详解](./standard-extensions.md)
+→ 下一节：[标准扩展详解](./02-standard-extensions.md)

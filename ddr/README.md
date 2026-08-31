@@ -7,7 +7,6 @@
 ## 学习路线图
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 flowchart TD
     Start((开始学习)) --> C01[01: DDR 基础概念<br/>2-3h]
     C01 --> C02[02: 物理结构与硬件设计<br/>3-4h]
@@ -124,6 +123,20 @@ flowchart TD
 | 02-DDR物理结构 | DDR5 Bank 数量描述不完整 | 补充 x4/x8: 32 Bank/8 BG; x16: 16 Bank/4 BG |
 | 07-DDR新技术 | DDR5 Bank Group 数量未区分位宽 | 补充 8 (x4/x8) / 4 (x16) |
 
+### 2026-08-24 结合 JEDEC 规范 + 源码重审
+
+本轮将 JEDEC 标准（JESD79-4D/5C、JESD209-5C/6、JESD235D/238B/270-4、JESD239C/250D）下载到 `reference/`，并以 u-boot 真实源码（imx8m/fsl）替换伪代码。关键修正（此前部分"修正"记录本身有误，以本表为准）：
+
+| 位置 | 问题 | 最终正确值 |
+|------|------|-----------|
+| 03/05/08 的 MR0 | DLL Reset 位域（此前误记 MR1 → MR0[11]） | **MR0[8]**，自清 |
+| 03/05 的 MR0 | WR 位域误写成 [9:8]/[9:7] | **MR0[11:9]** |
+| 03 的 MR1 | Write Leveling 误写成 [12]、DLL 使能极性写反 | **MR1[7]**、DLL 使能 **A0=1 使能** |
+| 08 的 C.3 | "MR4 读温度" | MR4 只有温度控制刷新(A3/A2)，温度传感器在 MR3[5] |
+| 03/05 的 tRFC | 8Gb/16Gb 混淆 | 8Gb=350ns、16Gb=550ns |
+| 03 的 tRAS/tRC | 32/49 CK（实为 ns 误当 nCK） | 39/56 nCK（=32/45.75ns）@DDR4-2400 |
+| 05/08 训练代码 | 软件扫描延迟伪代码 | PHY 固件训练，引用 ddrphy_train.c |
+
 ### 格式修复
 
 - 删除了所有"假"代码块（仅包含标题/粗体/空行的代码块），释放 Markdown 渲染
@@ -135,7 +148,7 @@ flowchart TD
 
 ---
 
-**文档版本**: v2.3
-**最后更新**: 2026-05-08
+**文档版本**: v2.4
+**最后更新**: 2026-08-24
 **适用对象**: 驱动工程师、嵌入式工程师、硬件工程师
 **原始文档**: DDR学习笔记.md（5933 行，已拆分为 8 个子文档）

@@ -308,16 +308,46 @@ def _src_anchor_id(raw_path: str, start: int) -> str:
     return f"src-{stem}-{start}"
 
 
+def _tidy_code_line(line: str) -> str:
+    """清理一行代码的尾随空白。注意续行符场景:源文件常把行尾 '\\'
+    用空格垫到固定列做对齐,空格在 '\\' 之前,rstrip 碰到 '\\' 会停手——
+    需要把 '\\\\' 前的空格串收成一个,否则 <pre> 被撑到最宽。"""
+    line = line.rstrip()
+    if line.endswith("\\"):
+        line = re.sub(r"[ \t]+\\$", " \\\\", line)
+    return line
+
+
+def _rstrip_code_fences(md: str) -> str:
+    """去掉围栏代码块内各行的尾随空白与续行符前的对齐空格。
+    只动 fence 内的行,散文不动。"""
+    out, in_fence = [], False
+    for line in md.split("\n"):
+        if not in_fence and re.match(r"^\s{0,3}(`{3,}|~{3,})", line):
+            in_fence = True
+        elif in_fence and re.match(r"^\s{0,3}(`{3,}|~{3,})\s*$", line):
+            in_fence = False
+        out.append(_tidy_code_line(line) if in_fence else line)
+    return "\n".join(out)
+
+
 def _render_src_block(display: str, fpath: Path, start: int, end: int,
                       body: str, lang: str, anchor_id: str) -> str:
-    """把一段源码引用渲染成带出处徽章 + 行号 + 锚点的 HTML 块。"""
+    """把一段源码引用渲染成带出处徽章 + 行号 + 锚点的 HTML 块。
+
+    代码体内的换行写成 &#10; 实体,让整块保持单物理行:CommonMark type-6
+    HTML block 在第一个空行处截断,若源码体里本身有空行(python docstring
+    很常见),后半段会被 marked 按 markdown 重新解析并嵌进未闭合的 <code>。
+    浏览器解析时实体解码回真实换行,显示与复制均不受影响。
+    """
     href = f"file://{fpath}"
     badge = (f'<div class="src-block" id="{html.escape(anchor_id)}">'
              f'<div class="src-badge">'
              f'<a href="{html.escape(href)}">{html.escape(display)} '
              f'第 {start}-{end} 行</a>'
              f'</div>')
-    code = html.escape(body)
+    code_text = "\n".join(_tidy_code_line(line) for line in body.split("\n"))
+    code = html.escape(code_text).replace("\n", "&#10;")
     pre = (f'<pre class="src-pre" data-start="{start}">'
            f'<code class="language-{html.escape(lang)}">{code}</code></pre></div>')
     return badge + "\n" + pre
@@ -417,6 +447,9 @@ def process_source_blocks(content: str, src_dir: Path, problems: list, doc_name:
             if out and out[-1].strip() != "":
                 out.append("")
             out.append(_render_src_block(display, fpath, start, end, body, lang, anchor_id))
+            # HTML 块后必须补空行:CommonMark type-6 HTML block 以空行结束,
+            # 否则 marked 把后续 markdown 原样吞进 <div>(正文"进入代码块")
+            out.append("")
             i = close + 1
             continue
 
@@ -508,6 +541,7 @@ def load_documents(src_dir: Path):
         stats[stem] = count_stats(raw)
         # 源码引用处理在前:见原始 ./src/ 路径,emit 原始 HTML(rewrite_links 不再动它)
         content = process_source_blocks(raw, src_dir, problems, stem)
+        content = _rstrip_code_fences(content)
         content = rewrite_links(embed_images(content, src_dir), src_dir, doc_stems)
         content = escape_for_script(content)
         # 链接/图片校验(对原始文本,避免被重写干扰)
@@ -819,8 +853,8 @@ body {
 /* 代码块 */
 .content pre {
   background: var(--code-bg); border: 1px solid var(--border-soft);
-  border-radius: 8px; padding: 12px 14px; overflow-x: auto;
-  margin: 1em 0; font-size: 13px; line-height: 1.5;
+  border-radius: 8px; padding: 10px 14px; overflow-x: auto;
+  margin: 1em 0; font-size: 13px; line-height: 1.45;
 }
 .content pre code { background: none; padding: 0; border: none; font-size: inherit; }
 .content code {
@@ -836,7 +870,9 @@ body {
 .content .mermaid svg { max-width: 100%; height: auto; }
 
 /* 源码引用块:出处徽章 + 行号 */
-.content .src-block { margin: 1em 0; }
+.content .src-block { margin: 1.2em 0; }
+.content .src-block + .src-block { margin-top: 0.4em; }
+.content .src-block + ul, .content .src-block + ol { margin-top: 0.8em; }
 .content .src-badge {
   font-size: 12px; color: var(--text-soft);
   background: var(--bg-soft); border: 1px solid var(--border-soft);
@@ -850,7 +886,7 @@ body {
   counter-reset: src-ln 0;
 }
 .content .src-pre[data-start] { counter-reset: src-ln calc(var(--start, 1) - 1); }
-.content .src-pre .src-line { display: block; }
+.content .src-pre .src-line { display: block; line-height: 1.4; }
 .content .src-pre .src-line::before {
   counter-increment: src-ln; content: counter(src-ln);
   display: inline-block; width: 3em; margin-right: 12px;
@@ -973,6 +1009,74 @@ function setupMarked() {
   }
 }
 
+// ==================== 数学公式保护 ====================
+// marked 不认识 LaTeX:$..$ 与 $$..$$ 里的下划线、反斜杠会被 GFM 规则重写
+// (\underbrace{}_{...} 变斜体、下划线被吞),KaTeX 拿到的是残缺公式。
+// 策略:解析前把数学片段抽成纯文字占位符,解析完原样放回(见 loadDoc)。
+function extractMathSpans(md) {
+  var store = [];
+  function stash(s) { store.push(s); return 'ZZMATHSPAN' + (store.length - 1) + 'ZZMATHSPAN'; }
+  var lines = md.split('\n');
+  var out = [];
+  var inFence = false;
+  var blockBuf = null;              // 非 null:正在收集跨行块级 $$ 公式的内容
+  for (var li = 0; li < lines.length; li++) {
+    var L = lines[li];
+    if (/^\s{0,3}(`{3,}|~{3,})/.test(L)) {
+      inFence = !inFence;           // 围栏开/闭行原样保留,$ 不参与配对
+      blockBuf = null;
+      out.push(L);
+      continue;
+    }
+    if (inFence) { out.push(L); continue; }
+
+    // 行内代码段先占位,避免 `a $b c d$ e` 这类误配
+    var codes = [];
+    var work = L.replace(/(`+)([\s\S]*?)\1/g, function (m) {
+      codes.push(m);
+      return '' + (codes.length - 1) + '';
+    });
+
+    // 块级 $$..$$ 可跨行
+    var emit = [];
+    var rest = work;
+    if (blockBuf !== null) {
+      var cl = rest.indexOf('$$');
+      if (cl >= 0) {
+        blockBuf += '\n' + rest.slice(0, cl);
+        emit.push(stash(blockBuf));
+        blockBuf = null;
+        rest = rest.slice(cl + 2);
+      } else {
+        blockBuf += '\n' + rest;
+        rest = '';
+      }
+    }
+    while (blockBuf === null) {
+      var d = rest.indexOf('$$');
+      if (d < 0) break;
+      emit.push(rest.slice(0, d));
+      var after = rest.slice(d + 2);
+      var c2 = after.indexOf('$$');
+      if (c2 >= 0) {
+        emit.push(stash('$$' + after.slice(0, c2) + '$$'));
+        rest = after.slice(c2 + 2);
+      } else {
+        blockBuf = after;
+        rest = '';
+      }
+    }
+    emit.push(rest);
+
+    // 行内 $..$:同行、内容非空、首尾无空白;$ 转义不作起始或终止
+    var line2 = emit.join('').replace(/(^|[^\\$])\$(?!\s)((?:\\.|[^\n\\$])+?)(?<![\s\\])\$/g,
+      function (m, pre, inner) { return pre + stash('$' + inner + '$'); });
+    line2 = line2.replace(/(\d+)/g, function (m, k) { return codes[+k]; });
+    out.push(line2);
+  }
+  return { md: out.join('\n'), store: store };
+}
+
 // ==================== slugify(与 Python 端一致) ====================
 function slugify(text) {
   let s = String(text).replace(/[^\u4e00-\u9fa5A-Za-z0-9\s-]/g, '');
@@ -1047,17 +1151,72 @@ function highlightCode(root) {
     if (block.classList.contains('hljs')) return;              // 已处理
     try { hljs.highlightElement(block); } catch (e) {}
   });
-  // 源码引用块:按行包裹 + 行号(CSS counter),起始行号由 data-start 控制
+  // 源码引用块:按行包裹 + 行号(CSS counter),起始行号由 data-start 控制。
+  // 不能对 innerHTML 直接 split('\n'):hljs 的 span 常跨多行,切碎后标签不配对,
+  // 浏览器把错乱的行内/块级嵌套拆成匿名块盒,行距就乱了。这里走 token 流重组,
+  // 跨行元素在行界处自然留待后续内容、每行重开浅克隆,DOM 全程配对完好。
   root.querySelectorAll('pre.src-pre').forEach(function (pre) {
     var start = parseInt(pre.getAttribute('data-start') || '1', 10);
     pre.style.setProperty('--start', start);
     var code = pre.querySelector('code');
-    if (!code) return;
-    var html = code.innerHTML.split('\n');
-    code.innerHTML = html.map(function (line) {
-      // 空行也要占位,否则行号错位
-      return '<span class="src-line">' + (line || ' ') + '</span>';
-    }).join('\n');
+    if (!code || !code.childNodes.length) return;
+
+    // 1) 拍平成 token 流(open/close/text)
+    var tokens = [];
+    (function flatten(node) {
+      node.childNodes.forEach(function (n) {
+        if (n.nodeType === Node.TEXT_NODE) tokens.push({ t: 'txt', s: n.nodeValue });
+        else if (n.nodeType === Node.ELEMENT_NODE) {
+          tokens.push({ t: 'open', proto: n });
+          flatten(n);
+          tokens.push({ t: 'close', proto: n });
+        }
+      });
+    })(code);
+
+    // 2) 按行重建 DOM:每行一个 <span class="src-line">,
+    //    尚未闭合的元素在新行开头浅克隆重开(close 时沿 parentNode 回退)
+    var lines = [], cur = null, openProtos = [];
+    function mkLine() {
+      cur = { root: document.createElement('span'), tail: null, raw: '' };
+      cur.root.className = 'src-line';
+      cur.tail = cur.root;
+      openProtos.forEach(function (p) {
+        var cl = p.cloneNode(false);
+        cur.tail.appendChild(cl);
+        cur.tail = cl;
+      });
+      lines.push(cur);
+    }
+    mkLine();
+    tokens.forEach(function (tk) {
+      if (tk.t === 'txt') {
+        var parts = tk.s.split('\n');
+        parts.forEach(function (p, i) {
+          if (i > 0) mkLine();
+          if (p) { cur.tail.appendChild(document.createTextNode(p)); cur.raw += p; }
+        });
+      } else if (tk.t === 'open') {
+        var cl = tk.proto.cloneNode(false);
+        cur.tail.appendChild(cl);
+        cur.tail = cl;
+        openProtos.push(tk.proto);
+      } else {
+        openProtos.pop();
+        cur.tail = cur.tail.parentNode;
+      }
+    });
+
+    // 3) 收尾:源码体不以换行结尾,最后一行为空即为伪行,去掉;
+    //    空行补一个空格占位,保证行盒高度一致(行号不错位)
+    if (lines.length > 1 && lines[lines.length - 1].raw === '') lines.pop();
+    lines.forEach(function (ln) {
+      if (ln.raw.trim() === '') ln.root.appendChild(document.createTextNode(' '));
+      code.appendChild(ln.root);
+    });
+    while (code.firstChild !== lines[0].root && code.firstChild) {
+      code.removeChild(code.firstChild);
+    }
   });
 }
 
@@ -1099,12 +1258,18 @@ function loadDoc(name, anchor) {
   }
 
   let htmlText;
-  try { htmlText = marked.parse(md); }
+  const guarded = extractMathSpans(md);   // 先抽出数学片段,防止 marked 吃掉 \underbrace{}_{ } 的下划线
+  try { htmlText = marked.parse(guarded.md); }
   catch (e) {
     el.content.innerHTML = '<div class="error-msg"><h2>Markdown 解析失败</h2><pre>' +
       String(e) + '</pre></div>';
     return;
   }
+  // 公式片段原样放回(HTML 转义;KaTeX auto-render 靠文本节点识别 $ 分隔符)
+  htmlText = htmlText.replace(/ZZMATHSPAN(\d+)ZZMATHSPAN/g, function (m, idx) {
+    var t = guarded.store[+idx];
+    return t === undefined ? m : escapeHtml(t);
+  });
 
   el.content.innerHTML = htmlText;
   assignHeadingIds(el.content);

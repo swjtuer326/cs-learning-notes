@@ -19,9 +19,9 @@
 
 | 需要了解 | 参考文档 |
 |----------|----------|
-| H 模式 CSR (hstatus/hedeleg/hgatp 等) | [特权模式与 CSR](./privileged-modes-and-csr.md) |
-| 两阶段地址翻译 (VS-stage + G-stage) | [内存管理](./memory-management.md) |
-| Trap 处理流程 (cause/val/delegation) | [中断与异常](./interrupts-and-exceptions.md) |
+| H 模式 CSR (hstatus/hedeleg/hgatp 等) | [特权模式与 CSR](./03-privileged-modes-and-csr.md) |
+| 两阶段地址翻译 (VS-stage + G-stage) | [内存管理](./05-memory-management-pmp-sv39.md) |
+| Trap 处理流程 (cause/val/delegation) | [中断与异常](./04-interrupts-and-exceptions.md) |
 
 ---
 
@@ -36,7 +36,6 @@
 | **容器替代** | 更强隔离 | VM 比 Container 隔离性更强 |
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph TB
     subgraph novm ["无虚拟化"]
         APP1[App] --> OS1[Linux]
@@ -69,7 +68,6 @@ graph TB
 H 扩展在原有 M/S/U 三级特权上增加了虚拟化支持，形成两级地址空间：
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph TB
     M["M-mode<br/>Machine<br/>OpenSBI"]
     HS["HS-mode<br/>Hypervisor / Host OS<br/>Linux KVM"]
@@ -95,14 +93,13 @@ graph TB
 | **VS** | 01 | Guest OS 内核 | 与 S-mode 相同视角，但受限 |
 | **VU** | 00 | Guest 用户程序 | 与 U-mode 相同视角 |
 
-> **关键理解：** VS-mode 和 S-mode 的编码相同（01），通过 `mstatus.VS` 字段区分当前是否在虚拟化模式下运行。Guest OS "以为"自己在 S-mode，实际上是 VS-mode。
+> **关键理解：** VS-mode 和 S-mode 的编码相同（01），但硬件始终知道自己是否处于虚拟化模式（V 位是内部状态）。软件可见的判别途径是 `hstatus.SPV`：trap 进入 HS-mode 时，SPV=1 表示 trap 发生前 hart 处于 VS/VU-mode。Guest OS "以为"自己在 S-mode，实际上是 VS-mode——它写的 `satp` 实际落到 `vsatp`，写的 `sie` 落到 `vsie`（CSR 地址别名，见 §2.3）。
 
 ### 2.2 两阶段地址翻译
 
 虚拟化的核心挑战是：Guest OS 使用的是 Guest 虚拟地址（GVA），需要翻译成 Host 物理地址（HPA），这需要两阶段翻译：
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph LR
     GVA["Guest 虚拟地址<br/>GVA"] --> |"第一阶段<br/>VS-mode 页表<br/>(vsatp)"| GPA["Guest 物理地址<br/>GPA"]
     GPA --> |"第二阶段<br/>Host 页表<br/>(hgatp)"| HPA["Host 物理地址<br/>HPA"]
@@ -118,7 +115,6 @@ graph LR
 | **第二阶段** | `hgatp` | GPA | HPA | Hypervisor（HS-mode） |
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph TD
     GVA["GVA: 0x1000_4000"] --> S1["第一阶段翻译<br/>vsatp 指向的 VS 页表"]
     S1 --> GPA["GPA: 0x8000_4000"]
@@ -182,22 +178,26 @@ H 扩展新增了大量 CSR，分为几类：
 ### 2.4 hstatus 关键位域
 
 ```
-hstatus 关键位域 (RV64):
+hstatus 关键位域 (RV64, Privileged Spec Figure 8.2):
 
- 63    34 33  32 31  30  29  28  27  26  25  24  23  22  21  20  9   8   7   6   5   4   3   2   1   0
-┌────────┬──────┬─────┬─────┬─────┬─────┬─────┬─────┬─────┬─────┬─────┬─────┬───┬───┬───┬───┬───┬───┬───┐
-│  ...   │ VSXL │ VTSR│ VTW │ VTVM│ VGEIN│  ... │ SPVP│ SPV │  ... │VSBE│  ... │FD │  ... │   ...   │
-└────────┴──────┴─────┴─────┴─────┴─────┴─────┴─────┴─────┴─────┴─────┴─────┴───┴───┴───┴───┴───┴───┴───┘
+ 63        34 33  32 31       23  22    21     20   19  18     17     12 11  10   9    8     7    6    5  4      0
+┌────────────┬──────┬───────────┬─────┬─────┬─────┬──────┬───────────┬──────┬────┬─────┬─────┬────┬────┬────┬─────────┐
+│    WPRI    │ VSXL │   WPRI    │VTSR │ VTW │VTVM │ WPRI │  VGEIN   │ WPRI │ HU │SPVP │ SPV │GVA │VSBE│ WPRI │
+└────────────┴──────┴───────────┴─────┴─────┴─────┴──────┴───────────┴──────┴────┴─────┴─────┴────┴────┴─────────┘
 ```
 
 | 位域 | 名称 | 说明 |
 |------|------|------|
-| **SPV** [7] | Supervisor Previous Virtual | trap 前是否在 VS-mode |
-| **SPVP** [8] | Supervisor Previous Virtual Privilege | trap 前的 VS-mode 特权级（0=VU, 1=VS） |
-| **VGEIN** [17:12] | Virtual Guest External Interrupt Number | 当前注入的外部中断号 |
+| **VSBE** [5] | VS-mode Big-Endian | VS-mode 内存访问字节序 |
+| **GVA** [6] | Guest Virtual Address | trap 的 mtval/stval 是 GVA（Guest 页故障两级翻译合并上报时置位） |
+| **SPV** [7] | Supervisor Previous Virtual | trap 前是否在 VS/VU-mode（VM Exit 判别位） |
+| **SPVP** [8] | Supervisor Previous Virtual Privilege | trap 前的虚拟化特权级（0=VU, 1=VS） |
+| **HU** [9] | Hypervisor in U-mode | 是否允许 U-mode 执行 HLV/HSV 等虚拟机存取指令 |
+| **VGEIN** [17:12] | Virtual Guest External Interrupt Number | 为 VS-level 外部中断选定的 hgeip 中断源（0=不选） |
+| **VTVM** [20] | Virtual Trap Virtual Memory | 置 1 时 VS-mode 执行 SFENCE.VMA/SINVAL.VMA 或访问 satp 触发 virtual instruction exception |
+| **VTW** [21] | Virtual Timer Wait | 置 1 时 VS-mode 执行 WFI（超时未完成时）触发 virtual instruction exception |
+| **VTSR** [22] | Virtual Trap SRET | 置 1 时 VS-mode 执行 SRET 触发 virtual instruction exception |
 | **VSXL** [33:32] | VS-mode XLEN | RV64=10 |
-| **VTW** [30] | Virtual Timer Wait | 是否允许 VS-mode 执行 WFI |
-| **VTSR** [29] | Virtual Trap SRET | 是否允许 VS-mode 执行 SRET |
 
 > **本节要点：** H 扩展的核心是"让 Guest OS 以为自己拥有整个机器，但实际上一切都在 Hypervisor 的监控之下"。两阶段地址翻译是实现这一幻觉的基础机制：Guest 管理自己的 vsatp 页表（GVA→GPA），但 GPA 并不是真正的物理地址——hgatp 页表在"最后一公里"将 GPA 重新映射到 HPA。hstatus.SPV 位是判断当前是否在虚拟化上下文中的关键标志——VM Exit 时硬件自动设置此位，Hypervisor 通过它区分来自 Guest 还是 Host 的 trap。
 
@@ -216,21 +216,21 @@ hgatp 布局 (RV64):
 
 MODE:
   0000 = Bare（不启用第二阶段翻译）
-  1000 = Sv39x4（41 位 GPA，3 级页表，根页表 1024 项 × 16 字节）
-  1001 = Sv48x4（50 位 GPA，4 级页表，根页表 1024 项 × 16 字节）
-  1010 = Sv57x4（59 位 GPA，5 级页表，根页表 1024 项 × 16 字节）
+  1000 = Sv39x4（41 位 GPA，3 级页表，根页表 2048 项 × 8 字节 = 16 KiB）
+  1001 = Sv48x4（50 位 GPA，4 级页表，根页表 2048 项 × 8 字节 = 16 KiB）
+  1010 = Sv57x4（59 位 GPA，5 级页表，根页表 2048 项 × 8 字节 = 16 KiB）
 
-VMID: 虚拟机 ID，用于 TLB 标记，避免 VM 切换时刷新全部 TLB（字段宽度 16 位，有效位数由实现决定，QEMU RV64 实现为 14 位）
-PPN:  第二阶段页表的根物理页号
+VMID: 虚拟机 ID，用于 TLB 标记，避免 VM 切换时刷新全部 TLB（字段宽度 16 位，有效位数由实现决定，Sv39x4/Sv48x4/Sv57x4 下 VMID 最多 14 位）
+PPN:  第二阶段页表的根物理页号（根页表须 16 KiB 对齐，所以 PPN 低 2 位读作 0）
 ```
 
 | 模式 | GPA 宽度 | 页表级数 | 最大 Guest 物理地址空间 |
 |------|----------|----------|----------------------|
-| **Sv39x4** | 41 bit | 3（根页表 1024 项） | 2 TB |
-| **Sv48x4** | 50 bit | 4（根页表 1024 项） | 1 PB |
-| **Sv57x4** | 59 bit | 5（根页表 1024 项） | 512 PB |
+| **Sv39x4** | 41 bit | 3（根页表 2048 项/16 KiB） | 2 TB |
+| **Sv48x4** | 50 bit | 4（根页表 2048 项/16 KiB） | 1 PB |
+| **Sv57x4** | 59 bit | 5（根页表 2048 项/16 KiB） | 512 PB |
 
-> **为什么叫 x4？** x4 变体与原版页表级数相同，但根页表从 512 项扩展为 1024 项，且每条 PTE 从 8 字节扩展为 16 字节（共占 16 KiB），从而在 VPN 结构上多使用 1 位地址作为根页表索引。此外，阶段二 PTE 的 PPN 字段比阶段一宽 1 位，因此总 GPA 宽度比对应 VA 宽度多 2 位。例如 Sv39 使用 39 位地址，Sv39x4 使用 41 位 GPA，GPA 空间从 512 GB 扩展到 2 TB。
+> **为什么叫 x4？** x4 变体与原版页表级数相同、PTE 仍是 8 字节，唯一区别是**根页表一项扩大 4 倍**：512 项 → 2048 项（4 KiB → 16 KiB），根级索引从 9 位变 11 位，因此总 GPA 宽度比对应 VA 宽度多 2 位。例如 Sv39 使用 39 位地址，Sv39x4 使用 41 位 GPA，GPA 空间从 512 GB 扩展到 2 TB——保证 Guest 的"物理"地址空间不小于它的虚拟地址空间（GVA 的全空间都能映射进 GPA）。
 
 ---
 
@@ -241,7 +241,6 @@ PPN:  第二阶段页表的根物理页号
 ### 3.1 中断注入机制
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 sequenceDiagram
     participant DEV as 外部设备
     participant PLIC as 中断控制器
@@ -272,7 +271,6 @@ sequenceDiagram
 ### 3.3 中断委托链
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph TD
     INT[中断发生] --> Q1{"是否委托给<br/>HS-mode?"}
     Q1 --> |"mideleg 相应位=1"| HS[HS-mode 处理]
@@ -296,7 +294,6 @@ graph TD
 ### 4.1 VM 切换流程
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 sequenceDiagram
     participant HOST as Host (HS-mode)
     participant VM1 as VM1 (VS-mode)
@@ -345,14 +342,13 @@ VM 切换时需要保存/恢复的 CSR：
 
 ## 5. KVM on RISC-V
 
-前面讨论的 VM 生命周期管理是理论模型。在 Linux 系统中，这个模型的具体实现就是 KVM——它将 H 扩展的硬件能力封装为标准的 Linux 接口，让 QEMU 等用户态 VMM 可以通过 `/dev/kvm` 创建和管理虚拟机。
+前面讨论的 VM 生命周期管理是理论模型。在 Linux 系统中，这个模型的具体实现就是 KVM——它将 H 扩展的硬件能力封装为标准的 Linux 接口，让 QEMU 等用户态 VMM 可以通过 `/dev/kvm` 创建和管理虚拟机。本章给接口与架构视角;内核侧(`arch/riscv/kvm`)的世界开关、G-stage 页表与 exit 分发的源码级走读,见 [KVM on RISC-V 源码走读](./12-kvm-riscv-source-walkthrough.md)。
 
 ### 5.1 架构概览
 
 KVM 在 RISC-V 上的实现采用 Type-2 架构：
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph TB
     subgraph uspace ["User Space"]
         QEMU[QEMU / Firecracker]
@@ -416,7 +412,6 @@ Guest 从 VS-mode 退出到 HS-mode 的常见原因：
 Guest OS 的 SBI 调用会被 KVM 拦截并处理：
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 sequenceDiagram
     participant G as Guest (VS-mode)
     participant K as KVM (HS-mode)
@@ -454,7 +449,6 @@ KVM 负责 CPU 侧的虚拟化，但虚拟机的 I/O 安全同样重要——Gue
 | 设备隔离 | 不同设备访问不同地址空间 |
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph LR
     subgraph noiommu ["无 IOMMU"]
         D1[设备] --> |"DMA 直接访问<br/>任意物理内存"| M1[内存]
@@ -483,7 +477,6 @@ RISC-V IOMMU 规范于 2024 年批准，主要特性：
 ### 6.3 IOMMU 与虚拟化协同
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph TB
     subgraph guest2 ["Guest (VS-mode)"]
         GDRV[Guest 驱动<br/>使用 GPA 做 DMA]
@@ -526,7 +519,6 @@ AIA（Advanced Interrupt Architecture）是 RISC-V 新一代中断架构，对�
 ### 7.2 IMSIC 虚拟化
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph TB
     subgraph imsicv ["IMSIC 虚拟化"]
         GIMSIC["Guest IMSIC<br/>（虚拟文件）<br/>VS-mode 可直接访问"]
@@ -639,7 +631,6 @@ QEMU 能让你快速验证功能，但生产环境中每一项 VM Exit 都直接
 ### 9.2 两阶段翻译的 TLB 优化
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph TD
     TLB["TLB 条目"] --> V1["GVA → HPA 直接映射<br/>（合并两阶段结果）"]
     TLB --> V2["VMID 标记<br/>避免 VM 切换刷新"]
@@ -681,5 +672,5 @@ graph TD
 - [SBI HSM Extension v3.0](https://github.com/riscv-non-isa/riscv-sbi-doc/releases/tag/v3.0) — Hart State Management 的 SBI 调用
 
 ---
-→ 下一节：[流水线基础](../04-microarchitecture/pipeline-basics.md)
-→ 实验：[Lab 4 — H 扩展两阶段 MMU](../08-labs/lab04-h-extension-two-stage-mmu.md)
+→ 下一节：[流水线基础](./90-appendix-architecture-background.md)
+→ 实验：[Lab 4 — H 扩展两阶段 MMU](./43-lab-h-extension-two-stage-mmu.md)

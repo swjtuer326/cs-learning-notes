@@ -38,3 +38,9 @@ cuda/src/
 
 # hsperi 厂商参考手册(受版权保护,不入库)
 hsperi/reference/
+
+# riscv 本地源码克隆(供笔记 src= 源码引用,不入库)
+riscv/src/*
+# 例外:opensbi 以 submodule 入库,钉在 release tag 上(11 号笔记的引用基线)
+!riscv/src/opensbi
+.gstack/

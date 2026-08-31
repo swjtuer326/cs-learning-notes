@@ -20,16 +20,15 @@
 
 | 需要了解 | 参考文档 |
 |----------|----------|
-| RISC-V 特权模式 M/S/U 划分 | [特权模式与 CSR](./privileged-modes-and-csr.md) |
-| CSR 寄存器读写方式（csrr/csrw） | [特权模式与 CSR](./privileged-modes-and-csr.md) |
-| Zicsr / Zifencei 标准扩展 | [标准扩展详解](../02-isa/standard-extensions.md) |
+| RISC-V 特权模式 M/S/U 划分 | [特权模式与 CSR](./03-privileged-modes-and-csr.md) |
+| CSR 寄存器读写方式（csrr/csrw） | [特权模式与 CSR](./03-privileged-modes-and-csr.md) |
+| Zicsr / Zifencei 标准扩展 | [标准扩展详解](./02-standard-extensions.md) |
 
 ---
 
 ## 1. Trap 的分类
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph TB
     TRAP[Trap] --> INT[中断 Interrupt<br/>异步，来自外部]
     TRAP --> EXC[异常 Exception<br/>同步，指令执行产生]
@@ -70,7 +69,6 @@ graph TB
 当 trap 发生时，硬件原子地完成以下操作：
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 sequenceDiagram
     participant HW as 硬件
     participant CSR as CSR 寄存器
@@ -154,7 +152,6 @@ trap handler 负责统一调度和分发，但实际的中断信号来源于硬�
 CLINT 处理**每个核心本地**的中断：
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph LR
     subgraph CLINT
         MSIP[msip 寄存器<br/>软件中断]
@@ -197,7 +194,6 @@ timer_setup:
 PLIC 处理**外部设备**的中断，支持多中断源、优先级和多核路由：
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph TB
     subgraph devs ["外部设备"]
         D1[UART]
@@ -240,7 +236,6 @@ graph TB
 **PLIC 处理流程：**
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 sequenceDiagram
     participant DEV as 外部设备
     participant PLIC as PLIC
@@ -287,7 +282,6 @@ void handle_external_interrupt() {
 RISC-V 默认进入 trap 时禁止中断，不支持嵌套。要实现中断嵌套，需要软件手动重新使能中断：
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph TD
     A["正常执行<br/>MIE=1"] --> |中断1| B["trap 处理1<br/>MIE=0, MPIE=1"]
     B --> |手动设置 MIE=1| C["中断嵌套使能"]
@@ -330,7 +324,6 @@ nested_trap_entry:
 ### 5.1 中断路由
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph TD
     INT[中断信号] --> MIDELEG{mideleg<br/>是否委托?}
     MIDELEG --> |是| S_MODE[S-mode 处理<br/>sip/sie/scause]
@@ -351,7 +344,7 @@ graph TD
 | CSR | 地址 | 说明 |
 |-----|------|------|
 | `stimecmp` | 0x14D | S-mode 定时器比较值（Sstc 扩展） |
-| `vstimecmp` | 0x24D | VS-mode 定时器比较值（Sstc + H 扩展） |
+| `vstimecmp` | 0x24D | VS-level 定时器比较值（Sstc + H 扩展；HS-mode 可读写；VS-mode 下写 `stimecmp` 地址经别名直接落到 `vstimecmp`，无需陷入——除非 hypervisor 置 `hvictl.VTI=1` 强制拦截） |
 
 ```asm
 # Sstc 方式设置定时器中断（无需 trap 到 M-mode）
@@ -382,7 +375,7 @@ S-mode (Linux):
   6. sret 返回
 ```
 
-> **本节要点：** S-mode 的中断处理本质上是 M-mode 的镜像——sip/sie/scause/stvec 与 mip/mie/mcause/mtvec 一一对应。关键差异在于：S-mode 的中断是通过 mideleg 委托下来的，而 Sstc 扩展更进一步，让 S-mode 可以直接写 stimecmp 设置定时器，完全绕过 M-mode。在虚拟化场景中，vstimecmp 让 Guest 也能直接设置定时器，避免了 VS→HS→M 的多级 trap 开销。
+> **本节要点：** S-mode 的中断处理是 M-mode 的镜像——sip/sie/scause/stvec 与 mip/mie/mcause/mtvec 一一对应。关键差异在于：S-mode 的中断是通过 mideleg 委托下来的，而 Sstc 扩展更进一步，让 S-mode 可以直接写 stimecmp 设置定时器，完全绕过 M-mode。在虚拟化场景中，vstimecmp 让 Guest 也能直接设置定时器，避免了 VS→HS→M 的多级 trap 开销。
 
 ---
 
@@ -391,7 +384,6 @@ S-mode (Linux):
 中断与异常都是被动触发的——前者来自外部，后者是执行错误。而 `ecall` 是软件主动请求特权级提升的唯一方式，也是用户态与内核之间唯一的合法"大门"。
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 sequenceDiagram
     participant U as User Mode
     participant S as Supervisor Mode
@@ -436,7 +428,7 @@ sequenceDiagram
 | 虚拟化支持 | 无 | 无 | 原生支持 |
 | 适用场景 | 简单系统 | 传统 SoC | 高端服务器/虚拟化 |
 
-> AIA 的详细内容请参考 [RISC-V AIA 完全指南](../aia/riscv-aia-notes.md)
+> AIA 的详细内容请参考 [RISC-V AIA 完全指南](./07-aia-advanced-interrupt-architecture.md)
 
 ---
 
@@ -461,6 +453,6 @@ sequenceDiagram
 
 ---
 
-→ 下一节：[内存管理](./memory-management.md)
-→ 实验：[Lab 1 — 裸机 Trap Handler](../08-labs/lab01-baremetal-trap-handler.md)
-→ 高级中断架构：[RISC-V AIA 专题笔记](../aia/riscv-aia-notes.md)（推荐在完成 PLIC 章节后阅读）
+→ 下一节：[内存管理](./05-memory-management-pmp-sv39.md)
+→ 实验：[Lab 1 — 裸机 Trap Handler](./40-lab-baremetal-trap-handler.md)
+→ 高级中断架构：[RISC-V AIA 专题笔记](./07-aia-advanced-interrupt-architecture.md)（推荐在完成 PLIC 章节后阅读）

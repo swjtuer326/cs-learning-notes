@@ -24,8 +24,8 @@
 
 | 需要了解 | 参考文档 |
 |----------|----------|
-| RISC-V ISA 模块化扩展组合与 Profile | [RISC-V 概览](../01-basics/riscv-overview.md) |
-| 汇编基本语法 | [汇编与 ABI](../05-system-software/assembly-and-abi.md) |
+| RISC-V ISA 模块化扩展组合与 Profile | [RISC-V 概览](./00-riscv-overview.md) |
+| 汇编基本语法 | [汇编与 ABI](./08-assembly-and-abi.md) |
 
 ---
 
@@ -405,4 +405,4 @@ fi
 | 性能问题 | `rdcycle` 计数 + gem5 模拟 |
 | 指令验证 | Spike + QEMU 交叉对比 |
 
-→ 下一节：[硬件平台与前沿方向](../07-practice/hardware-platforms.md)
+→ 下一节：[硬件平台与前沿方向](./20-presilicon-validation-environment.md)

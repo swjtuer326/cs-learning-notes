@@ -27,8 +27,8 @@
 
 | 需要了解 | 参考文档 |
 |----------|----------|
-| RV32I/RV64I 整数指令集 | [RV32I/RV64I 指令集详解](./rv32i-rv64i-instructions.md) |
-| RISC-V 模块化扩展理念与 Profile | [RISC-V 概览](../01-basics/riscv-overview.md) |
+| RV32I/RV64I 整数指令集 | [RV32I/RV64I 指令集详解](./01-isa-rv32i-rv64i.md) |
+| RISC-V 模块化扩展理念与 Profile | [RISC-V 概览](./00-riscv-overview.md) |
 
 ### 学习目标
 
@@ -116,7 +116,6 @@ A 扩展提供两种原子操作机制：**LR/SC**（保留加载/条件存储�
 LR/SC 采用**乐观锁**策略：先读，再检查，最后写。如果检查期间有人修改过，就放弃并重试。
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 sequenceDiagram
     participant CPU1 as CPU 1
     participant MEM as 内存
@@ -185,40 +184,15 @@ spin_unlock:
 
 **关键理解点：**
 
-```
-为什么需要两次 bnez 检查？
+**第一次 bnez**（lr.w 之后）：检查锁是否已被占用——如果锁是 1（被占用），直接重试，不执行 SC。这是一种优化，避免不必要的 SC 操作。
 
-第一次 bnez（lr.w 之后）：
-  检查锁是否已被占用
-  如果锁是 1（被占用），直接重试，不执行 SC
-  这是一种优化，避免不必要的 SC 操作
-
-第二次 bnez（sc.w 之后）：
-  检查 SC 是否成功
-  即使锁原来是 0（空闲），执行 SC 时也可能失败
-  失败原因：其他 CPU 在 LR 和 SC 之间抢占了锁
-```
+**第二次 bnez**（sc.w 之后）：检查 SC 是否成功——即使锁原来是 0（空闲），执行 SC 时也可能失败。失败原因：其他 CPU 在 LR 和 SC 之间抢占了锁。
 
 **执行流程分析：**
 
-```
-情况 1：锁空闲，无竞争
-  LR:  读取 0，设置保留标记
-  SC:  保留标记仍有效，写入 1 成功，返回 0
-  → 获取锁成功
-
-情况 2：锁被占用
-  LR:  读取 1
-  检查：bnez 发现不为 0，跳回重试
-  → 忙等待直到锁释放
-
-情况 3：获取锁期间被其他 CPU 抢占（竞态）
-  CPU 0: LR 读取 0，设置保留标记
-  CPU 1: 获取锁成功，将地址改为 1
-  CPU 0: SC 发现保留标记已被清除（CPU 1 修改了同一缓存行）
-         SC 失败，返回非零，跳回重试
-  → 安全地重试，不会破坏数据
-```
+- **情况 1：锁空闲，无竞争**——LR 读取 0，设置保留标记；SC 时保留标记仍有效，写入 1 成功，返回 0 → 获取锁成功。
+- **情况 2：锁被占用**——LR 读取 1，bnez 发现不为 0，跳回重试 → 忙等待直到锁释放。
+- **情况 3：获取锁期间被其他 CPU 抢占（竞态）**——CPU 0 的 LR 读取 0 并设置保留标记；CPU 1 抢先获取锁成功，将地址改为 1；CPU 0 的 SC 发现保留标记已被清除（CPU 1 修改了同一缓存行），SC 失败返回非零，跳回重试 → 安全地重试，不会破坏数据。
 
 #### LR/SC 使用规则
 
@@ -727,7 +701,6 @@ V 扩展是 RISC-V 最重要的扩展之一，提供可变长度向量（Vector�
 与 ARM SVE/NEON 的固定宽度向量不同，RISC-V V 扩展采用**可变长度向量**设计：
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph LR
     subgraph neon ["固定宽度向量 (ARM NEON)"]
         F1["128-bit 固定<br/>软件需要针对不同宽度<br/>写不同版本"]
@@ -1292,4 +1265,4 @@ Ztso 扩展将处理器的内存模型从 RISC-V 默认的 RVWMO (RISC-V Weak Me
 
 ---
 
-→ 下一节：[特权模式与 CSR](../03-privileged/privileged-modes-and-csr.md)
+→ 下一节：[特权模式与 CSR](./03-privileged-modes-and-csr.md)

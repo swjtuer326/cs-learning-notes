@@ -32,7 +32,7 @@ flowchart LR
 | 序号 | 文档 | 概要 | 建议学时 |
 |------|------|------|---------|
 | 1 | [2260 profiling 工具缺陷诊断](./2260-profiling工具缺陷诊断.md) | 三层工具(固件/运行时/离线)全景 + 10 类缺陷 + 改进选型 | 1.5h |
-| 2 | [bigTpuProfile 设计与实现分析](./bigTpuProfile-design.md) | 2260 离线解析器四阶段流水线(解析→匹配→归一化→导出) | 2h |
+| 2 | [bigTpuProfile 设计与实现分析](./bigTpuProfile-design.md) | 2260 离线解析器四阶段流水线(解析→匹配→归一化→导出) + 附录 A/B/C 覆盖两个生产前端(TPU1686 Profile1690 / tpuv7-runtime model-runtime)与硬件手册权威依据 | 2.5h |
 | 3 | [NVIDIA profiling 设计源码分析](./NVIDIA-profiling设计源码分析.md) | CUPTI/NVTX/HWPM 源码级拆解 + 六条跨领域设计原则 | 2.5h |
 
 **建议阅读顺序**:先读 1(诊断对象,知道 2260 现状与缺陷)→ 2(看清离线侧是怎么补的)→ 3(对照参照系,知道成熟设计长什么样)。文档 1 与文档 3 的每章末尾有双向"对照"链接。

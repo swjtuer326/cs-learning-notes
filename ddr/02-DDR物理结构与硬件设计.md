@@ -32,7 +32,6 @@
 DDR 内存层次结构，从系统级到存储单元级逐层展开：
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 flowchart TD
     System["系统内存 System Memory<br/>例: 8GB DDR4"] --> Rank["Rank 物理通道<br/>一组并行工作的颗粒<br/>例: Rank 0, Rank 1"]
     Rank --> Chip["颗粒 Chip/Device<br/>单颗 DDR 芯片<br/>例: 8颗 x8 颗粒 = 64位"]

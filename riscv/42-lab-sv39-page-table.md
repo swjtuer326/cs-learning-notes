@@ -15,8 +15,8 @@
 
 ## 前置知识
 
-- [内存管理](../03-privileged/memory-management.md)
-- [实验二：最小 SBI 实现](./lab02-minimal-sbi.md)
+- [内存管理](./05-memory-management-pmp-sv39.md)
+- [实验二：最小 SBI 实现](./41-lab-minimal-sbi.md)
 
 ---
 
@@ -35,7 +35,10 @@
 ┌─────┬─────────┬───┬───┬───┬───┬───┬───┬───┐
 │  0  │   PPN   │ R │ W │ X │ U │ G │ A │ D │ V │
 └─────┴─────────┴───┴───┴───┴───┴───┴───┴───┘
+（[63:54] 本实验恒为 0；Svpbmt 扩展把它用作 PBMT 内存属性位，N 位保留，见《内存管理》篇）
 ```
+
+> **环境复用：** 本实验直接复用实验二的运行设施——`sbi_puts` 输出、M→S 委托配置、`mret` 进入 S-mode 的启动代码。请先跑通实验二再开始本实验。
 
 ---
 
@@ -326,4 +329,4 @@ void test_vm(void) {
 | 缺页处理 | 分配物理页 → 建立映射 → 刷新 TLB → 返回重试 |
 | 用户隔离 | 独立页表 + U-bit，sret 进入 U-mode |
 
-→ 下一实验：[实验四：H 扩展与两阶段地址翻译](./lab04-h-extension-two-stage-mmu.md)
+→ 下一实验：[实验四：H 扩展与两阶段地址翻译](./43-lab-h-extension-two-stage-mmu.md)

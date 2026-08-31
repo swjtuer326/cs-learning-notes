@@ -8,10 +8,10 @@
 | 缩写 | 全称 | 含义 |
 |------|------|------|
 | PMU | Performance Monitor Unit | TPU 硬件性能监视单元,固件编程,记录每条指令起止时间戳 |
-| TIU | Tensor Instruction Unit | SG2260 张量计算引擎(代码内代号 BD) |
-| GDMA | Global DMA | SG2260 全局 DMA 引擎(DDR ↔ L2 搬运) |
+| TIU | Tensor Instruction Unit(TPU V7.1 手册术语表作 TPU Instruction Unit) | SG2260 张量计算引擎(代码内代号 BD) |
+| GDMA | Global DMA | SG2260 全局 DMA 引擎(DDR ↔ L2 搬运;手册全称 Global Direct Memory Access) |
 | SDMA | System DMA | GDMA 精简子集,仅保留 6 条指令 |
-| CDMA | Cluster DMA | 片间/片外 DMA 引擎,经 CMN/DTN 网络互联 |
+| CDMA | Chip Link DMA | 片间 DMA 引擎(CDMA spec 官方全称)——inter chip 数据搬运,服务 SPC.c2c/SPC.p2p;链路可配置 PCIe 或 Ethernet;内部 TX/RX 双 Channel(对软件为两个独立线程);CDMA-0..7 用于 POD16 内 c2c,CDMA-8 用于 POD 间 p2p |
 | MCU | Microcontroller Unit | TPU core 上的控制核(RISC-V),运行固件 |
 | inst_id | Instruction ID | 硬件给每条指令的序号,profile 用它关联 PMU 时间戳与命令码 |
 | Perfetto | — | Google 开源 trace 可视化工具,bigTpuProfile 的导出目标 |
@@ -110,7 +110,7 @@ flowchart LR
 |------|-----------|----------|-----------|
 | TIU | `BD_ENGINE_MAIN_CTRL_AHB + 0x70/0x74/0x78/0x7c` | inst 起止 cycle、inst_id、thread_id、bank_conflict | SG2260_TPU_TIU_Reg0.12 |
 | GDMA/SDMA | `*_ENGINE_MAIN_CTRL_AHB + 0x14-0x20` | 13 个 AXI 计数器(ar/aw/w 延迟、stall、valid) | GDMA_SG2260_DES_REG rev 0.68 |
-| CDMA | `CDMA_ENGINE_MAIN_CTRL(port) + 0x30-0x3c + 0x240` | 8 通道时间戳对 + replay_number | CDMA_2260_DES_REG_v5.1 |
+| CDMA | `CDMA_ENGINE_MAIN_CTRL(port) + 0x30-0x3c + 0x240` | 7 组分阶段时间戳对(b/ar/aw/rd/wr/ati/ari) + replay_number + thread_id | CDMA_2260_DES_REG_v5.1; CDMA spec v0.8.3 |
 
 DDR 预留布局(`sg2260/spec/include/memmap.h:249-258`):每 core GDMA 20MB + TIU 40MB + SDMA 20MB + CDMA 5MB/port,136MB per-core stride。
 
@@ -298,6 +298,7 @@ NVIDIA 把 profiling 的四件事分给三层 + 一个正交层:
 | SG2260 TPU 规格书 §6.1.6 | TIU PMU 硬件定义 | 本文 §2.1 |
 | GDMA Design Spec §5.2.1 | GDMA PMU 寄存器 | 本文 §2.1 |
 | CDMA_2260_DES_REG_v5.1 | CDMA PMU 寄存器 | 本文 §2.1 |
+| CDMA spec v0.8.3 | CDMA 官方全称(Chip Link DMA)/指令集/PMU 配置寄存器 | 本文 §2.1 |
 | [CUPTI Documentation](https://docs.nvidia.com/cuda/cupti/) | NVIDIA profiling 底层 API(对照) | 本文 §4 |
 | [Nsight Systems User Guide](https://docs.nvidia.com/nsight-systems/UserGuide/index.html) | 系统级追踪(对照) | 本文 §4 |
 

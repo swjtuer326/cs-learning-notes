@@ -43,7 +43,6 @@
 #### 1.1.1 DDR5 双通道子通道架构详解
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 flowchart TB
     subgraph DDR4["DDR4 DIMM（单通道）"]
         CA4["命令/地址（共享）"]
@@ -78,24 +77,46 @@ PMIC 还支持动态电压调节（DVS）和电源时序控制。
 
 ### 1.2 HBM (高带宽内存)
 
-HBM（High Bandwidth Memory）采用 3D 堆叠封装，通过硅通孔（TSV）互连多层 DRAM Die，与 GPU/AI 芯片集成。
+HBM（High Bandwidth Memory）采用 3D 堆叠封装，通过硅通孔（TSV）把多层 DRAM Die 垂直互连，再与 GPU/AI 芯片做 2.5D 集成（同一 interposer 上）。它用**超宽接口换带宽**：不追求高频率，而是堆出 1024/2048 位的位宽。
+
+```mermaid
+flowchart TB
+    subgraph Stack["HBM 堆叠（TSV 垂直互连）"]
+        D4["DRAM Die 4"]
+        D3["DRAM Die 3"]
+        D2["DRAM Die 2"]
+        D1["DRAM Die 1"]
+        D0["Base Die（逻辑/接口层）"]
+        D1 --- D2 --- D3 --- D4
+        D0 --- D1
+    end
+    Stack --- GPU["GPU / AI 芯片<br/>（同 interposer 2.5D 集成）"]
+```
 
 | 代际 | 带宽（单栈） | 位宽 | 典型应用 |
 |------|-------------|------|----------|
 | HBM2 | 256 GB/s | 1024 位 | 高性能 GPU、AI 加速器 |
 | HBM2E | 460 GB/s | 1024 位 | HPC、网络处理器 |
-| HBM3 | 最高 819 GB/s | 1024 位 | 旗舰 GPU、AI 训练 |
-| HBM3E | 1 TB/s+ | 1024 位 | 下一代 AI 加速器 |
+| HBM3 | 819 GB/s | 1024 位 | 旗舰 GPU、AI 训练 |
+| HBM3E | 1.2 TB/s+ | 1024 位 | 下一代 AI 加速器 |
+| HBM4 | ~1.6 TB/s | **2048 位** | 位宽再翻倍 |
+
+**为什么用「宽接口」而不是「高频率」？** HBM 堆在 GPU 旁边、走线极短，能承受超宽并行总线；而 DIMM 插槽走线长，做不了 1024 位宽。带宽 = 位宽 × 速率，HBM 把「位宽」拉满（1024→2048 位），速率只需 6.4 Gbps/pin 就能到 819 GB/s。代价：成本高（TSV + interposer）、容量受堆叠层数限制、不可扩展（焊死无法升级）。
+
+**通道与伪通道**：HBM 每栈分成多个独立通道（HBM3 是 16 个 64 位通道），每个通道又能拆成 2 个「伪通道」（pseudo channel）进一步提高并行度——控制器交错访问不同通道来隐藏延迟。
 
 ### 1.3 GDDR (图形 DDR)
 
-GDDR（Graphics DDR）专为图形处理优化，高带宽优先，延迟要求相对宽松。
+GDDR（Graphics DDR）专为图形/AI 处理优化，高带宽优先，延迟要求相对宽松。它的路线和 HBM 相反：**不堆位宽，而是把单 pin 速率拉满**。
 
-| 代际 | 最高速率 | 典型应用 |
-|------|----------|----------|
-| GDDR6 | 16 Gbps/pin | 显卡、游戏主机 |
-| GDDR6X | 24 Gbps/pin | 高端显卡 |
-| GDDR7 | 32 Gbps/pin | 下一代显卡、高性能显示设备 |
+| 代际 | 信号 | 最高速率 | 典型应用 |
+|------|------|----------|----------|
+| GDDR6 | NRZ（2 电平） | 16-24 Gbps/pin | 显卡、游戏主机 |
+| GDDR7 | **PAM3（3 电平）** | 32-48 Gbps/pin | 下一代显卡、AI |
+
+**GDDR7 为什么换 PAM3？** 单 pin 速率越来越高，NRZ（每周期 2 电平）的信号完整性问题越来越严重。PAM3 用 3 个电平编码，每个符号传 1.5 bit，在**同样的频率下传更多数据**（带宽 +50%），缓解了把 NRZ 频率继续拉高的难度。代价是：3 电平的信噪比更差（电平间距变小），收发器更复杂、功耗更高，且需要双参考电压（VREFDL/VREFDH）。
+
+**GDDR7 还加了片上 ECC**：高速 GDDR 位翻转风险上升，GDDR7 在芯片内部集成 ECC，对读写错误做透明纠正（类似 DDR5 的 On-Die ECC）。
 
 ### 1.4 MRDIMM (多路复用双列直插内存模块)
 
@@ -117,19 +138,34 @@ MRDIMM（Multiplexed RIMM）是 DDR5 服务器平台引入的新一代内存模�
 
 LPDDR（Low Power DDR）不是 DDR 的"低功耗版本"——它是为移动和嵌入式场景重新设计的独立产品线。
 
-| 对比维度 | 标准 DDR (DDR4/DDR5) | LPDDR (LPDDR4/LPDDR5) |
+| 对比维度 | 标准 DDR (DDR4/DDR5) | LPDDR (LPDDR4/5/6) |
 |----------|---------------------|----------------------|
 | **目标场景** | 服务器、PC、工作站 | 手机、平板、汽车、IoT |
-| **封装形式** | DIMM/SODIMM（可插拔） | PoP（Package-on-Package）或直接焊接 |
+| **封装形式** | DIMM/SODIMM（可插拔） | PoP 或直接焊接 |
 | **位宽** | 64-bit（DIMM） | 16/32-bit per channel |
-| **供电电压** | DDR4: 1.2V, DDR5: 1.1V | LPDDR4: 1.1V/0.6V, LPDDR5: 1.05V/0.5V |
-| **功耗管理** | 自刷新、时钟停止 | 深度睡眠、部分阵列自刷新（PASR）、温度补偿自刷新（TCSR） |
-| **频率** | DDR5-6400 起步 | LPDDR5-6400 起步，LPDDR5X 达 8533 Mbps |
-| **ECC** | 可选（DIMM 上） | 通常无硬件 ECC（依赖链路层 CRC） |
+| **供电电压** | 单域：DDR4 1.2V、DDR5 1.1V | **多电源域**：VDD1=1.8V(I/O) + VDD2(核心分档，见下表) |
+| **功耗管理** | 自刷新、时钟停止 | 深度睡眠、PASR、TCSR |
+| **频率** | DDR5-6400 起步 | LPDDR5X 达 8533 Mbps，LPDDR6 更高 |
+| **ECC** | 可选（DIMM 上） | 通常无硬件 ECC（依赖链路层 CRC/ECC） |
 | **训练** | 每次上电训练 | 训练结果可保存，减少启动时间 |
-| **信号完整性** | 多 Rank、多 DIMM，拓扑复杂 | 点对点连接，信号完整性更好 |
+| **信号完整性** | 多 Rank、多 DIMM，拓扑复杂 | 点对点，信号完整性更好 |
 
-> **工程师视角**：如果你在做嵌入式 Linux 产品（如 AI 摄像头、车载域控），大概率用的是 LPDDR4/LPDDR5 焊接在 PCB 上。LPDDR 的初始化流程和标准 DDR 类似（都是 JEDEC 标准），但寄存器地址和时序参数不同，需要查阅具体颗粒的数据手册。
+**LPDDR 的多电源域**（「1.1V/0.6V」这类简化说法的来源）：
+
+| 代际 | VDD1 (I/O) | VDD2 (核心阵列) | 备注 |
+|------|-----------|----------------|------|
+| LPDDR4 | 1.8V | 1.1V | LPDDR4X 降到 0.6V |
+| LPDDR5 | 1.8V | VDD2H=1.05V / VDD2L=0.9V | LPDDR5X 的 VDD2L 降到 0.5V |
+| LPDDR6 | 1.8V | 进一步细分（VDD2C/VDD2D） | 更多低压档 |
+
+**LPDDR6（JESD209-6）的关键变化**：
+
+- **24-DQ 子通道**：一颗 die 分成多个 24-DQ 子通道，每子通道配两对差分 WCK
+- **预取**：支持 **12n / 24n** 两种预取，BL 可选
+- **WCK**：写时钟（Write Clock）自 LPDDR5 引入、LPDDR6 沿用——写操作用 WCK 对齐，读操作仍用 DQS
+- 面向 AI 手机 / 边缘 AI 的高带宽低功耗需求
+
+> **工程师视角**：做嵌入式 Linux 产品（AI 摄像头、车载域控）大概率用 LPDDR4/LPDDR5 焊在 PCB 上。LPDDR 初始化流程和标准 DDR 类似（都是 JEDEC），但寄存器地址和时序参数不同，要查具体颗粒的 JESD209 子标准。
 
 ***
 
@@ -137,18 +173,18 @@ LPDDR（Low Power DDR）不是 DDR 的"低功耗版本"——它是为移动和�
 
 ### 2.1 规范文档
 
-| 类别 | 文档 | 说明 |
-|------|------|------|
-| JEDEC 标准 | JESD79-4 | DDR4 SDRAM 标准 |
-| | JESD79-5 | DDR5 SDRAM 标准 |
-| | JESD209-4 | LPDDR4 标准 |
-| | JESD209-5 | LPDDR5 标准 |
-| 厂商文档 | Samsung DDR Datasheet | 公开 |
-| | Micron DDR Technical Note | 公开 |
-| | SK Hynix DDR Application Manual | 需注册 |
-| | SoC 厂商 DDR 控制器手册 | 需注册 |
+完整的 JEDEC 标准已下载到本专题的 `reference/` 目录（正文据此核对）：
 
-> JEDEC 标准获取：[JEDEC 官网](https://www.jedec.org/)，免费注册后可下载部分标准，完整标准需付费购买。
+| 标准 | 文件 | 覆盖 |
+|------|------|------|
+| JESD79-4D | `reference/JESD79-4D-DDR4.pdf` | DDR4 |
+| JESD79-5C.01 | `reference/JESD79-5C.01-DDR5.pdf` | DDR5 |
+| JESD209-5C | `reference/JESD209-5C-LPDDR5-5X.pdf` | LPDDR5/5X |
+| JESD209-6 | `reference/JESD209-6-LPDDR6.pdf` | LPDDR6 |
+| JESD235D / 238B / 270-4 | `reference/JESD235D-HBM1-2.pdf` 等 | HBM / HBM2 / HBM3 / HBM4 |
+| JESD239C / 250D | `reference/JESD239C-GDDR7.pdf` 等 | GDDR7 / GDDR6 |
+
+> 补充获取：[JEDEC 官网](https://www.jedec.org/)（多数标准需注册/付费）；厂商 datasheet（Micron/Samsung/SK Hynix）见各厂商官网。
 
 ### 2.2 JEDEC 标准组织与规范
 

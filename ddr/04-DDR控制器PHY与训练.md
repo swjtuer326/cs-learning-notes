@@ -34,7 +34,6 @@
 DDR 控制器是 CPU/SoC 与 DDR 颗粒之间的桥梁。它接收来自 CPU 的内存访问请求（通常是 AXI 总线协议），将其翻译为 DDR 能理解的命令序列（ACTIVATE → READ/WRITE → PRECHARGE）。
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 flowchart LR
     subgraph "CPU/SoC"
         CPU["CPU 核心"] -->|"AXI 总线"| MC["DDR 控制器"]
@@ -46,7 +45,6 @@ flowchart LR
 ### 1.2 控制器内部结构
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 flowchart TD
     subgraph "DDR 控制器"
         A["AXI 接口"] --> B["命令仲裁器"]
@@ -93,7 +91,6 @@ flowchart TD
 PHY（Physical Interface，物理层接口）负责将控制器的数字命令转换为符合电气规范的模拟信号，并处理接收端的信号恢复。
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 flowchart TD
     subgraph "DDR PHY"
         A["DFI 接口\n接收控制器命令"] --> B["时钟管理"]
@@ -186,7 +183,6 @@ Fly-by 拓扑下的 CK 到达时间差异:
 **Write Leveling 过程**：
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 sequenceDiagram
     participant MC as 控制器
     participant DDR as DDR 颗粒
@@ -214,7 +210,6 @@ sequenceDiagram
 **算法**：
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 flowchart TD
     A["设置 DQS 延迟 = 0"] --> B["读取 MPR/已知数据"]
     B --> C{"数据正确?"}
@@ -324,7 +319,6 @@ DDR5: CA 频率 = CK 频率，但电压更低（0.5V），裕量更小
 ### 3.8 训练流程总览
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 flowchart TD
     A["阶段1: 初始化准备\n配置 PLL、释放复位、使能 CKE"] --> B["阶段2: Write Leveling\n补偿 DQS 与 CK 的 Fly-by 延迟差异"]
     B --> C["阶段3: Read Gate Training\n确定 DQS 读窗口的起始和结束位置"]

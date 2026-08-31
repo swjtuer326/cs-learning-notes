@@ -19,15 +19,14 @@
 
 | 需要了解 | 参考文档 |
 |----------|----------|
-| RISC-V 特权模式 M/S/U 划分与 CSR | [特权模式与 CSR](./privileged-modes-and-csr.md) |
-| 页表建立与 MMU 使能（satp 配置） | [内存管理](./memory-management.md) |
+| RISC-V 特权模式 M/S/U 划分与 CSR | [特权模式与 CSR](./03-privileged-modes-and-csr.md) |
+| 页表建立与 MMU 使能（satp 配置） | [内存管理](./05-memory-management-pmp-sv39.md) |
 
 ---
 
 ## 1. 启动阶段总览
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph LR
     PWR[上电复位] --> ROM[ROM Code<br/>固化在芯片内]
     ROM --> FW[固件<br/>OpenSBI / U-Boot SPL]
@@ -77,12 +76,11 @@ satp     = 0（裸模式，不使用虚拟内存）
 
 ## 3. OpenSBI：RISC-V 的标准固件
 
-复位向量是硬件定义的起点，但 CPU 从这里能做的事情极其有限——需要初始化 DRAM、CSR、PMP，然后才能加载操作系统。在 RISC-V 生态中，OpenSBI 承担了这个角色，它是事实上的标准 M-mode 固件，类似于 x86 的 BIOS/UEFI。
+复位向量是硬件定义的起点，但 CPU 从这里能做的事情极其有限——需要初始化 DRAM、CSR、PMP，然后才能加载操作系统。在 RISC-V 生态中，OpenSBI 承担了这个角色，它是事实上的标准 M-mode 固件，类似于 x86 的 BIOS/UEFI。本章只建立全景；从启动汇编到 SBI 分发的寄存器级源码走读见 [OpenSBI 源码走读](./11-opensbi-source-walkthrough.md)。
 
 ### 3.1 OpenSBI 的三种运行模式
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph TB
     subgraph fwdyn ["FW_DYNAMIC / FW_JUMP"]
         M1["OpenSBI (M-mode)"] --> |"直接跳转"| S1["Bootloader<br/>U-Boot (S-mode)"]
@@ -113,7 +111,6 @@ graph TB
 ### 3.2 OpenSBI 初始化流程
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 sequenceDiagram
     participant ROM as ROM/ZSBL
     participant SBI as OpenSBI
@@ -262,7 +259,6 @@ void sbi_set_timer(uint64_t stime_value) {
 ### 5.1 完整启动链
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph TD
     PWR[上电] --> ROM[ROM Code]
     ROM --> ZSBL[ZSBL<br/>Zero Stage Boot Loader]
@@ -351,7 +347,6 @@ start_kernel()
 Linux 的启动链涉及多级引导程序，步骤多、灵活性高。而 RTOS 面向的是资源受限的嵌入式场景，启动通常更直接——往往省去 Bootloader 阶段，固件直接从 ROM 跳转到 RTOS 本体。
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph LR
     PWR[上电] --> ROM[ROM Code]
     ROM --> RTOS[RTOS 固件<br/>直接运行]
@@ -381,7 +376,6 @@ Zephyr RISC-V 启动流程:
 ### 7.1 服务器启动 vs 嵌入式启动
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 graph TB
     subgraph embedded ["嵌入式启动（Device Tree）"]
         E1[ROM] --> E2[OpenSBI]
@@ -417,7 +411,6 @@ graph TB
 RISC-V 的 UEFI 实现基于 TianoCore EDK2，由社区维护：
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 sequenceDiagram
     participant ROM as ROM/Flash
     participant SBI as OpenSBI (M-mode)
@@ -499,15 +492,9 @@ UEFI+ACPI 是服务器标准，但对于嵌入式和非 UEFI 场景，RISC-V 系
 
 ### 8.1 为什么需要设备树？
 
-```
-没有设备树：
-  OS 需要知道硬件的精确信息（内存大小、外设地址、中断号等）
-  → 每个板子都要修改 OS 代码 → 不可维护
+**没有设备树**：OS 需要知道硬件的精确信息（内存大小、外设地址、中断号等）→ 每个板子都要修改 OS 代码，不可维护。
 
-有设备树：
-  固件/Bootloader 传递设备树给 OS
-  → OS 解析设备树，动态适配硬件 → 一份 OS 代码适配多板子
-```
+**有设备树**：固件/Bootloader 传递设备树给 OS → OS 解析设备树，动态适配硬件，一份 OS 代码适配多板子。
 
 ### 8.2 RISC-V 设备树示例
 
@@ -584,6 +571,6 @@ UEFI+ACPI 是服务器标准，但对于嵌入式和非 UEFI 场景，RISC-V 系
 
 ---
 
-→ 下一节：[流水线基础](../04-microarchitecture/pipeline-basics.md)
-→ 虚拟化专题：[虚拟化：H 扩展与 KVM](./virtualization.md)
-→ 实验：[Lab 2 — 最小 SBI 实现](../08-labs/lab02-minimal-sbi.md)
+→ 下一节：[流水线基础](./90-appendix-architecture-background.md)
+→ 虚拟化专题：[虚拟化：H 扩展与 KVM](./06-virtualization-h-extension.md)
+→ 实验：[Lab 2 — 最小 SBI 实现](./41-lab-minimal-sbi.md)

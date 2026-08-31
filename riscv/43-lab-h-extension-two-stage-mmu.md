@@ -15,8 +15,9 @@
 
 ## 前置知识
 
-- [虚拟化：H 扩展与 KVM](../03-privileged/virtualization.md)
-- [内存管理：Sv39x4](../03-privileged/memory-management.md)
+- [虚拟化：H 扩展与 KVM](./06-virtualization-h-extension.md)
+- [内存管理：Sv39x4](./05-memory-management-pmp-sv39.md)
+- 想往下钻一层(世界开关/G-stage 的内核实现):[KVM on RISC-V 源码走读](./12-kvm-riscv-source-walkthrough.md)
 
 ---
 
@@ -211,7 +212,7 @@ done:
 #define HGATP_MODE_SV39X4   (8ULL << 60)
 
 struct kvm_mmu_page {
-    uint64_t spt[1024]; /* Stage-2 page table (Sv39x4 root = 1024 entries) */
+    uint64_t spt[2048]; /* Stage-2 根页表 (Sv39x4: 2048 项 × 8 字节 = 16 KiB, 16 KiB 对齐) */
 };
 
 /* 建立 GPA → HPA 映射（第二阶段） */
@@ -221,9 +222,9 @@ void kvm_riscv_stage2_map_page(struct kvm *kvm,
     struct kvm_mmu_page *root = kvm->arch.pgd;
     uint64_t *table = root->spt;
 
-    /* Sv39x4: 3 级页表（根页表 1024 项） */
-    /* Level 2 (root): GPA[39:30], 10-bit index, 1024 entries */
-    uint64_t idx2_root = (gpa >> 30) & 0x3FF;
+    /* Sv39x4: 3 级页表, 根级 11 位索引, 非根级 9 位 */
+    /* Level 2 (root): GPA[40:30], 11-bit index, 2048 entries */
+    uint64_t idx2_root = (gpa >> 30) & 0x7FF;
     uint64_t pte2_root = table[idx2_root];
     if (!(pte2_root & PTE_V)) {
         struct kvm_mmu_page *new = alloc_stage2_page();
@@ -315,7 +316,7 @@ cat trace
 | 要点 | 说明 |
 |------|------|
 | 两阶段翻译 | vsatp（GVA→GPA）+ hgatp（GPA→HPA） |
-| Sv39x4 | 第二阶段专用，3 级页表（根页表 1024 项），2 TB GPA |
+| Sv39x4 | 第二阶段专用，3 级页表（根页表 2048 项/16 KiB），2 TB GPA |
 | VMID | TLB 标记，避免 VM 切换全刷 |
 | VM Exit/Entry | Guest trap → Host KVM 处理 → sret 返回 |
 | KVM API | /dev/kvm → KVM_CREATE_VM → KVM_CREATE_VCPU → KVM_RUN |

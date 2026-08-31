@@ -180,8 +180,11 @@ flowchart TD
             SMEM["共享内存 + L1 Cache<br/>合计 192 KB<br/>共享内存最多 164 KB"]
         end
 
-        subgraph "调度"
-            WS0["Warp 调度器 × 4<br/>每个 Block 1 个"]
+        subgraph "调度 (每 Processing Block 1 个)"
+            WS0["Warp 调度器 0"]
+            WS1["Warp 调度器 1"]
+            WS2["Warp 调度器 2"]
+            WS3["Warp 调度器 3"]
         end
 
         subgraph "特殊功能"
@@ -191,9 +194,9 @@ flowchart TD
     end
 
     WS0 --> FP32_0
-    WS0 --> FP32_1
-    WS0 --> FP32_2
-    WS0 --> FP32_3
+    WS1 --> FP32_1
+    WS2 --> FP32_2
+    WS3 --> FP32_3
     RF --> FP32_0
     RF --> FP32_1
     RF --> FP32_2
@@ -210,7 +213,7 @@ flowchart TD
 | **FP64 CUDA Core**  | 32 个（4 × 8）                 | 双精度浮点运算（A100 特有）                 |
 | **INT32 CUDA Core** | 64 个（4 × 16，与 FP32 等量）                  | 整数运算，可与 FP32 并发执行                |
 | **Tensor Core**     | 4 个（每 Block 1 个）                   | 矩阵乘法加速（FP16/BF16/TF32/INT8/FP64） |
-| **Warp 调度器**        | 4 个（每 Block 1 个）                   | 每个周期调度一个 Warp 执行指令               |
+| **Warp 调度器**        | 4 个（每个 Processing Block 1 个）        | 每个周期各调度一条 Warp 指令               |
 | **寄存器文件**           | 64K × 32-bit (256 KB) | 每个线程的私有寄存器                       |
 | **共享内存 + L1 Cache** | 合计 192 KB，共享内存最多 164 KB（可配置 carveout）           | SM 内共享的高速存储                      |
 | **L1 Cache / 纹理缓存** | 与共享内存共享 192 KB        | 全局内存的缓存                          |
@@ -234,6 +237,26 @@ flowchart TD
 周期 5: 调度器 0 选择 Warp 1，执行指令 A
 ...
 ```
+
+**32 个线程 ≠ 一条指令铺满 32 个 Core。** Warp 是 32 个线程，但 32 个线程能否在一个周期内全部上算，取决于每个 Processing Block 有多少个 FP32 Core。A100 每个 Block 只有 **16 个 FP32 Core**，所以一条 32 线程的 FP32 指令要**拆成两半、跑 2 个周期**：
+
+```
+单个 Processing Block（A100，16 个 FP32 Core）：
+  周期 1：执行 warp 的前 16 个线程   ← 16 个 Core 忙
+  周期 2：执行 warp 的后 16 个线程   ← 16 个 Core 忙
+  → 一条 warp 的 FP32 指令耗时 2 周期
+```
+
+所以"一个 SM 单一周期最多多少 FP32 core 在算"取决于架构：
+
+| 架构 | 每 Block FP32 Core | warp 的 FP32 指令 | SM 单一周期峰值 |
+| --- | --- | --- | --- |
+| A100 | 16 | 2 周期 | **64**（4 × 16） |
+| H100 | 32 | 1 周期 | **128**（4 × 32） |
+
+把两个数分清：**驻留线程数 2048 是"寄存器堆装得下多少线程的状态"，单一周期在算的 64/128 是"执行单元这一刻能跑多少"**——前者决定能藏多少延迟，后者是峰值吞吐。A100 每 SM 的 FP32 Core 只有 H100 的一半，再叠上 SM 数和频率差异，FP32 算力从 19.5 到 60 TFLOPS，约 3 倍（见 §3.2）。
+
+> **常见误区**："warp 有 32 个线程"不等于"一条指令一次要占 32 个 Core"。Core 够多（32，H100）才一次铺满；只有 16 个（A100）就拆两周期。
 
 **隐藏延迟的机制**：当一个 Warp 等待内存访问时，调度器立即切换到另一个就绪的 Warp，保持流水线满载。这就是为什么 GPU 需要大量线程——用线程数换吞吐量。
 
@@ -368,49 +391,40 @@ if (threadIdx.x % 2 == 0) {
 ```mermaid
 %%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 flowchart TD
-    subgraph "应用层"
+    subgraph "构建期(离线)"
+        SRC["CUDA C++ 源码"]
+        NVCC["nvcc → ptxas"]
+        FATBIN["fatbin<br/>cubin(SASS) 为主,PTX 兜底"]
+    end
+
+    subgraph "运行期(在线)"
         App["用户程序<br/>C/C++/Python"]
         Lib["库<br/>cuBLAS/cuDNN/NCCL"]
+        Runtime["CUDA Runtime (libcudart)<br/>cudaMalloc/cudaMemcpy/<<<>>>"]
+        Driver["CUDA Driver (libcuda, UMD)<br/>cuMemAlloc/cuMemcpy/cuLaunchKernel"]
+        JIT["libnvidia-ptxjitcompiler<br/>PTX → SASS,按需 JIT"]
+        KMD["nvidia.ko (KMD)"]
+        GPU["GPU 硬件"]
     end
-    
-    subgraph "Runtime 层"
-        Runtime["CUDA Runtime API<br/>cudaMalloc/cudaMemcpy/<<<>>>"]
-    end
-    
-    subgraph "Driver 层"
-        Driver["CUDA Driver API<br/>cuMemAlloc/cuMemcpy/cuLaunchKernel"]
-    end
-    
-    subgraph "编译器"
-        NVCC["nvcc 编译器"]
-        PTX["PTX 虚拟指令集"]
-    end
-    
-    subgraph "内核模块"
-        KMD["NVIDIA 内核驱动<br/>nvidia.ko"]
-    end
-    
-    subgraph "硬件"
-        GPU_HW["GPU 硬件"]
-    end
-    
+
+    SRC --> NVCC --> FATBIN
+    FATBIN -. "cuModuleLoad 加载" .-> Driver
     App --> Runtime
     Lib --> Runtime
     Runtime --> Driver
     Driver --> KMD
-    NVCC --> PTX
-    PTX --> Driver
-    KMD --> GPU_HW
+    KMD --> GPU
+    Driver -. "无匹配 cubin 时 dlopen" .-> JIT
+    JIT -. "返回 SASS" .-> Driver
 ```
 
 **如何读这张图**：
 
-- **应用层**：用户程序和高层库（如 cuBLAS）
-- **Runtime 层**：CUDA Runtime API，提供简化的接口语义（如 `cudaMalloc`）
-- **Driver 层**：CUDA Driver API，提供更底层的控制（如 `cuMemAlloc`）
-- **编译器**：nvcc 将 CUDA C++ 编译为 PTX 虚拟指令集
-- **内核模块**：NVIDIA 内核驱动（nvidia.ko）管理硬件资源
-- **硬件**：GPU 硬件执行实际的计算
+- **构建期（离线，上方）**：nvcc（内部调用 ptxas）把 CUDA C++ 编成 **fatbin**——里面装着各目标架构的 cubin（SASS），还有可选的 PTX 文本作兜底（是否带 PTX 取决于编译参数，如 `-code compute_80`）。这一步在程序运行前完成。
+- **运行期（在线，下方）**：用户程序或高层库（cuBLAS 等）经 CUDA Runtime（libcudart）调用 CUDA Driver（libcuda，用户态驱动 UMD），Driver 通过 ioctl 与内核驱动 nvidia.ko 通信，最终把 SASS 送上 GPU 执行。
+- **fatbin → Driver 的虚线**：应用在 `cuModuleLoad` 时把编译产物交给驱动。驱动**优先用现成的 cubin**；只有 fatbin 里没有匹配当前 GPU 架构的 cubin 时，才 dlopen `libnvidia-ptxjitcompiler.so`，把 PTX JIT 成 SASS。JIT 是兜底路径，不是每次 launch 都走。
+- **内核模块**：nvidia.ko 不参与编译，只管理内存、channel、MMU 与命令提交。
+- **硬件**：GPU 硬件执行实际的计算。
 
 > **核心要点**：CUDA Runtime 是 Driver 的封装层，简化了接口语义但牺牲了部分控制能力。系统软件工程师通常需要直接操作 Driver API，而应用开发者使用 Runtime API 即可。
 

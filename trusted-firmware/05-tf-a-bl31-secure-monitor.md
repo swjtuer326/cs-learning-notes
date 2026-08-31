@@ -464,6 +464,59 @@ flowchart TD
 
 > **核心要点**:PSCI_CPU_ON 是最复杂的 PSCI 调用——涉及两个 CPU 核的协调。发起核通过 SMC 请求 BL31,BL31 调用平台 `pwr_domain_on()` 物理上电目标核,目标核从 warm boot 唤醒后经 `psci_cpu_on_finish()` 完成初始化,最终 ERET 到 Linux 入口。
 
+### 3.6 多核上下电与状态协调(CPU_OFF + last man standing)
+
+§3.4/§3.5 讲了 CPU_ON 的"双核协作",但省略了一个关键层:**cluster 这个共享电源域的协调**。本节补齐 CPU_OFF 和协调机制——这是多核平台上下电单个 core 的核心,也是标准平台(遵循 Arm PSCI 规范)的做法。
+
+#### 不对称:下电自己关自己,上电别人开自己
+
+- **CPU_OFF**:一个 core 只能关**自己**(`psci_do_cpu_off` 里 `idx = plat_my_core_pos()`),不能远程关别的核;
+- **CPU_ON**:一个醒着的 core **远程**开一个睡着的 core(§3.4 那条双核链)。
+
+两者绕不开同一个问题:**core 电源和 cluster 电源是分开的**,cluster 的 L2 cache/coherency 是兄弟核共享的。所以关一个 core 时能不能顺带关 cluster,取决于兄弟核的状态——这就是"状态协调"。
+
+#### CPU_OFF 流程与 "last man standing"
+
+```
+Core N 要下线(Linux 热拔)
+  → Core N 发 SMC:PSCI_CPU_OFF(自己关自己)
+  → psci_cpu_off() → psci_do_cpu_off()                   [psci_off.c:47]
+  → psci_do_state_coordination()                         [psci_common.c:574]
+      逐层(cluster→system)收集所有兄弟核的请求状态,算"协调目标状态"
+  → plat_get_target_pwr_state()                          [plat_psci_common.c:161]
+      默认实现:目标状态 = 兄弟核请求状态的【最浅值】
+        · 有兄弟核醒着(请求 RUN)→ 最浅值是 RUN → cluster 保持开
+        · 所有兄弟核都请求 OFF → 最浅值也是 OFF → cluster 可以关  ← last man standing
+  → pwr_domain_off(target_state)                         [fvp_pm.c:179]
+      平台读 target_state 决定:
+        · 只关 core:写电源控制器切 core 电源
+        · 还关 cluster:先退 coherency、再切 cluster 电源   [fvp_pm.c:193-195]
+  → Core N 执行 WFI,电源移除,其他核完全不受影响
+```
+
+#### CPU_ON 的 "first man in"
+
+CPU_ON 的协调体现在平台的 `pwr_domain_on()`(上电侧)和 `pwr_domain_on_finish()`(醒来侧):
+
+- **上电时**:目标 core 所在的 cluster 若 OFF,先给 cluster 上电,再给 core 上电;
+- **醒来时**:`fvp_power_domain_on_finish_common()` 里若 `target_state` 显示 cluster 原来是 OFF,就重新 enable coherency([fvp_pm.c:92-107])——"第一颗核醒来,把 cluster 的 L2/coherency 重新拉起来"。
+
+#### 出处:这是标准做法
+
+这套"电源域树 + 状态协调"不是 TF-A 自创,而是 **Arm PSCI 规范(DEN0022)** 定义的语义,TF-A 是参考实现:
+
+| 出处 | 位置 | 内容 |
+|---|---|---|
+| PSCI 规范 | `developer.arm.com/documentation/den0022/` | 电源域树、状态协调语义 |
+| TF-A 通用协调 | `lib/psci/psci_common.c:574` `psci_do_state_coordination()` | 遍历电源域、逐层协调 |
+| 默认协调算法 | `plat/common/plat_psci_common.c:161` `plat_get_target_pwr_state()` | 目标=兄弟核请求状态的最浅值(即 last man standing) |
+| Arm 参考平台 | `plat/arm/board/fvp/fvp_pm.c` | 消费 target_state 决定关不关 cluster |
+| 两种协调模式 | `docs/design_documents/psci_osi_mode.rst` | platform-coordinated(默认)vs OS-initiated |
+
+规范里还定义了**两种协调模式**:TF-A 默认是 **platform-coordinated**(固件在 EL3 做 last-man/first-man 协调);另有 **OS-initiated(OSI)** 模式,由 OS 自己做协调(DSU 配合)。详见 `psci_osi_mode.rst`。
+
+> **核心要点**:多核平台上下电单个 core 的关键在 cluster 协调——"最后一颗核睡下才关 cluster(last man standing)、第一颗核醒来先开 cluster(first man in)"。这个决定由 `psci_do_state_coordination` 收集兄弟核状态、`plat_get_target_pwr_state`(默认取最浅值)算出 target_state,平台 `pwr_domain_off/on` 按 target_state 决定要不要动 cluster 层。这是 Arm PSCI 规范(DEN0022)的标准做法。
+
 ---
 
 ## 4. SCMI 系统控制接口
@@ -576,6 +629,85 @@ if (bl32_init != NULL) {
 `bl32_init` 回调执行时,BL31 配置 S-EL1 的上下文(MMU、寄存器),ERET 跳转到 OP-TEE 的入口。OP-TEE 完成自己的初始化后,通过 SMC 返回 BL31,BL31 继续跳转到 BL33。
 
 > **核心要点**:SPD 是 BL31 调度 TEE OS 的插件——用 `DECLARE_RT_SVC` 注册 OEN=0x32(TOS 范围)的服务,把 TEE 相关 SMC 转发给 TEE OS。SPD 还负责初始化 TEE OS(通过 `bl31_register_bl32_init` 注册回调)。不同 TEE OS 有不同 SPD 实现(opteed/tspd/trusty)。
+
+### 5.5 Yielding SMC 的抢占与恢复(以 TSP 为例)
+
+§5.3 提到 Yielding SMC"可被中断抢占",但没讲抢占之后怎么恢复。本节用 TF-A 自带的 TSP(测试安全载荷)+ TSPD 走一遍完整链路——这是理解真实 TEE(OP-TEE)长耗时调用机制的钥匙。
+
+#### 抢占:非安全中断打断正在执行的 Yielding SMC
+
+```
+① 普通世界 EL1 发一个 yielding SMC(如 TSP_ADD 的 yielding 版)
+② SMC 陷 EL3(TSPD)→ 转给 TSP(S-EL1),TSP 开始算
+③ 一个非安全中断(timer)到达 → 陷 EL3
+④ TSPD 保存 TSP 现场 → 恢复普通世界现场 → 设 x0=-2 → ERET
+```
+
+被抢占时,TSPD 以 **`SMC_PREEMPTED`(-2)** 作为返回值还给调用者:
+
+```c
+/* 摘自 [tf-a-src/include/lib/smccc.h](./src/tf-a-src/include/lib/smccc.h) 第 115 行 */
+#define SMC_PREEMPTED  -2  /* Not defined by the SMCCC */
+
+/* 摘自 [tf-a-src/services/spd/tspd/tspd_main.c](./src/tf-a-src/services/spd/tspd/tspd_main.c) 第 83-88 行 */
+/* The TSP was preempted during execution of a Yielding SMC Call.
+ * Return back to the normal world with SMC_PREEMPTED as error code in x0. */
+cm_el1_sysregs_context_restore(NON_SECURE);
+cm_set_next_eret_context(NON_SECURE);
+SMC_RET1(ns_cpu_context, SMC_PREEMPTED);
+```
+
+`SMC_PREEMPTED` 是 TSPD 与普通世界客户端之间的**私有契约**——SMCCC 标准没定义它(注释明说 "Not defined by the SMCCC"),它只传达一件事:"你的 secure 调用还挂着,别等结果了"。
+
+#### 恢复:普通世界主动发 TSP_FID_RESUME
+
+普通世界怎么知道要 resume?**不是自动的,是调用者检查返回值看出来的。** SMC 是同步调用,调用者一直等在那儿,只是等回来的是 -2 而不是结果:
+
+```c
+/* 普通世界客户端(TFTF 的 tsp 测试)的典型写法 */
+uint64_t fid = TSP_FID_ADD_YIELDING;   /* 第一次:yielding 调用 */
+while (1) {
+    smc_ret_t ret = smc(fid, a, b, 0, 0, 0, 0, 0);
+    if (ret.x0 != SMC_PREEMPTED) {     /* 拿到真结果了(或错误) */
+        result = ret.x0; break;
+    }
+    fid = TSP_FID_RESUME;              /* 被抢占了,下次改发 RESUME */
+}
+```
+
+`TSP_FID_RESUME`(`0x72003000`,bit31=0,也是 yielding)就是"继续之前被抢占的调用"的请求。它和 `TSP_FID_ABORT`(`0xf2003001`,fast)是一对:
+
+| FID | 值 | 类型 | 作用 |
+|---|---|---|---|
+| `TSP_FID_RESUME` | `0x72003000` | yielding | 恢复被抢占的调用 |
+| `TSP_FID_ABORT` | `0xf2003001` | fast | 取消被抢占的调用 |
+
+ABORT 用 fast 的原因(`tsp.h:63-66`):"so that the TSP abort handler does not have to be reentrant"——取消动作本身要原子完成,不能再被抢占。
+
+TSPD 收到 RESUME 后(`tspd_main.c:721`):先查 `yield_smc_active_flag` 是否置位(没置位就返回 `SMC_UNK`),再保存普通世界、恢复 TSP 现场、ERET 回 TSP 被抢占的那一行——注释原话:"We just need to return to the preempted point in TSP and the execution will resume as normal."(`tspd_main.c:762-763`)。
+
+#### 精确时序:两次"保存现场"别混
+
+"恢复普通世界现场"这个动作里,最容易被绕晕的是**现场到底什么时候存的、存了几次**:
+
+```
+① 普通世界 smc → 陷 EL3 → EL3 保存 SMC caller 现场到 cpu_context    ← 保存 #1(SMC 入口)
+② TSP 在算,非安全中断到 → 陷 EL3,TSPD 保存 TSP 现场
+③ TSPD 恢复 #1 的现场,设 x0=-2,ERET 回 SMC caller 的下一条指令
+④ 中断还 pending,EL1 硬件在【第一条指令边界】取走 IRQ
+   → 硬件保存 SMC caller 现场(含 x0=-2)到 EL1 异常栈                ← 保存 #2(EL1 取中断)
+   → 跳进 EL1 的 IRQ handler
+⑤ handler eret 回 SMC caller,x0 仍是 -2
+⑥ SMC caller 看到 -2 → 发 TSP_FID_RESUME
+```
+
+三个要点:
+
+- **保存 #1 在 SMC 入口**,ERET 回来是**恢复**,不是重新保存;
+- **handler 不是 TSPD 跳进去的**,是"中断还 pending + EL1 硬件取中断"的自然结果,走的是 EL1 自己的常规 IRQ 异常路径;
+- **x0=-2 是 ERET 之前就设好的**,取中断时被保存 #2 一起压栈,所以 handler 返回后调用者还能看到 -2。
+
+> **核心要点**:yielding SMC 的抢占-恢复是一套"返回值契约 + 主动重发"机制——被抢占时 TSPD 返回 `SMC_PREEMPTED(-2)`,普通世界调用者据此发 `TSP_FID_RESUME` 续上。现场被保存两次(SMC 入口一次、EL1 取中断一次),handler 由 pending 中断 + EL1 硬件拉起,不是 TSPD 显式跳入。更宏观的中断路由模型(安全/非安全中断各往哪走)见 §6。
 
 ---
 

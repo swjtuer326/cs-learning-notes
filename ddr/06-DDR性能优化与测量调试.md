@@ -54,7 +54,6 @@
 以下时序图对比了无交错和有交错两种情况下的总线利用率差异：
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 sequenceDiagram
     participant B0 as Bank 0
     participant B1 as Bank 1
@@ -101,26 +100,60 @@ sequenceDiagram
 
 **Bank 交错的代价**：需要控制器支持命令队列和乱序调度；同一 Bank 内的连续访问仍然受限于 tCCD（CAS-to-CAS Delay）。
 
+#### 1.2.1 从软件视角看交错：粒度与 Bank 冲突
+
+Bank 是物理切好的，交错是控制器地址映射配好的，但**用不用得上，取决于软件的访问模式**——软件只看到线性物理地址，是控制器把它拆成 Rank / Bank Group / Bank / Row / Column。**交错的本质 = 把"选并行资源"的地址位（Bank / Channel / Rank）放在低位（紧贴列地址/突发粒度），让连续地址轮流打不同子阵列**（见 §1.3 方案2）。
+
+**交错粒度（Interleave Granularity）= 突发粒度 × 并行单元数**。示例（64B 突发 + 16 个 Bank，Bank 选择位紧贴列地址）：
+
+| 地址位 | 选什么 | 连续 64B 块 | Bank 命中 |
+|--------|--------|-------------|-----------|
+| `addr[5:0]` | 列地址 / 块内偏移 | `0x0000`（块 0） | Bank 0 |
+| `addr[7:6]` | Bank（组内 4 个） | `0x0040`（块 1） | Bank 1 |
+| `addr[9:8]` | Bank Group（4 个） | `0x0080`（块 2） | Bank 2 |
+| `addr[31:10]` | Row（高位地址） | …… | …… |
+| — | — | `0x03C0`（块 15） | Bank 15 |
+| — | — | `0x0400`（块 16） | 回到 Bank 0（周期 1KB） |
+
+> **如何读这张表**：交错周期 = 16 Bank × 64B = **1KB**——连续地址在 1KB 范围内轮流覆盖 16 个 Bank，跨过 1KB 回到 Bank 0。Bank 选择位越贴近列地址（低位），交错周期越小、交错越"密"。注意：这里展示的是**交错映射**（Bank 位低位）；§1.5.1 的例子 Bank 位在高位，属于行优先映射——两者是不同 SoC 的可能配置，不是矛盾。
+
+**软件的访问模式决定交错有没有被兑现**：
+
+| 访问模式 | 效果 | 原因 |
+|----------|------|------|
+| 顺序读（`0x0000, 0x0040, 0x0080...`） | 带宽接近理论 | 每 64B 换一个 Bank，控制器提前 ACT 下一行，tRCD/tRP 被隐藏 |
+| stride = 512B（半个周期） | 并行度减半 | 只打 Bank 0 / 8 两个，其余 Bank 空闲 |
+| **stride = 1KB（= 周期整数倍）** | **带宽暴跌** | 块号 ≡ 0 mod 16，永远打 Bank 0，且每次访问都跨行 → 每 64B 一次行冲突 |
+| 随机访问（地址均匀） | 16 Bank 均匀利用 | 取决于映射与地址分布 |
+
+**软件能做的四件事**：
+
+1. **避免 stride 恰为交错周期（或其 2 的幂次倍数）**——最经典的性能杀手。尤其二维数组按列访问：若每行大小凑成 2 的幂且等于交错周期的倍数，每行都会回到同一个 Bank。解法：行填充（padding）打乱对齐，或让行大小避开交错周期。
+2. **用大页（Hugepage）保证物理连续**——交错受益的前提是连续虚拟地址对应连续物理地址；4KB 小页的物理页框是打散的，交错效果被随机化吃掉。
+3. **多通道交错 = 带宽翻倍**——若配置为细粒度通道交错，channel 选择位也在低位，连续 cache line 轮流去不同通道。软件层面意味着大流量应分散到多个物理区域，而不是挤在一个通道。
+4. **固件初始化时显式配好 ADDRMAP**——地址映射由控制器 ADDRMAP 寄存器组决定，默认映射不一定开启交错。固件/ATF 初始化内存控制器时按手册显式配成交错映射（见 §1.5.1）。
+
+> **核心要点（软件视角）**：交错是映射配的，价值是软件的访问模式兑现的。**顺序访问是交错的受益者，stride 等于交错周期整数倍的访问是交错的杀手**——性能敏感代码要避开"2 的幂次 stride"，并用大页保证物理连续，才能吃到交错的并行红利。
+
 ### 1.3 地址映射优化
 
 地址映射决定了 CPU 物理地址如何拆分为 DDR 的 Rank、Bank Group、Bank、Row、Column。不同的映射策略直接影响 Bank 交错效果和行命中率。
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 flowchart LR
-    subgraph "方案1: Bank 交错映射（推荐随机访问）"
+    subgraph "方案1: 行优先映射（推荐顺序访问）"
         direction TB
         A1["物理地址 [31:0]"] --> A2["[31:28] Rank 选择"]
-        A1 --> A3["[27:25] Bank 选择（用于交错）"]
+        A1 --> A3["[27:25] Bank 选择（高位）"]
         A1 --> A4["[24:12] 行地址"]
         A1 --> A5["[11:0] 列地址"]
     end
 
-    subgraph "方案2: 行优先映射（推荐顺序访问）"
+    subgraph "方案2: Bank 交错映射（推荐随机/多流访问）"
         direction TB
         B1["物理地址 [31:0]"] --> B2["[31:28] Rank 选择"]
         B1 --> B3["[27:14] 行地址"]
-        B1 --> B4["[13:11] Bank 选择"]
+        B1 --> B4["[13:11] Bank 选择（低位，紧邻列地址）"]
         B1 --> B5["[10:0] 列地址"]
     end
 ```
@@ -132,6 +165,10 @@ flowchart LR
 | 随机访问为主（通用计算） | Bank 交错映射 | 连续物理地址分散到不同 Bank，最大化并行度 |
 | 顺序访问为主（流媒体/视频） | 行优先映射 | 连续物理地址在同一行内，最大化行命中率 |
 | 混合负载（现代多核系统） | 混合映射 | 结合 Cache Line 大小，平衡并行度和命中率 |
+
+> **如何读这张图**：关键在 Bank 选择位的位置。方案1 的 Bank 位在高位（[27:25]）——连续地址要遍历完整个列与行范围才换 Bank，长期停在同一个 Bank/同一行，行命中率高但 Bank 并行度低；方案2 的 Bank 位紧贴列地址（[13:11]）——连续地址每 2KB 就换一次 Bank，交错"密"。**判断一个映射是不是交错，就看 Bank 位放得多低。**
+
+> **核心要点（地址映射）**：交错与否是 Bank 位高低的直接结果——Bank 位低 = 交错密、多流并行好；Bank 位高 = 行命中高、单流顺序好。没有绝对最优，取决于负载；这正是"混合映射"存在的理由。
 
 ### 1.4 调度策略
 
@@ -151,7 +188,6 @@ flowchart LR
 CPU 发出的物理地址不是直接送到 DDR 芯片的——它需要经过 DDR 控制器的地址映射逻辑，拆分为 Rank、Bank Group、Bank、Row、Column 五个维度。
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 flowchart TD
     Addr["CPU 物理地址 [63:0]"] --> R["[33] Rank 选择<br/>1位: 0=Rank0, 1=Rank1"]
     Addr --> BG["[32:31] Bank Group 选择<br/>2位: 4个 Bank Group"]
@@ -175,6 +211,8 @@ flowchart TD
 | `0x4_8000_0000` | 0 | 1 | 0 | 0 | 0 | 0 |
 | `0x5_1234_5678` | 0 | 2 | 0 | 37282 | 719 | 0 |
 
+> **读法说明**：上表例子的 Bank/BG 位在高位（[30:29] / [32:31]），属于**行优先映射**——连续地址停在同一 Bank 的同一行，顺序访问行命中率高，但 Bank 并行度低。它只是"一种具体 SoC 的映射"，不代表所有 SoC 默认如此；Bank 位放低位即交错映射（见 §1.3 方案2）。
+
 > 地址映射规则由 DDR 控制器的 ADDRMAP 寄存器组配置，不同 SoC 的默认映射方式不同。配错地址映射是 DDR 调试中最隐蔽的问题之一——内存测试可能部分通过、部分失败，因为地址回绕导致不同逻辑地址访问到同一物理位置。
 
 #### 1.5.2 地址映射策略
@@ -182,22 +220,21 @@ flowchart TD
 三种常见策略的对比：
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 flowchart LR
-    subgraph "策略1: Bank 交错映射"
+    subgraph "策略1: 行优先映射"
         direction TB
         S1["物理地址 [31:0]"] --> S1R["[31:28] Rank"]
-        S1 --> S1B["[27:25] Bank（低3位）"]
+        S1 --> S1B["[27:25] Bank（高位）"]
         S1 --> S1Row["[24:14] Row"]
         S1 --> S1Col["[13:3] Column"]
         S1 --> S1Byte["[2:0] Byte"]
     end
 
-    subgraph "策略2: 行优先映射"
+    subgraph "策略2: Bank 交错映射"
         direction TB
         S2["物理地址 [31:0]"] --> S2R["[31:28] Rank"]
         S2 --> S2Row["[27:14] Row"]
-        S2 --> S2B["[13:11] Bank（高3位）"]
+        S2 --> S2B["[13:11] Bank（低位）"]
         S2 --> S2Col["[10:3] Column"]
         S2 --> S2Byte["[2:0] Byte"]
     end
@@ -228,7 +265,6 @@ flowchart LR
 Cache Line（缓存行）是 CPU Cache 与 DDR 之间数据传输的最小单位，通常为 64 字节。这与 DDR 的 BL8 突发传输天然对齐：BL8 × 8 字节（64 位总线）= 64 字节。
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 flowchart TD
     CPU["CPU 请求地址 X"] --> Check{"L1/L2 Cache<br/>命中?"}
     Check -->|"Hit"| Return["直接返回数据<br/>不访问 DDR"]
@@ -252,7 +288,6 @@ flowchart TD
 DMA（Direct Memory Access）允许外设不经过 CPU 直接读写 DDR。这带来了性能优势，但也引入了 Cache 一致性问题：CPU 的 Cache 中可能有尚未写回 DDR 的脏数据，DMA 从 DDR 读取时会读到过期数据。
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 sequenceDiagram
     participant CPU as CPU
     participant Cache as CPU Cache
@@ -295,7 +330,6 @@ sequenceDiagram
 TLB（Translation Lookaside Buffer，页表缓存）缓存虚拟地址到物理地址的转换结果。TLB Miss 会导致页表遍历（Page Table Walk），而页表本身存储在 DDR 中——每次 TLB Miss 可能触发多次 DDR 访问。
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 flowchart TD
     VA["CPU 发出虚拟地址"] --> TLB{"TLB 命中?"}
     TLB -->|"Hit"| PA["直接获得物理地址<br/>0 次额外 DDR 访问"]
@@ -339,19 +373,7 @@ flowchart TD
 
 **眼图（Eye Diagram）** 是评估 DDR 信号质量的核心工具。它将多个比特周期的波形叠加显示，形成"眼睛"形状的图案。眼图的开口大小直接反映了信号的时序裕量和电压裕量。
 
-```
-眼图原理示意（DQ vs DQS）:
-
-←── 单位间隔 (UI) ──→
-│                  │
-错误│    ┌────────┐    │错误
-区域│    │  眼图  │    │区域
-│    │  开口  │    │
-│    └────────┘    │
-│                  │
-────┼──────────────────┼────→ DQS 相位
-0°              360°
-```
+![眼图：多个比特周期波形叠加形成"眼睛"，眼高/眼宽分别反映电压/时序裕量，中心为最佳采样点](./images/ddr-eye-diagram.png)
 
 **眼图关键参数**：
 
@@ -391,7 +413,6 @@ flowchart TD
 **DDR 中的两种端接方案**：
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 flowchart LR
     subgraph "源端端接（Source Termination）"
         direction LR
@@ -426,7 +447,6 @@ DDR4 ODT 电阻值通过模式寄存器 MR1 配置（RZQ = 240Ω 外接精密电
 **串扰（Crosstalk）** 是相邻信号线之间通过电磁场耦合产生的干扰。在 DDR 高速并行总线中，几十根信号线紧密排列，串扰是限制信号质量的主要因素之一。
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#f8fafc", "primaryTextColor": "#1e293b", "primaryBorderColor": "#475569", "lineColor": "#64748b", "secondaryColor": "#f1f5f9", "secondaryBorderColor": "#94a3b8", "tertiaryColor": "#f8fafc", "fontFamily": "\"trebuchet ms\", verdana, arial, sans-serif"}}}%%
 flowchart LR
     subgraph "串扰产生机制"
         Agg["攻击线 Aggressor<br/>信号跳变"] -->|"电容耦合 Cm"| Vic["受害线 Victim<br/>感应噪声"]
@@ -453,23 +473,7 @@ flowchart LR
 
 眼图是时域反射计（TDR）或高速示波器通过叠加多个比特周期的波形生成的。它综合反映了反射、串扰、抖动、ISI 等所有信号完整性问题的最终效果。
 
-```
-眼图形成原理（多周期波形叠加）:
-
-        │    ┌───┐      ┌───┐      ┌───┐
-电压    │   /     \    /     \    /     \
-        │  /       \  /       \  /       \
-        │ /         \/         \/         \
-        │/                              \
-        ├───────────────────────────────────
-        │\         /\         /\         /
-        │ \       /  \       /  \       /
-        │  \     /    \     /    \     /
-        │   └───┘      └───┘      └───┘
-        └───────────────────────────────────
-              ↑                    ↑
-           采样窗口              采样窗口
-```
+> 眼图如何由多周期波形叠加形成、以及关键参数（眼高/眼宽/抖动/采样点），见 §2.1.2 的眼图示意图——叠加后的波形在中心围出"眼睛"开口，开口越大信号裕量越充足。
 
 **眼图参数与信号完整性问题的对应关系**：
 

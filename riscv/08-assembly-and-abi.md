@@ -23,8 +23,8 @@
 
 | 需要了解 | 参考文档 |
 |----------|----------|
-| RISC-V 整数指令集（RV32I/RV64I）与编码 | [RV32I/RV64I 指令集详解](../02-isa/rv32i-rv64i-instructions.md) |
-| 32 个通用寄存器的基本概念 | [体系结构基础](../01-basics/computer-architecture-fundamentals.md) |
+| RISC-V 整数指令集（RV32I/RV64I）与编码 | [RV32I/RV64I 指令集详解](./01-isa-rv32i-rv64i.md) |
+| 32 个通用寄存器的基本概念 | [体系结构基础](./90-appendix-architecture-background.md) |
 
 ---
 
@@ -184,37 +184,37 @@ sum_array:
 - **栈必须对齐到 16 字节**：这是 RISC-V ABI 的硬性要求，即使在中断上下文中
 
 ```asm
-# 简化的 M-mode trap 入口（保存全部寄存器）
+# 简化的 M-mode trap 入口（保存全部寄存器 + 关键 CSR）
 _trap_entry:
-    # 分配 256 字节的栈帧（32 个寄存器 × 8 字节）
-    addi  sp, sp, -256
+    # 分配 272 字节栈帧：32 个寄存器 × 8 字节 + 16 字节存 mepc/mstatus
+    addi  sp, sp, -272
     sd    x1, 8(sp)      # ra
-    sd    x2, 16(sp)     # sp（保存原始值）
     sd    x3, 24(sp)     # gp
     sd    x4, 32(sp)     # tp
     sd    x5, 40(sp)     # t0
-    # ... 保存 x6-x31
-    sd    x31, 248(sp)
+    # ... 保存 x6-x31（x2/sp 不需要保存：栈帧销毁时由 addi 恢复）
 
-    # 保存 CSR
+    # 保存 CSR（用帧尾部的独立槽位，不与寄存器区冲突）
     csrr  t0, mepc
-    sd    t0, 0(sp)
+    sd    t0, 256(sp)
     csrr  t0, mstatus
-    sd    t0, 8(sp)      # 注意：覆盖 ra 的位置，实际实现需调整布局
+    sd    t0, 264(sp)
 
     # 调用 C 处理函数
     mv    a0, sp         # 传递 pt_regs 指针
     call  do_trap
 
     # 恢复 CSR
-    ld    t0, 0(sp)
+    ld    t0, 264(sp)
+    csrw  mstatus, t0
+    ld    t0, 256(sp)
     csrw  mepc, t0
-    # ... 恢复所有寄存器
-    addi  sp, sp, 256
+    # ... 恢复 x1、x3-x31
+    addi  sp, sp, 272    # 恢复原始 sp（x2 从未入栈，靠栈帧销毁还原）
     mret
 ```
 
-> **关键提醒**：在 [Lab 1：裸机中断框架](../08-labs/lab01-baremetal-trap-handler.md) 中，你会看到一个完整的、生产级的 trap 入口实现，包括 sscratch 交换技巧。
+> **关键提醒**：在 [Lab 1：裸机中断框架](./40-lab-baremetal-trap-handler.md) 中，你会看到一个完整的、生产级的 trap 入口实现，包括 sscratch 交换技巧。
 
 ---
 
@@ -586,7 +586,7 @@ void main(void) {
 }
 ```
 
-> **实际案例**：在 [Lab 2：最小 SBI 实现](../08-labs/lab02-minimal-sbi.md) 中，你会看到 HSM（Hart State Management）扩展如何标准化多核启动流程。
+> **实际案例**：在 [Lab 2：最小 SBI 实现](./41-lab-minimal-sbi.md) 中，你会看到 HSM（Hart State Management）扩展如何标准化多核启动流程。
 
 ---
 
@@ -674,4 +674,4 @@ riscv64-unknown-elf-gcc -Og -g3 -march=rv64imac -mabi=lp64 ...
 
 ---
 
-→ 下一节：[操作系统移植](./os-porting.md)
+→ 下一节：[操作系统移植](./13-linux-bringup.md)

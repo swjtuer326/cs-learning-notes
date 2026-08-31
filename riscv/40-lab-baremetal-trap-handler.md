@@ -8,7 +8,7 @@
 
 1. 理解复位后 CPU 的初始状态
 2. 手写汇编级别的 trap entry 与 exit
-3. 实现上下文保存/恢复（含浮点）
+3. 实现上下文保存/恢复（全部通用寄存器；浮点上下文的保存作为进阶练习——需配合 `mstatus.FS` 状态字段）
 4. 处理定时器中断，实现周期性的 "tick"
 5. （进阶）支持中断嵌套
 
@@ -16,8 +16,8 @@
 
 ## 前置知识
 
-- [特权模式与 CSR](../03-privileged/privileged-modes-and-csr.md)
-- [中断与异常处理](../03-privileged/interrupts-and-exceptions.md)
+- [特权模式与 CSR](./03-privileged-modes-and-csr.md)
+- [中断与异常处理](./04-interrupts-and-exceptions.md)
 
 ---
 
@@ -479,4 +479,4 @@ trap_entry_nested:
 | 嵌套中断 | 手动设置 `MIE=1`，恢复前清零 |
 | 调试技巧 | `ebreak` 触发 QEMU 断点，GDB remote 调试 |
 
-→ 下一实验：[实验二：最小 SBI 实现与跨模式调用](./lab02-minimal-sbi.md)
+→ 下一实验：[实验二：最小 SBI 实现与跨模式调用](./41-lab-minimal-sbi.md)
