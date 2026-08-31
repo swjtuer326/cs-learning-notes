@@ -26,3 +26,6 @@
 [submodule "nvidia-kmd/src/open-gpu-kernel-modules"]
 	path = nvidia-kmd/src/open-gpu-kernel-modules
 	url = https://github.com/NVIDIA/open-gpu-kernel-modules.git
+[submodule "riscv/src/opensbi"]
+	path = riscv/src/opensbi
+	url = https://github.com/riscv-software-src/opensbi.git
