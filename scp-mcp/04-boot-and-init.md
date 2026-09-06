@@ -42,9 +42,9 @@ arm-m 侧 **没有自己的 crt0/startup 汇编**——异常向量表的复位�
 
 而 romfw 把 ramfw 复制进 SRAM 后,CPU 已在运行中——复位只会回到 ROM 开头,不能再复位一次。所以加载者**手动补做复位时硬件自动做的那两步**,再跳转(以 Morello 为例,ramfw 位于 `SCP_RAM0_BASE = 0x00800000`):
 
-1. 从 `0x00800004`(ramfw 向量表的字 1)**读出一个地址值**——该值是 `arch_exception_reset` 函数在 SRAM 里的实际地址;跳转目标是这个函数本体,而不是 `0x00800004` 这个位置(等价于复位时的 `PC ← 表[1]`);
-2. 把 `SCB->VTOR` 写成 `0x00800000`——VTOR 是**向量表基址寄存器**,不写的话,后续任何中断/异常仍会取 ROM 里的旧表、跳回已弃用的 romfw;
-3. 跳转执行——等价于 `PC ← 入口`。SP 无需处理:跳转瞬间临时用 romfw 的栈,工具链启动代码会按链接脚本为 ramfw 建好自己的栈。
+1. **读入口地址**:去 `0x00800004` 读出 4 字节。读到的不是指令,是一个**地址**——`arch_exception_reset` 函数第一条指令在 SRAM 中的位置(具体数值在链接 ramfw 时才确定,romfw 编译时不知道,只能从 ramfw 自带的向量表里现取)。等价于复位时的 `PC ← 表[1]`;
+2. **改向量表基址**:CPU 每次响应中断/异常也要查向量表取处理函数地址,查哪张表由 VTOR 寄存器决定。此刻 VTOR 仍指向 ROM 的表——不改的话,ramfw 运行后的第一个中断就会按 ROM 的表把 CPU 引回 romfw 的处理代码。写成 `0x00800000` 后,中断开始查 ramfw 的表;
+3. **跳转**:执行 `ramfw_reset_handler()`,即把 PC 设为第 1 步读出的地址——CPU 下一条指令就从 `arch_exception_reset` 取,控制权移交完成。栈:此刻 SP 仍是交接前的值,架构层没有设 SP 的代码;栈区边界由链接脚本定义(`ARM_LIB_STACKHEAP`,`arch.scatter.S:84`),栈的建立由 C 运行时启动流程完成。
 
 三步之后,执行流从 ROM 转入 SRAM,ramfw 从 `arch_exception_reset` 进 C 运行时、再进 `main`。MCP 侧同样的收尾代码在 [06](./06-mcp-manageability.md) §3 的 [`jump_to_ramfw()`](./06-mcp-manageability.md#jump-to-ramfw)。
 
