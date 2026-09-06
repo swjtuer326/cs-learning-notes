@@ -26,7 +26,7 @@ flowchart LR
 arm-m 侧 **没有自己的 crt0/startup 汇编**——异常向量表的复位向量指向架构层的 C 函数 `arch_exception_reset()`(`arch/arm/arm-m/src/arch_handlers.c`),它把初始化交给**工具链的 C 运行环境**:ArmClang 进 `__main`、GCC/Newlib 进 `_start`,由它们清零 ZI 段、拷入已初始化数据,最后调 `main`。SCP 不依赖 CMSIS 设备启动文件的 `Reset_Handler`,架构层只提供两样东西:
 
 - **链接脚本**(`arch/arm/arm-m/src/arch.scatter.S`):按 `FMW_MEM_MODE` 决定内存布局。`SINGLE_REGION` 全部放入一块 SRAM;`DUAL_REGION_RELOCATION` 把只读/可执行放 MEM0、读写放 MEM1——这就是 scp_ramfw 把 `SCP_RAM0` 放代码、`SCP_RAM1` 放数据的物理依据(具体见 [05](./05-build-and-deploy.md));
-- **RAM 固件的入口约定**:reset handler 位于镜像的第 2 个字(`base+0x4`),加载者取得入口即可跳转。以 Morello 为例:ramfw 被搬到 `SCP_RAM0_BASE = 0x00800000`,Cortex-M 向量表以此处为基址,第 2 个字(`0x00800004`)就是复位入口;加载者的收尾只有三步——从 `0x00800004` **读出**入口地址、把 `SCB->VTOR` 写成 `0x00800000`、跳转执行——三步之后,执行流从 ROM 转入 SRAM。MCP 侧同样的收尾代码在 [06](./06-mcp-manageability.md) §3 的 [`jump_to_ramfw()`](./06-mcp-manageability.md#jump-to-ramfw),可后看。
+- **RAM 固件的入口约定**:Cortex-M 镜像的开头是一张**向量表**——32 位地址表,字 0 是初始栈指针(SP)初值,字 1 是复位处理函数入口,字 2 起是各异常/中断的处理地址。芯片复位瞬间,硬件自动执行 `SP ← 表[0]`、`PC ← 表[1]`,不需要任何软件;上电时表在 `0x00000000` 的 ROM 里,CPU 从此开始执行 romfw。等 romfw 把 ramfw 复制进 SRAM 后,CPU 已在运行中,不可能"再复位一次"(复位只会回到 ROM 开头),所以加载者要**手动补做硬件复位时自动做的那两步,然后跳过去**。以 Morello 为例,ramfw 位于 `SCP_RAM0_BASE = 0x00800000`,加载者的收尾只有三步:从 `0x00800004`(ramfw 向量表的字 1)**读出**复位入口地址(对应复位的 `PC ← 表[1]`);把 `SCB->VTOR` 写成 `0x00800000`——VTOR 是**向量表基址寄存器**,不写的话后续任何中断/异常仍会取 ROM 里的旧表、跳回已弃用的 romfw;最后跳转执行(对应复位的 `PC ← 入口`)。SP 无需加载者操心:跳转瞬间临时用 romfw 的栈,工具链启动代码会按链接脚本为 ramfw 建好自己的栈。三步之后,执行流从 ROM 转入 SRAM,ramfw 从 `arch_exception_reset` 进 C 运行时再进 `main`。MCP 侧同样的收尾代码在 [06](./06-mcp-manageability.md) §3 的 [`jump_to_ramfw()`](./06-mcp-manageability.md#jump-to-ramfw),可后看。
 
 "加载者"是谁,参考平台给过两种答案:
 
