@@ -43,4 +43,7 @@ hsperi/reference/
 riscv/src/*
 # 例外:opensbi 以 submodule 入库,钉在 release tag 上(11 号笔记的引用基线)
 !riscv/src/opensbi
+
+# scp-mcp 本地源码克隆(SCP-firmware,gitlab.arm.com HTTPS,不入库)
+scp-mcp/src/
 .gstack/
