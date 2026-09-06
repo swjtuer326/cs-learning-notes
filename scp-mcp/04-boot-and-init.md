@@ -43,7 +43,7 @@ arm-m 侧 **没有自己的 crt0/startup 汇编**——异常向量表的复位�
 ```c src="./src/SCP-firmware/arch/arm/arm-m/src/arch_exceptions.c" lines="308-341" anchor="vector-table"
 ```
 
-字 0 是链接脚本给出的栈顶符号 `arch_exception_stack`;字 1(`Reset` 槽位)是 `arch_exception_reset` 的地址;后面依次是 NMI、HardFault、SVCall、PendSV、SysTick 等系统异常的处理函数,外设中断(IRQ0 起)继续往后排。
+字 0 是链接脚本给出的栈顶符号 `arch_exception_stack`;字 1(`Reset` 槽位)是 `arch_exception_reset` 的地址;后面依次是 NMI、HardFault、SVCall、PendSV、SysTick 等系统异常的处理函数,外设中断(IRQ0 起)继续往后排。这张表常被俗称"中断向量表",严格说 Cortex-M 只称**向量表**:中断(IRQ)只占下标 16 以后,前 16 项是系统异常(含复位),表[0] 则是初始 SP。
 
 芯片复位瞬间,硬件自动执行 `SP ← 表[0]`、`PC ← 表[1]`,不需要任何软件参与。上电时表在 `0x00000000` 的 ROM 里,CPU 从此开始执行 romfw。
 
