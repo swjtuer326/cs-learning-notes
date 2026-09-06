@@ -38,6 +38,13 @@ arm-m 侧 **没有自己的 crt0/startup 汇编**——异常向量表的复位�
 | 字 1(+0x04) | 复位处理函数入口 |
 | 字 2 起 | 各异常/中断的处理地址 |
 
+表里存的**全部是地址**:表[0] 是一个栈地址,其余每一项是一个函数地址。它就是一个函数指针数组——下标是事件编号,内容是该事件发生时 PC 要被设成的值。arm-m 架构层用结构体把它写出来(`arch_exceptions.c:309`):
+
+```c src="./src/SCP-firmware/arch/arm/arm-m/src/arch_exceptions.c" lines="308-341" anchor="vector-table"
+```
+
+字 0 是链接脚本给出的栈顶符号 `arch_exception_stack`;字 1(`Reset` 槽位)是 `arch_exception_reset` 的地址;后面依次是 NMI、HardFault、SVCall、PendSV、SysTick 等系统异常的处理函数,外设中断(IRQ0 起)继续往后排。
+
 芯片复位瞬间,硬件自动执行 `SP ← 表[0]`、`PC ← 表[1]`,不需要任何软件参与。上电时表在 `0x00000000` 的 ROM 里,CPU 从此开始执行 romfw。
 
 这张表不是独立的数据文件,它就是 ramfw 镜像的头几十个字节:arm-m 架构把它定义为一个 `.exceptions` 段的结构体(`arch_exceptions.c:310`)——字 0 填链接脚本给出的栈顶符号,字 1 填 `arch_exception_reset` 的**函数地址**,链接脚本把该段放在二进制最前面。因此 ramfw 的第 1 个字节就是向量表,表项里存的都是"指向别处的指针"。
