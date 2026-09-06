@@ -28,6 +28,8 @@ arm-m 侧 **没有自己的 crt0/startup 汇编**——异常向量表的复位�
 - **链接脚本**(`arch/arm/arm-m/src/arch.scatter.S`):按 `FMW_MEM_MODE` 决定内存布局。`SINGLE_REGION` 全部放入一块 SRAM;`DUAL_REGION_RELOCATION` 把只读/可执行放 MEM0、读写放 MEM1——这就是 scp_ramfw 把 `SCP_RAM0` 放代码、`SCP_RAM1` 放数据的物理依据(具体见 [05](./05-build-and-deploy.md));
 - **RAM 固件的入口约定**:镜像开头是**向量表**,复位时硬件从表里取 SP 与复位入口;romfw 把 ramfw 复制进 SRAM 后,加载者要**手动补做复位时硬件自动做的两步、再跳转**(机制见下)。
 
+**为什么固件分 ROM/RAM 两段**:SCP 的程序 ROM 出厂烧死、不可改写;SRAM 可以运行代码,但掉电即失、上电时是空的,CPU 也不会从它复位启动;QSPI flash 可重写、非易失,但读取慢,不适合原地执行。于是固件分两段——极小、永不变的引导代码(romfw)放 ROM,真正的固件(ramfw)放 QSPI flash,上电后由 romfw 搬进 SRAM 执行。换来的能力是:**升级固件只需重写 flash 里的镜像,ROM 引导器一个字节不动**。下面要讲的交接,就是这次"从不可变代码到可更新代码"的控制权移交。
+
 **背景:Cortex-M 的启动由向量表驱动。** 镜像开头是一张 32 位地址表:
 
 | 位置 | 内容 |
@@ -42,8 +44,8 @@ arm-m 侧 **没有自己的 crt0/startup 汇编**——异常向量表的复位�
 
 而 romfw 把 ramfw 复制进 SRAM 后,CPU 已在运行中——复位只会回到 ROM 开头,不能再复位一次。所以加载者**手动补做复位时硬件自动做的那两步**,再跳转(以 Morello 为例,ramfw 位于 `SCP_RAM0_BASE = 0x00800000`):
 
-1. **读入口地址**:去 `0x00800004` 读出 4 字节。读到的不是指令,是一个**地址**——`arch_exception_reset` 函数第一条指令在 SRAM 中的位置(具体数值在链接 ramfw 时才确定,romfw 编译时不知道,只能从 ramfw 自带的向量表里现取)。等价于复位时的 `PC ← 表[1]`;
-2. **改向量表基址**:CPU 每次响应中断/异常也要查向量表取处理函数地址,查哪张表由 VTOR 寄存器决定。此刻 VTOR 仍指向 ROM 的表——不改的话,ramfw 运行后的第一个中断就会按 ROM 的表把 CPU 引回 romfw 的处理代码。写成 `0x00800000` 后,中断开始查 ramfw 的表;
+1. **读入口地址**:去 `0x00800004` 读出 4 字节。读到的不是指令,是一个**地址**——`arch_exception_reset` 函数第一条指令在 SRAM 中的位置(具体数值在链接 ramfw 时才确定,romfw 编译时不知道,只能从 ramfw 自带的向量表里现取)。这一步的作用是**不写死依赖**:romfw 只依赖"向量表在镜像开头"这一个约定,ramfw 怎么更新都不用重烧 ROM。等价于复位时的 `PC ← 表[1]`;
+2. **改向量表基址**:CPU 每次响应中断/异常也要查向量表取处理函数地址,查哪张表由 VTOR 寄存器决定。此刻 VTOR 仍指向 ROM 的表——不改的话,ramfw 运行后的第一个中断就会按 ROM 的表把 CPU 引回 romfw 的处理代码,新旧两套代码同时活动。写成 `0x00800000` 后,中断开始查 ramfw 的表——这一步解决的是**中断归属**:移交之后,硬件事件必须由新代码接管;
 3. **跳转**:执行 `ramfw_reset_handler()`,即把 PC 设为第 1 步读出的地址——CPU 下一条指令就从 `arch_exception_reset` 取,控制权移交完成。栈:此刻 SP 仍是交接前的值,架构层没有设 SP 的代码;栈区边界由链接脚本定义(`ARM_LIB_STACKHEAP`,`arch.scatter.S:84`),栈的建立由 C 运行时启动流程完成。
 
 三步之后,执行流从 ROM 转入 SRAM,ramfw 从 `arch_exception_reset` 进 C 运行时、再进 `main`。MCP 侧同样的收尾代码在 [06](./06-mcp-manageability.md) §3 的 [`jump_to_ramfw()`](./06-mcp-manageability.md#jump-to-ramfw)。
