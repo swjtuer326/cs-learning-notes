@@ -353,14 +353,20 @@ def _render_src_block(display: str, fpath: Path, start: int, end: int,
     return badge + "\n" + pre
 
 
-def process_source_blocks(content: str, src_dir: Path, problems: list, doc_name: str) -> str:
+def process_source_blocks(content: str, src_dir: Path, problems: list, doc_name: str,
+                          collected: list | None = None) -> str:
     """识别并转换源码引用代码块(新语法 + 旧注释)。
 
     新语法空体 fence 从源码拉取填入;两种写法都渲染成带徽章/行号/锚点的 HTML。
     问题(文件缺失、行区间越界)记入 problems。
+
+    collected 非 None 时,同时收集每个代码块的
+    {kind: src|cite|plain, doc, lang, fpath, start, end, anchor_id, body},
+    供调用图构建复用(src= 围栏的 body 已从源码填好,行号精确)。
     """
     lines = content.split("\n")
     out: list[str] = []
+    anchor_seen: dict = {}
     i = 0
     n = len(lines)
     while i < n:
@@ -443,6 +449,12 @@ def process_source_blocks(content: str, src_dir: Path, problems: list, doc_name:
 
         if citation:
             display, fpath, start, end, anchor_id, body = citation
+            # 同文档内 id 去重(首个保留,后续 -2/-3;与标题 slug 的客户端去重同理)
+            if anchor_id in anchor_seen:
+                anchor_seen[anchor_id] += 1
+                anchor_id = f"{anchor_id}-{anchor_seen[anchor_id]}"
+            else:
+                anchor_seen[anchor_id] = 0
             # 确保 HTML 块前有空行,marked 才能识别为 HTML block 原样透传
             if out and out[-1].strip() != "":
                 out.append("")
@@ -450,16 +462,514 @@ def process_source_blocks(content: str, src_dir: Path, problems: list, doc_name:
             # HTML 块后必须补空行:CommonMark type-6 HTML block 以空行结束,
             # 否则 marked 把后续 markdown 原样吞进 <div>(正文"进入代码块")
             out.append("")
+            if collected is not None:
+                collected.append({
+                    "kind": "src" if src_attr else "cite", "doc": doc_name,
+                    "lang": lang, "fpath": str(fpath),
+                    "start": start, "end": end, "anchor_id": anchor_id,
+                    "body": body,
+                })
             i = close + 1
             continue
 
         # 普通代码块:原样保留(fence 尾巴若有非 src 属性,剥到只剩 lang)
+        if collected is not None and lang == "c":
+            collected.append({
+                "kind": "plain", "doc": doc_name, "lang": lang,
+                "fpath": None, "start": None, "end": None,
+                "anchor_id": None, "body": body,
+            })
         out.append(f"```{lang}" if attrs_str.strip() else lines[i])
         out.extend(lines[body_start:close])
         if close < n:
             out.append("```")
         i = close + 1
     return "\n".join(out)
+
+
+# ==================== 调用关系图(可选,专题 opt-in) ====================
+#
+# 嫁接自 zephyr-rtos-html/build_html.py 的调用图功能,三点适配:
+#   - 输入不再是重解析 markdown,而是 process_source_blocks 收集的已填代码片段
+#     (src= 围栏构建期已从源码拉取,函数定义的行号是精确的);
+#   - 源码回填按"笔记引用过的文件优先 + 前缀优先级",替代 zephyr 的 ARM 路径偏好;
+#   - 宏排除表换成 SCP-firmware 词频实测版(FWK_* 构造/日志宏排除,
+#     小写 fwk_id_*/fwk_list_* 是真实 API,保留)。
+#
+# 启用条件:专题目录存在 callgraph_overrides.json(opt-in),或 --callgraph 强制。
+# 未启用专题零影响:cg-data 不生成,模板占位符全部替换为空串。
+
+# C 控制流关键字(出现在 call 位置时一定是控制结构而非函数调用)
+C_CONTROL_KEYWORDS = {
+    "if", "while", "for", "switch", "return", "sizeof", "else", "do",
+    "case", "break", "continue", "goto", "default", "defined",
+}
+
+# C 类型/存储类/限定符关键字(不可能作为函数名)
+C_TYPE_KEYWORDS = {
+    "void", "int", "char", "float", "double", "long", "short", "unsigned",
+    "signed", "bool", "size_t", "ssize_t", "off_t",
+    "int8_t", "int16_t", "int32_t", "int64_t",
+    "uint8_t", "uint16_t", "uint32_t", "uint64_t",
+    "uintptr_t", "intptr_t",
+    "struct", "enum", "union", "const", "volatile", "static", "inline",
+    "extern", "register", "auto", "typedef",
+}
+
+# SCP-firmware 伪函数/宏(不应作为调用图节点)。
+# 词频实测:FWK_ARRAY_SIZE×180、fwk_assert×155、FWK_LOG_*×246、FWK_ID_* 构造宏×168;
+# 小写 fwk_id_*/fwk_list_*(fwk_id.c/fwk_list.c 的真实 API)刻意不在表内。
+SCP_EXCLUDE_EXACT = {
+    "NULL", "true", "false", "container_of",
+    "fwk_assert", "fwk_expect", "fwk_check", "fwk_trap", "fwk_unexpected",
+    "FWK_ASSERT", "FWK_WEAK",
+    "FWK_ARRAY_SIZE", "FWK_MIN", "FWK_MAX", "FWK_BIT",
+    "FWK_ALIGN", "FWK_ALIGN_NEXT", "FWK_S", "FWK_NS", "FWK_M", "FWK_MS", "FWK_US",
+    "FWK_LIST_GET", "FWK_PRINTF", "FWK_NONNULL",
+    "FWK_READ_ONLY1", "FWK_READ_WRITE1", "FWK_WRITE_ONLY1",
+    "FWK_ALLOC_SIZE2", "FWK_ALLOC_ALIGN",
+    "FWK_MODULE_STATIC_ELEMENTS", "FWK_MODULE_DYNAMIC_ELEMENTS",
+    "FWK_MODULE_STATIC_ELEMENTS_PTR",
+    "UINT8_C", "UINT16_C", "UINT32_C", "UINT64_C",
+}
+SCP_EXCLUDE_PREFIXES = (
+    "FWK_LOG_", "FWK_TRACE_", "FWK_ID_", "FWK_HAS_",
+    "FWK_ALLOC_", "FWK_READ_", "FWK_WRITE_",
+)
+
+C_ALL_KEYWORDS = C_CONTROL_KEYWORDS | C_TYPE_KEYWORDS | SCP_EXCLUDE_EXACT
+
+# callgraph_overrides.json 中作为元数据、不应当作函数的键
+OVERRIDE_META_KEYS = {"说明", "格式", "示例", "使用方式", "_meta", "_comment"}
+
+
+def strip_c_comments_and_strings(code):
+    """剥离 C 代码中的注释与字符串字面量,保留行结构(换行符不变、总长不变)。
+
+    用于调用关系分析:避免把注释/字符串中的 identifier( 误识别为函数调用。
+    """
+    out = []
+    i = 0
+    n = len(code)
+    in_line_cmt = in_block_cmt = in_str = in_char = False
+    while i < n:
+        c = code[i]
+        nxt = code[i + 1] if i + 1 < n else ""
+        if in_line_cmt:
+            if c == "\n":
+                in_line_cmt = False
+                out.append(c)
+            else:
+                out.append(" ")
+        elif in_block_cmt:
+            if c == "*" and nxt == "/":
+                in_block_cmt = False
+                out.append("  ")
+                i += 2
+                continue
+            elif c == "\n":
+                out.append(c)
+            else:
+                out.append(" ")
+        elif in_str:
+            if c == "\\" and nxt:
+                out.append("  ")
+                i += 2
+                continue
+            elif c == '"':
+                in_str = False
+                out.append('"')
+            elif c == "\n":
+                in_str = False
+                out.append(c)
+            else:
+                out.append(" ")
+        elif in_char:
+            if c == "\\" and nxt:
+                out.append("  ")
+                i += 2
+                continue
+            elif c == "'":
+                in_char = False
+                out.append("'")
+            elif c == "\n":
+                in_char = False
+                out.append(c)
+            else:
+                out.append(" ")
+        else:
+            if c == "/" and nxt == "/":
+                in_line_cmt = True
+                out.append("  ")
+                i += 2
+                continue
+            elif c == "/" and nxt == "*":
+                in_block_cmt = True
+                out.append("  ")
+                i += 2
+                continue
+            elif c == '"':
+                in_str = True
+                out.append('"')
+            elif c == "'":
+                in_char = True
+                out.append("'")
+            else:
+                out.append(c)
+        i += 1
+    return "".join(out)
+
+
+def find_matching(s, open_pos, open_ch, close_ch):
+    """在 s 中从 open_pos(指向 open_ch)开始,找到配对的 close_ch 位置。处理嵌套。"""
+    depth = 0
+    i = open_pos
+    n = len(s)
+    while i < n:
+        ch = s[i]
+        if ch == open_ch:
+            depth += 1
+        elif ch == close_ch:
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    return None
+
+
+# 函数定义候选正则:行首 + 至少一个"类型词 + 空白" + 可选 * + 函数名 + (
+# 要求函数名前必须有"类型词+空白",天然排除 macro() 调用、if/while 等控制语句、
+# 以及缩进的函数调用(^ 锚定行首)。
+_FUNC_DEF_CANDIDATE = re.compile(
+    r"^(?P<prefix>(?:[a-zA-Z_]\w*\s+)+\**\s*)"
+    r"(?P<name>[a-zA-Z_]\w*)\s*\(",
+    re.MULTILINE,
+)
+
+
+def find_function_definitions(code):
+    """在 C 代码块中找出所有函数定义。
+
+    判定:参数列表后必须紧跟 {(允许中间有 __attribute__ 等),不能是 ; 或 =。
+    返回 [{"name", "signature", "body", "full_text", "start", "end"}],
+    start/end 是在原始 code 中的字符偏移。
+    """
+    cleaned = strip_c_comments_and_strings(code)
+    funcs = []
+    pos = 0
+    n = len(cleaned)
+
+    while pos < n:
+        m = _FUNC_DEF_CANDIDATE.search(cleaned, pos)
+        if not m:
+            break
+
+        name = m.group("name")
+        if name in C_ALL_KEYWORDS:
+            pos = m.end()
+            continue
+
+        open_paren = m.end() - 1
+        close_paren = find_matching(cleaned, open_paren, "(", ")")
+        if close_paren is None:
+            pos = m.end()
+            continue
+
+        # ) 之后:函数定义要求 { 先于 ; 与 = 出现
+        after = cleaned[close_paren + 1:]
+        next_brace = after.find("{")
+        next_semi = after.find(";")
+        next_eq = after.find("=")
+        if next_brace == -1:
+            pos = m.end()
+            continue
+        if next_semi != -1 and next_semi < next_brace:
+            pos = m.end()
+            continue
+        if next_eq != -1 and next_eq < next_brace:
+            pos = m.end()
+            continue
+
+        body_open = close_paren + 1 + next_brace
+        body_close = find_matching(cleaned, body_open, "{", "}")
+        if body_close is None:
+            pos = m.end()
+            continue
+
+        funcs.append({
+            "name": name,
+            "signature": cleaned[m.start():close_paren + 1].strip(),
+            "body": cleaned[body_open + 1:body_close],
+            "full_text": code[m.start():body_close + 1].strip(),
+            "start": m.start(),
+            "end": body_close + 1,
+        })
+        pos = body_close + 1  # 跳过函数体,避免体内嵌套"定义"误报
+
+    return funcs
+
+
+def extract_calls_from_body(body):
+    """从函数体(已剥离注释/字符串)提取被调用函数名,按出现顺序去重。"""
+    calls = []
+    seen = set()
+    for m in re.finditer(r"\b([a-zA-Z_]\w*)\s*\(", body):
+        name = m.group(1)
+        if name in C_ALL_KEYWORDS or name.startswith(SCP_EXCLUDE_PREFIXES):
+            continue
+        if name not in seen:
+            seen.add(name)
+            calls.append(name)
+    return calls
+
+
+def default_callgraph_config(src_dir: Path) -> dict:
+    """无 callgraph_overrides.json 但 --callgraph 强制启用时的默认配置。"""
+    cfg = {
+        "source_root": None, "source_mark": "",
+        "prefix_priority": [], "exclude_dirs": ["unit_test", "test"],
+        "exclude_prefixes": [], "exclude_exact": [],
+        "overrides": {},
+    }
+    src_root = src_dir / "src"
+    if src_root.is_dir():
+        children = sorted(p for p in src_root.iterdir() if p.is_dir())
+        if len(children) == 1:
+            cfg["source_root"] = f"src/{children[0].name}"
+            cfg["source_mark"] = f"/{children[0].name}/"
+    return cfg
+
+
+def load_callgraph_config(src_dir: Path):
+    """读取专题的 callgraph_overrides.json。返回 None 表示未启用(opt-in 门)。
+
+    文件内 _config 键提供专题配置(source_root/source_mark/prefix_priority 等),
+    其余键为函数补丁(calls/called_by/...),构建期合并进自动提取结果。
+    """
+    path = src_dir / "callgraph_overrides.json"
+    if not path.is_file():
+        return None
+    cfg = default_callgraph_config(src_dir)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as e:
+        print(f"  警告: callgraph_overrides.json 解析失败: {e}", file=sys.stderr)
+        return cfg
+    user_cfg = data.pop("_config", None)
+    if isinstance(user_cfg, dict):
+        for k, v in user_cfg.items():
+            if k in cfg and isinstance(v, type(cfg[k])):
+                cfg[k] = v
+    cfg["overrides"] = {
+        k: v for k, v in data.items()
+        if not k.startswith("_") and k not in OVERRIDE_META_KEYS and isinstance(v, dict)
+    }
+    return cfg
+
+
+def build_call_graph(src_dir: Path, collected: list, cfg: dict):
+    """从已收集的代码片段构建函数调用图。
+
+    返回 (graph, defined_in_notes, filled)——graph 为
+    {函数名: {calls, called_by, defined_in, referenced_in, signature, code, source}}。
+    """
+    graph = {}
+
+    def ensure_node(name):
+        if name not in graph:
+            graph[name] = {
+                "calls": [], "called_by": [],
+                "defined_in": [], "referenced_in": [],
+                "signature": None, "code": None, "source": None,
+            }
+        return graph[name]
+
+    for entry in collected:
+        doc_name, lang = entry["doc"], entry["lang"]
+        if doc_name == "README" or lang != "c":
+            continue
+        body = entry["body"]
+        if not body or not body.strip():
+            continue
+        is_src = entry["kind"] in ("src", "cite") and entry["fpath"]
+        defs = find_function_definitions(body)
+        for d in defs:
+            fn = d["name"]
+            node = ensure_node(fn)
+            # 首个定义为准(collected 顺序 = 文档阅读顺序)
+            if node["signature"] is None:
+                node["signature"] = d["signature"]
+            if node["code"] is None:
+                node["code"] = d["full_text"]
+            if node["source"] is None and is_src:
+                line_start = entry["start"] + body[:d["start"]].count("\n")
+                node["source"] = {
+                    "path": f"file://{entry['fpath']}",
+                    "line_start": line_start,
+                    "line_end": line_start + d["full_text"].count("\n"),
+                }
+            if doc_name not in node["defined_in"]:
+                node["defined_in"].append(doc_name)
+            for c in extract_calls_from_body(d["body"]):
+                if c == fn:
+                    continue
+                if c not in node["calls"]:
+                    node["calls"].append(c)
+                callee = ensure_node(c)
+                if doc_name not in callee["referenced_in"]:
+                    callee["referenced_in"].append(doc_name)
+
+    defined_in_notes = sum(1 for n in graph.values() if n["code"] is not None)
+
+    # 合并手工覆盖数据(追加去重;signature/code/source 仅在为空时填充)。
+    # 补丁的 calls/called_by 也确保节点存在,供反向边与源码回填使用。
+    overrides = cfg.get("overrides") or {}
+    if overrides:
+        for func_name, patch in overrides.items():
+            node = ensure_node(func_name)
+            for key in ("calls", "called_by", "defined_in", "referenced_in"):
+                if key in patch and isinstance(patch[key], list):
+                    for v in patch[key]:
+                        if v not in node[key]:
+                            node[key].append(v)
+                        if key in ("calls", "called_by"):
+                            ensure_node(v)
+            for key in ("signature", "code", "source"):
+                if key in patch and node[key] is None:
+                    node[key] = patch[key]
+        print(f"  合并覆盖数据: {len(overrides)} 个函数", file=sys.stderr)
+
+    # 反向边:谁调了我(仅图内节点;含覆盖数据补出的边)
+    for fname, node in graph.items():
+        for callee in node["calls"]:
+            if callee in graph and fname not in graph[callee]["called_by"]:
+                graph[callee]["called_by"].append(fname)
+
+    # 从专题源码树回填缺失定义(引用了但笔记/覆盖数据都没有 code 的函数)
+    filled = 0
+    source_root = cfg.get("source_root")
+    if source_root:
+        filled = _fill_from_source(graph, src_dir / source_root, collected, cfg)
+        if filled:
+            print(f"  从 {source_root} 补全: {filled} 个函数定义", file=sys.stderr)
+
+    return graph, defined_in_notes, filled
+
+
+def _fill_from_source(graph: dict, source_root: Path, collected: list, cfg: dict) -> int:
+    """从专题源码树补全 graph 中缺失的函数定义。
+
+    文件顺序:笔记引用过的 .c/.h(引用出现顺序)→ prefix_priority 各桶 .c→.h
+    → 其余 .c→.h。源码树缺失(gitignored 克隆不存在)时静默跳过。
+    """
+    missing = [name for name, node in graph.items()
+               if node["code"] is None and node["referenced_in"]]
+    if not missing or not source_root.is_dir():
+        return 0
+
+    exclude_dirs = set(cfg.get("exclude_dirs") or [])
+    c_files, h_files = [], []
+    for p in sorted(source_root.rglob("*")):
+        if p.suffix not in (".c", ".h"):
+            continue
+        if exclude_dirs and exclude_dirs.intersection(p.parts):
+            continue
+        rel = p.relative_to(source_root).as_posix()
+        (c_files if p.suffix == ".c" else h_files).append(rel)
+
+    # 引用过的文件相对路径(按出现顺序,去重)
+    cited = []
+    for e in collected:
+        if e["kind"] not in ("src", "cite") or not e["fpath"]:
+            continue
+        try:
+            rel = Path(e["fpath"]).resolve().relative_to(source_root).as_posix()
+        except (ValueError, OSError):
+            continue
+        if rel not in cited:
+            cited.append(rel)
+
+    ordered, seen = [], set()
+
+    def push(rel):
+        if rel in seen:
+            return
+        seen.add(rel)
+        p = source_root / rel
+        if p.is_file():
+            ordered.append(p)
+
+    for rel in cited:
+        push(rel)
+    prefixes = cfg.get("prefix_priority") or []
+    for pref in prefixes:
+        for rel in c_files:
+            if rel.startswith(pref):
+                push(rel)
+        for rel in h_files:
+            if rel.startswith(pref):
+                push(rel)
+    for rel in c_files:
+        push(rel)
+    for rel in h_files:
+        push(rel)
+
+    func_patterns = {
+        name: re.compile(
+            r"^(?:[a-zA-Z_]\w*\s+)+\**\s*" + re.escape(name) + r"\s*\(",
+            re.MULTILINE,
+        )
+        for name in missing
+    }
+
+    filled_count = 0
+    remaining = set(missing)
+    for src_file in ordered:
+        if not remaining:
+            break
+        try:
+            code = src_file.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for name in list(remaining):
+            if not func_patterns[name].search(code):
+                continue
+            matched_def = next(
+                (d for d in find_function_definitions(code) if d["name"] == name),
+                None,
+            )
+            if matched_def is None:
+                continue
+            node = graph[name]
+            line_start = code[:matched_def["start"]].count("\n") + 1
+            node["signature"] = matched_def["signature"]
+            node["code"] = matched_def["full_text"]
+            node["source"] = {
+                "path": f"file://{src_file.resolve()}",
+                "line_start": line_start,
+                "line_end": line_start + matched_def["full_text"].count("\n"),
+            }
+            for c in extract_calls_from_body(matched_def["body"]):
+                if c == name:
+                    continue
+                if c not in node["calls"]:
+                    node["calls"].append(c)
+                callee = ensure_graph_node(graph, c)
+                if name not in callee["called_by"]:
+                    callee["called_by"].append(name)
+            remaining.discard(name)
+            filled_count += 1
+    return filled_count
+
+
+def ensure_graph_node(graph: dict, name: str) -> dict:
+    if name not in graph:
+        graph[name] = {
+            "calls": [], "called_by": [],
+            "defined_in": [], "referenced_in": [],
+            "signature": None, "code": None, "source": None,
+        }
+    return graph[name]
 
 
 # ==================== 校验与统计 ====================
@@ -476,8 +986,12 @@ def count_stats(content: str) -> dict:
 
 
 def check_links_images(content: str, src_dir: Path, doc_stems: set,
-                       problems: list, doc_name: str):
-    """校验文档内链接与图片:死链、缺图。"""
+                       problems: list, doc_name: str, frag_links: list | None = None):
+    """校验文档内链接与图片:死链、缺图。
+
+    frag_links 非 None 时收集 #锚点 链接 (doc, line, frag, target_stem|None),
+    供 check_anchor_links 校验(None = 同文档内跳转)。
+    """
     # 图片
     for m in IMAGE_RE.finditer(content):
         url = m.group(2).strip().split("#", 1)[0].split("?", 1)[0]
@@ -492,7 +1006,13 @@ def check_links_images(content: str, src_dir: Path, doc_stems: set,
     # 链接
     for m in LINK_RE.finditer(content):
         url = m.group(2).strip()
-        if url.startswith(("http://", "https://", "mailto:", "#", "data:", "file:")):
+        if url.startswith("#"):
+            # 同文档锚点跳转
+            if frag_links is not None and url[1:]:
+                frag_links.append((doc_name, content[:m.start()].count("\n") + 1,
+                                   url[1:], None))
+            continue
+        if url.startswith(("http://", "https://", "mailto:", "data:", "file:")):
             continue
         path_part, _, anchor = url.partition("#")
         pp = path_part.strip()
@@ -502,7 +1022,11 @@ def check_links_images(content: str, src_dir: Path, doc_stems: set,
             continue
         stem = pp[:-3] if pp.endswith(".md") else pp
         if stem in doc_stems:
-            continue  # 文档集内,有效
+            # 文档集内,有效;锚点部分另行校验
+            if anchor and frag_links is not None:
+                frag_links.append((doc_name, content[:m.start()].count("\n") + 1,
+                                   anchor, stem))
+            continue
         # 本地文件链接
         target = (src_dir / path_part).resolve() if not path_part.startswith("/") else Path(path_part)
         if not target.is_file() and not target.is_dir():
@@ -518,10 +1042,11 @@ def check_links_images(content: str, src_dir: Path, doc_stems: set,
 def load_documents(src_dir: Path):
     """加载 README.md + 编号章节。
 
-    返回 (docs, problems, stats):
-      docs    — [(stem, title, content, toc), ...]
-      problems — [{severity, doc, line, kind, msg}, ...](校验问题)
-      stats   — {stem: {figures, mermaid, codeblocks, formulas}}
+    返回 (docs, problems, stats, collected):
+      docs      — [(stem, title, content, toc), ...]
+      problems  — [{severity, doc, line, kind, msg}, ...](校验问题)
+      stats     — {stem: {figures, mermaid, codeblocks, formulas}}
+      collected — 源码引用/普通 C 代码块收集项,供调用图构建(process_source_blocks)
 
     content 已处理源码引用(内联/徽章)、内嵌图片、重写链接、转义。
     """
@@ -529,6 +1054,9 @@ def load_documents(src_dir: Path):
     problems = []
     stats = {}
     doc_stems = set()
+    collected: list = []
+    frag_links: list = []
+    doc_ids: dict = {}  # stem → {id: 出现次数}(标题 slug + 源码引用锚点)
 
     # 先收集所有 stem(供 rewrite_links 判断文档集内引用)
     readme = src_dir / "README.md"
@@ -539,13 +1067,27 @@ def load_documents(src_dir: Path):
 
     def _process_one(stem: str, raw: str, fallback_title: str):
         stats[stem] = count_stats(raw)
+        ids = doc_ids.setdefault(stem, {})
+        seen_h: dict = {}
+        # H1-H4 标题 slug(JS assignHeadingIds 同款去重:首个原样,后续 -1/-2)
+        for hm in re.finditer(r"^(#{1,4})\s+(.+?)\s*$", raw, re.MULTILINE):
+            slug = heading_to_slug(hm.group(2))
+            if not slug:
+                continue
+            if slug in seen_h:
+                seen_h[slug] += 1
+                sid = f"{slug}-{seen_h[slug]}"
+            else:
+                seen_h[slug] = 0
+                sid = slug
+            ids[sid] = ids.get(sid, 0) + 1
         # 源码引用处理在前:见原始 ./src/ 路径,emit 原始 HTML(rewrite_links 不再动它)
-        content = process_source_blocks(raw, src_dir, problems, stem)
+        content = process_source_blocks(raw, src_dir, problems, stem, collected)
         content = _rstrip_code_fences(content)
         content = rewrite_links(embed_images(content, src_dir), src_dir, doc_stems)
         content = escape_for_script(content)
         # 链接/图片校验(对原始文本,避免被重写干扰)
-        check_links_images(raw, src_dir, doc_stems, problems, stem)
+        check_links_images(raw, src_dir, doc_stems, problems, stem, frag_links)
         title = extract_title(raw, fallback_title)
         toc = extract_toc(raw)
         return (stem, title, content, toc)
@@ -556,7 +1098,41 @@ def load_documents(src_dir: Path):
     for p in sorted(src_dir.glob(DOC_GLOB)):
         docs.append(_process_one(p.stem, p.read_text(encoding="utf-8"), p.stem))
 
-    return docs, problems, stats
+    # 源码引用锚点并入 id 集,再校验 #锚点 链接
+    for e in collected:
+        if e.get("anchor_id"):
+            ids = doc_ids.setdefault(e["doc"], {})
+            ids[e["anchor_id"]] = ids.get(e["anchor_id"], 0) + 1
+    check_anchor_links(frag_links, doc_ids, problems)
+
+    return docs, problems, stats, collected
+
+
+def check_anchor_links(frag_links: list, doc_ids: dict, problems: list):
+    """校验 #锚点 链接指向的 id 真实存在(标题 slug 或源码引用锚点)。
+
+    覆盖同文档(#frag)与跨文档(./NN-x.md#frag)两类;重复 id 一并报告。
+    链接目标不在文档集内(如 file://)不在此校验,由死链检查覆盖。
+    """
+    for stem, ids in sorted(doc_ids.items()):
+        for aid, cnt in ids.items():
+            if cnt > 1:
+                problems.append({
+                    "severity": "warn", "doc": stem, "line": 0,
+                    "kind": "anchor_duplicate",
+                    "msg": f"锚点 id 重复({cnt} 处):#{aid}",
+                })
+    for doc_name, line, frag, target_stem in frag_links:
+        target = target_stem or doc_name
+        ids = doc_ids.get(target)
+        if ids is None:
+            continue
+        if frag not in ids:
+            problems.append({
+                "severity": "warn", "doc": doc_name, "line": line,
+                "kind": "anchor_missing",
+                "msg": f"锚点不存在:#{frag}(目标文档:{target})",
+            })
 
 
 # ==================== HTML 构建 ====================
@@ -705,6 +1281,1823 @@ def make_asset_refs(vendor: dict, vendor_dir: Path):
             js_parts.append(f'<script src="{v[1]}"></script>')
 
     return "\n".join(css_parts), "\n".join(js_parts)
+
+
+# ==================== 调用图前端资产(自 zephyr-rtos-html 版移植,三处适配见上方说明) ====================
+
+CG_CSS = r"""
+/* cg-* 样式使用的变量别名:映射到本脚本既有的 :root 变量 */
+:root {
+  --fg: var(--text);
+  --fg-muted: var(--text-muted);
+  --sidebar-hover: var(--bg-soft);
+  --sidebar-bg: var(--bg-sidebar);
+  --howto-bg: var(--accent-soft);
+  --howto-border: var(--accent);
+  --core-point-bg: var(--accent-soft);
+  --core-point-border: var(--accent);
+  --blockquote-bg: var(--bg-soft);
+  --blockquote-border: var(--border);
+  --search-bg: var(--bg);
+  --code-fg: var(--text);
+}
+
+/* ===== 调用关系图：内联按钮 + 抽屉 ===== */
+
+/* 代码块下方的「调用图」按钮 */
+.cg-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 4px 0 8px;
+  padding: 4px 12px;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--sidebar-hover);
+  color: var(--fg-muted);
+  cursor: pointer;
+  user-select: none;
+  transition: all 0.15s;
+  font-family: "JetBrains Mono", "Fira Code", Consolas, Monaco, monospace;
+}
+.cg-btn:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--howto-bg);
+}
+
+/* 正文中的函数名可点击链接 */
+.cg-inline-link {
+  cursor: pointer !important;
+  border-bottom: 1px dashed var(--accent);
+}
+.cg-inline-link:hover {
+  background: var(--howto-bg) !important;
+  color: var(--accent) !important;
+}
+
+/* 正文中的源码文件链接 */
+.cg-src-link-inline {
+  cursor: pointer !important;
+  border-bottom: 1px dashed var(--accent) !important;
+}
+.cg-src-link-inline:hover {
+  background: var(--howto-bg) !important;
+  color: var(--accent) !important;
+}
+
+/* 文件视图：左栏信息卡片 */
+.cg-file-info {
+  padding: 24px 16px;
+  text-align: center;
+}
+.cg-file-info-icon {
+  font-size: 32px;
+  margin-bottom: 8px;
+}
+.cg-file-info-path {
+  font-family: "JetBrains Mono", "Fira Code", Consolas, Monaco, monospace;
+  font-size: 13px;
+  color: var(--fg);
+  word-break: break-all;
+  margin-bottom: 4px;
+}
+.cg-file-info-lines {
+  font-size: 12px;
+  color: var(--fg-muted);
+  margin-bottom: 12px;
+}
+.cg-file-info-hint {
+  font-size: 11px;
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* ---- 遮罩层 ---- */
+.cg-backdrop {
+  position: fixed;
+  top: var(--topbar-h, 52px);
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0,0,0,0.25);
+  z-index: 140;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.25s ease;
+}
+body.cg-drawer-open .cg-backdrop {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* ---- 右侧抽屉（overlay 模式） ---- */
+.cg-drawer {
+  position: fixed;
+  top: var(--topbar-h, 52px);
+  right: 0;
+  bottom: 0;
+  width: 1280px;
+  max-width: 85vw;
+  background: var(--sidebar-bg);
+  border-left: 1px solid var(--border);
+  box-shadow: -4px 0 32px rgba(0,0,0,0.12);
+  z-index: 150;
+  display: flex;
+  flex-direction: column;
+  transform: translateX(100%);
+  transition: transform 0.25s ease;
+}
+.cg-drawer.open {
+  transform: translateX(0);
+}
+
+.cg-drawer-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--sidebar-bg);
+  flex-shrink: 0;
+}
+.cg-drawer-nav {
+  display: flex;
+  gap: 2px;
+}
+.cg-nav-btn {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--fg);
+  width: 28px;
+  height: 28px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.1s;
+}
+.cg-nav-btn:hover:not(:disabled) {
+  background: var(--sidebar-hover);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.cg-nav-btn:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+.cg-drawer-title {
+  flex: 1;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--fg);
+}
+.cg-drawer-close {
+  background: none;
+  border: none;
+  color: var(--fg-muted);
+  font-size: 22px;
+  cursor: pointer;
+  width: 32px;
+  height: 32px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+.cg-drawer-close:hover {
+  background: var(--sidebar-hover);
+  color: var(--fg);
+}
+
+/* ---- 搜索框 ---- */
+.cg-search-box {
+  position: relative;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.cg-search-box input {
+  width: 100%;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--search-bg);
+  color: var(--fg);
+  font-size: 13px;
+  outline: none;
+}
+.cg-search-box input:focus {
+  border-color: var(--accent);
+}
+.cg-search-results {
+  display: none;
+  position: absolute;
+  top: 100%;
+  left: 12px;
+  right: 12px;
+  max-height: 320px;
+  overflow-y: auto;
+  background: var(--sidebar-bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.12);
+  z-index: 10;
+}
+.cg-search-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 10px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--border);
+}
+.cg-search-item:last-child {
+  border-bottom: none;
+}
+.cg-search-item:hover {
+  background: var(--sidebar-hover);
+}
+.cg-search-name {
+  font-family: "JetBrains Mono", "Fira Code", Consolas, Monaco, monospace;
+  font-size: 13px;
+  color: var(--accent);
+}
+.cg-search-name.cg-search-ext {
+  color: var(--fg-muted);
+}
+.cg-search-doc {
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+.cg-search-empty {
+  padding: 12px;
+  text-align: center;
+  color: var(--fg-muted);
+  font-size: 13px;
+}
+
+/* ---- 抽屉主体 ---- */
+.cg-drawer-body {
+  flex: 1;
+  overflow: hidden;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.cg-empty {
+  padding: 32px;
+  text-align: center;
+  color: var(--fg-muted);
+  font-size: 14px;
+}
+
+/* ---- 函数信息区 ---- */
+.cg-info {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.cg-fn-name-lg {
+  font-family: "JetBrains Mono", "Fira Code", Consolas, Monaco, monospace;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--fg);
+  margin-bottom: 4px;
+}
+.cg-signature {
+  margin: 4px 0 8px;
+  padding: 8px 10px;
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow-x: auto;
+}
+.cg-signature code {
+  font-family: "JetBrains Mono", "Fira Code", Consolas, Monaco, monospace;
+  font-size: 12px;
+  color: var(--code-fg);
+  background: none;
+  padding: 0;
+  white-space: pre;
+}
+.cg-meta-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 4px 0;
+  font-size: 12px;
+}
+.cg-meta-label {
+  color: var(--fg-muted);
+  font-weight: 600;
+  margin-right: 4px;
+}
+.cg-doc-tag {
+  display: inline-block;
+  padding: 1px 8px;
+  background: var(--howto-bg);
+  border: 1px solid var(--howto-border);
+  border-radius: 10px;
+  font-size: 11px;
+  color: var(--fg);
+  cursor: pointer;
+  transition: all 0.1s;
+}
+.cg-doc-tag:hover {
+  background: var(--accent);
+  color: white;
+  border-color: var(--accent);
+}
+.cg-doc-tag.cg-doc-ext {
+  background: var(--blockquote-bg);
+  border-color: var(--blockquote-border);
+}
+.cg-more {
+  font-size: 11px;
+  color: var(--fg-muted);
+  margin-left: 4px;
+}
+.cg-src-link {
+  font-family: "JetBrains Mono", "Fira Code", Consolas, Monaco, monospace;
+  font-size: 11px;
+  color: var(--accent);
+  text-decoration: none;
+}
+.cg-src-link:hover {
+  text-decoration: underline;
+}
+
+/* ---- 标签栏 ---- */
+.cg-tabs {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.cg-tab {
+  flex: 1;
+  padding: 8px 12px;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  transition: all 0.1s;
+}
+.cg-tab:hover {
+  color: var(--fg);
+  background: var(--sidebar-hover);
+}
+.cg-tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+/* ---- 调用树 ---- */
+.cg-tree-container {
+  padding: 8px 0;
+  flex: 1;
+}
+.cg-tree {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0 20px;
+  border-left: 1px solid var(--border);
+}
+.cg-tree.cg-tree-root {
+  padding-left: 16px;
+  margin-left: 16px;
+}
+.cg-tree.collapsed {
+  display: none;
+}
+.cg-tree-empty {
+  padding: 8px 16px;
+  color: var(--fg-muted);
+  font-size: 12px;
+  font-style: italic;
+}
+
+/* ---- 空状态（叶子节点 / 仅引用函数） ---- */
+.cg-empty-state {
+  padding: 20px 16px;
+  text-align: center;
+}
+.cg-empty-state-icon {
+  font-size: 28px;
+  margin-bottom: 8px;
+}
+.cg-empty-state-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--fg);
+  margin-bottom: 6px;
+}
+.cg-empty-state-desc {
+  font-size: 12px;
+  color: var(--fg-muted);
+  line-height: 1.6;
+  margin-bottom: 10px;
+}
+.cg-empty-state-hint {
+  font-size: 12px;
+  color: var(--fg-muted);
+  margin: 6px 0;
+}
+.cg-empty-state-hint a {
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: underline;
+}
+.cg-empty-state-refs {
+  margin-top: 12px;
+  text-align: left;
+}
+.cg-empty-state-refs-label {
+  font-size: 11px;
+  color: var(--fg-muted);
+  margin-bottom: 6px;
+}
+.cg-empty-state-refs-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.cg-node {
+  position: relative;
+  margin: 1px 0;
+  line-height: 1.8;
+}
+.cg-node::before {
+  content: '';
+  position: absolute;
+  left: -20px;
+  top: 14px;
+  width: 16px;
+  height: 0;
+  border-top: 1px solid var(--border);
+}
+.cg-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  font-size: 10px;
+  cursor: pointer;
+  color: var(--fg-muted);
+  flex-shrink: 0;
+  margin-right: 2px;
+  transition: color 0.1s;
+}
+.cg-toggle:hover {
+  color: var(--accent);
+}
+.cg-toggle.expanded {
+  /* 视觉反馈由文本字符变化体现 */
+}
+.cg-toggle-placeholder {
+  display: inline-block;
+  width: 16px;
+  flex-shrink: 0;
+}
+.cg-fn-link {
+  font-family: "JetBrains Mono", "Fira Code", Consolas, Monaco, monospace;
+  font-size: 13px;
+  cursor: pointer;
+  color: var(--accent);
+  padding: 1px 4px;
+  border-radius: 3px;
+  transition: background 0.1s;
+}
+.cg-fn-link:hover {
+  background: var(--sidebar-hover);
+  text-decoration: underline;
+}
+.cg-fn-link.cg-fn-external {
+  color: var(--fg-muted);
+}
+.cg-fn-link.cg-fn-nocode {
+  border-bottom: 1px dashed var(--fg-muted);
+}
+.cg-badge {
+  display: inline-block;
+  font-size: 10px;
+  padding: 0 6px;
+  border-radius: 8px;
+  background: var(--code-bg);
+  color: var(--fg-muted);
+  margin-left: 4px;
+  line-height: 1.5;
+}
+.cg-badge-cycle {
+  background: var(--core-point-bg);
+  color: var(--core-point-border);
+}
+.cg-badge-undef {
+  background: var(--blockquote-bg);
+  color: var(--fg-muted);
+  font-style: italic;
+}
+.cg-badge-code {
+  background: var(--code-bg);
+  color: var(--accent);
+  font-family: "JetBrains Mono", "Fira Code", Consolas, Monaco, monospace;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+/* ---- 函数名展开状态 ---- */
+.cg-fn-expanded {
+  background: var(--howto-bg);
+  font-weight: 600;
+}
+
+/* ---- 内联展开区域 ---- */
+.cg-inline-expand {
+  margin: 8px 0 8px 24px;
+  padding: 12px;
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12px;
+}
+.cg-inline-signature {
+  font-family: "JetBrains Mono", "Fira Code", Consolas, Monaco, monospace;
+  font-size: 11px;
+  color: var(--code-fg);
+  margin-bottom: 8px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  line-height: 1.5;
+}
+.cg-inline-code-section {
+  margin: 8px 0;
+}
+.cg-inline-code-section summary {
+  cursor: pointer;
+  font-size: 11px;
+  color: var(--fg-muted);
+  user-select: none;
+  padding: 2px 0;
+}
+.cg-inline-code-section summary:hover {
+  color: var(--accent);
+}
+.cg-inline-code {
+  margin: 6px 0 0 0;
+  padding: 8px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow-x: auto;
+  max-height: 300px;
+  overflow-y: auto;
+  font-size: 11px;
+  line-height: 1.5;
+}
+.cg-inline-code code {
+  font-family: "JetBrains Mono", "Fira Code", Consolas, Monaco, monospace;
+  color: var(--code-fg);
+  background: none;
+  white-space: pre;
+}
+.cg-inline-source-link {
+  margin-top: 8px;
+  font-size: 11px;
+}
+.cg-inline-source-link a {
+  color: var(--accent);
+  text-decoration: none;
+}
+.cg-inline-source-link a:hover {
+  text-decoration: underline;
+}
+
+/* ---- 代码区 ---- */
+.cg-code-section {
+  border-top: 1px solid var(--border);
+  margin: 0;
+}
+.cg-code-section summary {
+  padding: 8px 16px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg);
+  user-select: none;
+  border-bottom: 1px solid transparent;
+  transition: all 0.1s;
+}
+.cg-code-section summary:hover {
+  background: var(--sidebar-hover);
+}
+.cg-code-section[open] summary {
+  border-bottom-color: var(--border);
+}
+.cg-code {
+  margin: 0;
+  border: none;
+  border-radius: 0;
+  background: var(--code-bg);
+  overflow-x: auto;
+  max-height: 50vh;
+  overflow-y: auto;
+}
+.cg-code > code {
+  display: block;
+  padding: 10px 14px;
+  font-family: "JetBrains Mono", "Fira Code", Consolas, Monaco, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--code-fg);
+  white-space: pre;
+  background: none;
+}
+
+/* ---- 分栏布局 ---- */
+.cg-split-pane {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+  min-height: 0;
+}
+.cg-pane-left {
+  width: 340px;
+  min-width: 280px;
+  overflow-y: auto;
+  border-right: 1px solid var(--border);
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+}
+.cg-pane-right {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 0;
+}
+
+/* ---- 左栏选中状态 ---- */
+.cg-fn-selected {
+  background: var(--howto-bg);
+  font-weight: 600;
+}
+
+/* ---- 右栏详情面板 ---- */
+.cg-detail {
+  padding: 16px;
+}
+.cg-detail-header {
+  margin-bottom: 12px;
+}
+.cg-detail-header h3 {
+  margin: 0 0 8px 0;
+  font-size: 18px;
+  font-family: "JetBrains Mono", "Fira Code", Consolas, Monaco, monospace;
+  color: var(--fg);
+}
+.cg-detail-docs {
+  margin: 6px 0;
+  font-size: 12px;
+}
+.cg-detail-signature {
+  padding: 8px 12px;
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  margin: 12px 0;
+  font-family: "JetBrains Mono", "Fira Code", Consolas, Monaco, monospace;
+  font-size: 12px;
+  overflow-x: auto;
+}
+.cg-detail-signature code {
+  color: var(--code-fg);
+  background: none;
+  white-space: pre;
+}
+.cg-detail-source-link {
+  margin: 8px 0;
+  font-size: 12px;
+}
+.cg-detail-code-section {
+  margin: 16px 0;
+}
+.cg-detail-section-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg-muted);
+  margin: 12px 0 6px 0;
+  text-transform: uppercase;
+}
+.cg-detail-pre {
+  margin: 0;
+  padding: 12px;
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow-x: auto;
+  max-height: 400px;
+  overflow-y: auto;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.cg-detail-pre code {
+  font-family: "JetBrains Mono", "Fira Code", Consolas, Monaco, monospace;
+  color: var(--code-fg);
+  background: none;
+  white-space: pre;
+}
+/* 文件视图代码块：允许更高 */
+.cg-file-pre {
+  max-height: 70vh;
+}
+.cg-detail-relations {
+  margin-top: 16px;
+}
+.cg-detail-fn-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+.cg-detail-fn {
+  padding: 2px 8px;
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  font-family: "JetBrains Mono", "Fira Code", Consolas, Monaco, monospace;
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.1s;
+}
+.cg-detail-fn:hover {
+  background: var(--howto-bg);
+  border-color: var(--accent);
+}
+
+/* ---- 面包屑 ---- */
+.cg-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 12px;
+  font-size: 12px;
+  font-family: "JetBrains Mono", monospace;
+  color: var(--fg-muted);
+  flex-wrap: wrap;
+  min-height: 20px;
+}
+.cg-breadcrumb-sep {
+  color: var(--border);
+  margin: 0 2px;
+}
+.cg-breadcrumb-link {
+  cursor: pointer;
+  color: var(--accent);
+  padding: 2px 4px;
+  border-radius: 3px;
+  transition: background 0.1s;
+}
+.cg-breadcrumb-link:hover {
+  background: var(--sidebar-hover);
+  text-decoration: underline;
+}
+.cg-breadcrumb-current {
+  font-weight: 600;
+  color: var(--fg);
+  padding: 2px 4px;
+}
+.cg-breadcrumb-root {
+  cursor: pointer;
+  font-size: 14px;
+  padding: 2px 6px;
+  border-radius: 3px;
+  transition: background 0.1s;
+}
+.cg-breadcrumb-root:hover {
+  background: var(--sidebar-hover);
+}
+
+/* ---- 详情占位符 ---- */
+.cg-detail-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--fg-muted);
+  font-size: 14px;
+  padding: 32px;
+}
+
+/* ---- 左栏树容器调整 ---- */
+.cg-pane-left .cg-tree-container {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+}
+.cg-pane-left .cg-tabs {
+  flex-shrink: 0;
+}
+
+
+/* ---- 移动端 ---- */
+@media (max-width: 1200px) {
+  .cg-drawer {
+    width: 100vw;
+    max-width: 100vw;
+  }
+  .cg-split-pane {
+    flex-direction: column;
+  }
+  .cg-pane-left {
+    width: 100%;
+    min-width: 0;
+    max-width: none;
+    max-height: 40vh;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+  .cg-pane-right {
+    width: 100%;
+    min-width: 0;
+  }
+}
+
+/* 顶栏「调用图」按钮 */
+.topbar .cg-topbar-btn {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  padding: 4px 12px;
+  font-size: 12.5px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.topbar .cg-topbar-btn:hover {
+  background: var(--accent);
+  color: #fff;
+}
+"""
+
+CALLLGRAPH_JS = r"""
+// ============================================================
+// 调用图浏览器 (Call Graph Explorer)
+// 设计参考：VS Code Call Hierarchy + Source Insight
+// ============================================================
+
+var CG = (function () {
+  // 根构建脚本注入的配置(sourceMark 用于把 file:// 绝对路径切短;excludePrefixes 用于运行期名过滤)
+  var CG_CONFIG = window.__CG_CONFIG__ || { sourceMark: '', excludePrefixes: [] };
+  // ---- 状态 ----
+  var callgraph = {};
+  var sourceSnippets = {};   // file:/// 链接对应的源码片段
+  var drawer = null;
+  var history = [];          // 导航历史：[{func, tab}, ...]
+  var historyIdx = -1;       // 当前历史位置
+  var currentFn = null;      // 当前展示的函数名
+  var activeTab = 'calls';   // 'calls' | 'called_by'
+  var MAX_TREE_DEPTH = 8;    // 递归调用树最大深度
+  var SEARCH_LIMIT = 30;     // 搜索结果上限
+  var focusStack = [];       // 聚焦历史，用于面包屑导航
+
+  // C 关键字（用于代码块函数识别，与 Python 端保持一致）
+  var KEYWORDS = new Set([
+    'if','while','for','switch','return','sizeof','else','do','case',
+    'break','continue','goto','default','defined',
+    'void','int','char','float','double','long','short','unsigned',
+    'signed','bool','size_t','ssize_t','off_t','int8_t','int16_t',
+    'int32_t','int64_t','uint8_t','uint16_t','uint32_t','uint64_t',
+    'uintptr_t','intptr_t','struct','enum','union','const','volatile',
+    'static','inline','extern','register','auto','typedef',
+    'NULL','true','false','container_of',
+    'fwk_assert','fwk_expect','fwk_check','fwk_trap','fwk_unexpected',
+    'FWK_ASSERT','FWK_WEAK','FWK_ARRAY_SIZE','FWK_MIN','FWK_MAX','FWK_BIT',
+    'FWK_ALIGN','FWK_ALIGN_NEXT','FWK_S','FWK_NS','FWK_M','FWK_MS','FWK_US',
+    'FWK_LIST_GET','FWK_PRINTF','FWK_NONNULL','FWK_READ_ONLY1',
+    'FWK_READ_WRITE1','FWK_WRITE_ONLY1','FWK_ALLOC_SIZE2','FWK_ALLOC_ALIGN',
+    'FWK_MODULE_STATIC_ELEMENTS','FWK_MODULE_DYNAMIC_ELEMENTS',
+    'FWK_MODULE_STATIC_ELEMENTS_PTR','UINT8_C','UINT16_C','UINT32_C','UINT64_C'
+  ]);
+
+  // 名字是否应排除(关键字 + 配置里的前缀),与 Python 端 SCP_EXCLUDE 对应
+  function isExcludedName(name) {
+    if (KEYWORDS.has(name)) return true;
+    var pfx = CG_CONFIG.excludePrefixes || [];
+    for (var i = 0; i < pfx.length; i++) {
+      if (name.indexOf(pfx[i]) === 0) return true;
+    }
+    return false;
+  }
+
+  // ---- 初始化 ----
+  function init() {
+    try {
+      var el = document.getElementById('cg-data');
+      if (el) callgraph = JSON.parse(el.textContent);
+    } catch (e) { console.warn('callgraph data load failed:', e); }
+    try {
+      var srcEl = document.getElementById('cg-source-data');
+      if (srcEl) sourceSnippets = JSON.parse(srcEl.textContent);
+    } catch (e) { console.warn('source snippets data load failed:', e); }
+    buildDrawer();
+    attachToCodeBlocks();
+    attachToInlineRefs();
+    attachToSourceLinks();
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape' && isOpen()) close();
+      if (isOpen() && (e.altKey || e.metaKey)) {
+        if (e.key === 'ArrowLeft') { e.preventDefault(); back(); }
+        if (e.key === 'ArrowRight') { e.preventDefault(); forward(); }
+      }
+    });
+  }
+
+  // ---- 构建抽屉 DOM ----
+  function buildDrawer() {
+    // 遮罩层
+    var backdrop = document.createElement('div');
+    backdrop.className = 'cg-backdrop';
+    backdrop.id = 'cg-backdrop';
+    document.body.appendChild(backdrop);
+
+    drawer = document.createElement('div');
+    drawer.className = 'cg-drawer';
+    drawer.id = 'cg-drawer';
+    drawer.innerHTML =
+      '<div class="cg-drawer-header">' +
+        '<div class="cg-drawer-nav">' +
+          '<button class="cg-nav-btn" id="cg-back" title="后退 (Alt+←)" disabled>←</button>' +
+          '<button class="cg-nav-btn" id="cg-forward" title="前进 (Alt+→)" disabled>→</button>' +
+          '<button class="cg-nav-btn" id="cg-root" title="返回根视图" disabled>\u2302</button>' +
+        '</div>' +
+        '<div class="cg-breadcrumb" id="cg-breadcrumb"></div>' +
+        '<div class="cg-drawer-title" id="cg-title">调用图浏览器</div>' +
+        '<button class="cg-drawer-close" id="cg-close" title="关闭 (Esc)">\u00d7</button>' +
+      '</div>' +
+      '<div class="cg-search-box">' +
+        '<input type="text" id="cg-search-input" placeholder="\ud83d\udd0d 搜索函数..." autocomplete="off">' +
+        '<div class="cg-search-results" id="cg-search-results"></div>' +
+      '</div>' +
+      '<div class="cg-drawer-body" id="cg-body">' +
+        '<div class="cg-split-pane">' +
+          '<div class="cg-pane-left" id="cg-pane-left"></div>' +
+          '<div class="cg-pane-right" id="cg-pane-right">' +
+            '<div class="cg-detail-placeholder">选择一个函数查看详情</div>' +
+          '</div>' +
+        '</div>' +
+      '</div>';
+    document.body.appendChild(drawer);
+
+    // 点击遮罩关闭抽屉
+    backdrop.addEventListener('click', close);
+
+    document.getElementById('cg-close').onclick = close;
+    document.getElementById('cg-back').onclick = back;
+    document.getElementById('cg-forward').onclick = forward;
+    document.getElementById('cg-root').onclick = backToRoot;
+
+    var searchInput = document.getElementById('cg-search-input');
+    searchInput.oninput = function () { doSearch(this.value); };
+    searchInput.onfocus = function () {
+      if (this.value) doSearch(this.value);
+    };
+    searchInput.onkeydown = function (e) {
+      if (e.key === 'Enter') {
+        var first = document.querySelector('#cg-search-results .cg-search-item');
+        if (first) first.click();
+      }
+    };
+    // 点击搜索结果外部关闭下拉
+    document.addEventListener('click', function (e) {
+      if (!e.target.closest('.cg-search-box')) {
+        document.getElementById('cg-search-results').style.display = 'none';
+      }
+    });
+  }
+
+  function isOpen() { return drawer && drawer.classList.contains('open'); }
+
+  function openDrawer() {
+    if (!drawer) return;
+    drawer.classList.add('open');
+    document.body.classList.add('cg-drawer-open');
+  }
+
+  function close() {
+    if (!drawer) return;
+    drawer.classList.remove('open');
+    document.body.classList.remove('cg-drawer-open');
+    document.getElementById('cg-search-results').style.display = 'none';
+  }
+
+  // ---- 导航 ----
+  function navigate(funcName, tab) {
+    if (!callgraph[funcName]) return;
+    // 截断 history（如果在中间位置又导航了新函数）
+    if (historyIdx < history.length - 1) {
+      history = history.slice(0, historyIdx + 1);
+    }
+    var node = callgraph[funcName];
+    // 智能选择初始标签：如果未指定 tab，优先选有内容的方向
+    if (!tab) {
+      var hasCalls = node.calls && node.calls.length > 0;
+      var hasCallers = node.called_by && node.called_by.length > 0;
+      if (!hasCalls && hasCallers) {
+        tab = 'called_by';
+      } else {
+        tab = 'calls';
+      }
+    }
+    focusStack = [];  // 重置聚焦
+    history.push({ func: funcName, tab: tab });
+    historyIdx = history.length - 1;
+    currentFn = funcName;
+    activeTab = tab;
+    openDrawer();
+    render();
+    updateNavButtons();
+  }
+
+  function back() {
+    if (historyIdx <= 0) return;
+    historyIdx--;
+    var h = history[historyIdx];
+    currentFn = h.func;
+    activeTab = h.tab;
+    render();
+    updateNavButtons();
+  }
+
+  function forward() {
+    if (historyIdx >= history.length - 1) return;
+    historyIdx++;
+    var h = history[historyIdx];
+    currentFn = h.func;
+    activeTab = h.tab;
+    render();
+    updateNavButtons();
+  }
+
+  function updateNavButtons() {
+    document.getElementById('cg-back').disabled = historyIdx <= 0;
+    document.getElementById('cg-forward').disabled = historyIdx >= history.length - 1;
+  }
+
+  // ---- 搜索 ----
+  function doSearch(query) {
+    var results = document.getElementById('cg-search-results');
+    query = query.trim().toLowerCase();
+    if (!query) { results.style.display = 'none'; return; }
+    var matches = [];
+    var count = 0;
+    for (var fn in callgraph) {
+      if (fn.toLowerCase().indexOf(query) !== -1) {
+        matches.push(fn);
+        count++;
+        if (count >= SEARCH_LIMIT) break;
+      }
+    }
+    if (matches.length === 0) {
+      results.innerHTML = '<div class="cg-search-empty">\u65e0\u5339\u914d\u51fd\u6570</div>';
+    } else {
+      results.innerHTML = matches.map(function (fn) {
+        var node = callgraph[fn];
+        var doc = (node.defined_in && node.defined_in[0]) ||
+                  (node.referenced_in && node.referenced_in[0]) || '';
+        var isDefined = node.defined_in && node.defined_in.length > 0;
+        return '<div class="cg-search-item" data-fn="' + fn + '">' +
+          '<span class="cg-search-name' + (isDefined ? '' : ' cg-search-ext') + '">' + fn + '()</span>' +
+          '<span class="cg-search-doc">' + doc + '</span>' +
+        '</div>';
+      }).join('');
+      results.querySelectorAll('.cg-search-item').forEach(function (item) {
+        item.onclick = function () {
+          navigate(this.dataset.fn);
+          document.getElementById('cg-search-input').value = '';
+          results.style.display = 'none';
+        };
+      });
+    }
+    results.style.display = 'block';
+  }
+
+  // ---- 渲染 ----
+  function render() {
+    var node = callgraph[currentFn];
+    if (!node) {
+      document.getElementById('cg-pane-left').innerHTML = '<div class="cg-empty">\u672a\u627e\u5230\u51fd\u6570 ' + currentFn + '</div>';
+      return;
+    }
+    renderTree();
+    renderDetail(currentFn);
+    renderBreadcrumb();
+    updateNavButtons();
+  }
+
+  // ---- 渲染左栏：调用树 ----
+  function renderTree() {
+    var paneLeft = document.getElementById('cg-pane-left');
+    var node = callgraph[currentFn];
+    if (!node) return;
+
+    var html = '';
+
+    // 标签栏
+    var calls = node.calls || [];
+    var callers = node.called_by || [];
+    var activeList = activeTab === 'calls' ? calls : callers;
+    var treeIsEmpty = activeList.length === 0;
+    var bothEmpty = calls.length === 0 && callers.length === 0;
+    html += '<div class="cg-tabs">';
+    html += '<button class="cg-tab' + (activeTab === 'calls' ? ' active' : '') + '" data-tab="calls">' +
+      '\u8c03\u7528 (' + calls.length + ')</button>';
+    html += '<button class="cg-tab' + (activeTab === 'called_by' ? ' active' : '') + '" data-tab="called_by">' +
+      '\u88ab\u8c03\u7528 (' + callers.length + ')</button>';
+    html += '</div>';
+
+    // 树视图 / 空状态
+    html += '<div class="cg-tree-container">';
+    if (bothEmpty && !node.code) {
+      html += '<div class="cg-empty-state">';
+      html += '<div class="cg-empty-state-icon">\u2139\ufe0f</div>';
+      html += '<div class="cg-empty-state-title">\u6b64\u51fd\u6570\u5728\u7b14\u8bb0\u4e2d\u4ec5\u88ab\u5f15\u7528</div>';
+      html += '<div class="cg-empty-state-desc">\u672a\u5c55\u793a\u5176\u5b9a\u4e49\u4ee3\u7801\u6216\u8c03\u7528\u5173\u7cfb\u3002</div>';
+      html += '</div>';
+    } else if (treeIsEmpty) {
+      var otherTab = activeTab === 'calls' ? 'called_by' : 'calls';
+      var otherList = activeTab === 'calls' ? callers : calls;
+      var otherLabel = activeTab === 'calls' ? '\u8c03\u7528\u8005' : '\u5b50\u8c03\u7528';
+      html += '<div class="cg-empty-state">';
+      html += '<div class="cg-empty-state-title">\u65e0 ' + (activeTab === 'calls' ? '\u5b50\u8c03\u7528' : '\u8c03\u7528\u8005') + '</div>';
+      if (otherList.length > 0) {
+        html += '<div class="cg-empty-state-hint">\u6b64\u51fd\u6570\u6709 ' + otherList.length +
+          ' \u4e2a' + otherLabel + '\uff0c' +
+          '<a class="cg-switch-tab" data-tab="' + otherTab + '">\u5207\u6362\u67e5\u770b</a></div>';
+      }
+      html += '</div>';
+    } else {
+      if (activeTab === 'calls') {
+        html += renderTreeHtml(currentFn, 'calls', new Set(), 0);
+      } else {
+        html += renderTreeHtml(currentFn, 'called_by', new Set(), 0);
+      }
+    }
+    html += '</div>';
+
+    paneLeft.innerHTML = html;
+
+    // 绑定事件
+    bindTreeEvents(paneLeft);
+    bindTabEvents(paneLeft);
+  }
+
+  // ---- 渲染右栏：函数详情 ----
+  function renderDetail(funcName) {
+    var paneRight = document.getElementById('cg-pane-right');
+    var node = callgraph[funcName];
+    if (!node) {
+      paneRight.innerHTML = '<div class="cg-detail-placeholder">\u9009\u62e9\u4e00\u4e2a\u51fd\u6570\u67e5\u770b\u8be6\u60c5</div>';
+      return;
+    }
+
+    var html = '<div class="cg-detail">';
+
+    // 标题
+    html += '<div class="cg-detail-header">';
+    html += '<h3>' + funcName + '()</h3>';
+    // 文档链接
+    var docs = node.defined_in || [];
+    var refs = node.referenced_in || [];
+    if (docs.length > 0) {
+      html += '<div class="cg-detail-docs">';
+      html += '<span class="cg-meta-label">\u5b9a\u4e49\u4e8e</span> ';
+      html += docs.map(function (d) { return '<span class="cg-doc-tag" data-doc="' + d + '">' + d + '</span>'; }).join('');
+      html += '</div>';
+    }
+    if (refs.length > 0 && refs.join() !== docs.join()) {
+      var refOnly = refs.filter(function (r) { return docs.indexOf(r) === -1; });
+      if (refOnly.length > 0) {
+        html += '<div class="cg-detail-docs">';
+        html += '<span class="cg-meta-label">\u5f15\u7528\u4e8e</span> ';
+        html += refOnly.slice(0, 5).map(function (d) { return '<span class="cg-doc-tag cg-doc-ext">' + d + '</span>'; }).join('');
+        if (refOnly.length > 5) {
+          html += '<span class="cg-more">+' + (refOnly.length - 5) + '</span>';
+        }
+        html += '</div>';
+      }
+    }
+    html += '</div>';
+
+    // 签名
+    if (node.signature) {
+      html += '<div class="cg-detail-signature"><code>' + escapeHtml(node.signature) + '</code></div>';
+    }
+
+    // 源码链接
+    if (node.source && node.source.path) {
+      var srcText = node.source.path.replace(/^file:\/\//, '');
+      var shortPath = CG_CONFIG.sourceMark
+        ? (srcText.split(CG_CONFIG.sourceMark).pop() || srcText)
+        : srcText;
+      var lineInfo = '';
+      if (node.source.line_start) {
+        lineInfo = '#L' + node.source.line_start +
+          (node.source.line_end ? '-L' + node.source.line_end : '');
+      }
+      html += '<div class="cg-detail-source-link">';
+      html += '<a class="cg-src-link" href="' + node.source.path + lineInfo + '" target="_blank" title="' + srcText + lineInfo + '">' +
+        shortPath + lineInfo + ' \u2197</a>';
+      html += '</div>';
+    }
+
+    // 源码
+    if (node.code) {
+      html += '<div class="cg-detail-code-section">';
+      html += '<div class="cg-detail-section-title">\u6e90\u7801</div>';
+      html += '<pre class="cg-detail-pre"><code class="language-c">' + escapeHtml(node.code) + '</code></pre>';
+      html += '</div>';
+    }
+
+    // 调用关系列表
+    var calls = node.calls || [];
+    var callers = node.called_by || [];
+    if (calls.length > 0 || callers.length > 0) {
+      html += '<div class="cg-detail-relations">';
+      if (calls.length > 0) {
+        html += '<div class="cg-detail-section-title">\u8c03\u7528 (' + calls.length + ')</div>';
+        html += '<div class="cg-detail-fn-list">';
+        calls.forEach(function(fn) {
+          html += '<span class="cg-detail-fn" data-fn="' + fn + '">' + fn + '()</span>';
+        });
+        html += '</div>';
+      }
+      if (callers.length > 0) {
+        html += '<div class="cg-detail-section-title">\u88ab\u8c03\u7528 (' + callers.length + ')</div>';
+        html += '<div class="cg-detail-fn-list">';
+        callers.forEach(function(fn) {
+          html += '<span class="cg-detail-fn" data-fn="' + fn + '">' + fn + '()</span>';
+        });
+        html += '</div>';
+      }
+      html += '</div>';
+    }
+
+    html += '</div>';
+    paneRight.innerHTML = html;
+
+    // 高亮代码
+    var codeEl = paneRight.querySelector('.cg-detail-pre code');
+    if (codeEl && window.hljs) {
+      try {
+        var result = hljs.highlight(codeEl.textContent, { language: 'c' });
+        codeEl.innerHTML = result.value;
+      } catch (e) {}
+    }
+
+    // 绑定文档标签点击事件
+    bindDocTagEvents(paneRight);
+
+    // 绑定关系列表点击事件
+    paneRight.querySelectorAll('.cg-detail-fn').forEach(function(fnEl) {
+      fnEl.onclick = function() {
+        navigate(this.dataset.fn, activeTab);
+      };
+    });
+  }
+
+  // ---- 递归渲染调用树 HTML ----
+  function renderTreeHtml(funcName, direction, visited, depth) {
+    var node = callgraph[funcName];
+    var items = node ? (direction === 'calls' ? node.calls : node.called_by) : [];
+    if (!items || items.length === 0) {
+      return '<div class="cg-tree-empty">(\u65e0 ' + (direction === 'calls' ? '\u5b50\u8c03\u7528' : '\u8c03\u7528\u8005') + ')</div>';
+    }
+    visited = new Set(visited);
+    visited.add(funcName);
+    var html = '<ul class="cg-tree' + (depth === 0 ? ' cg-tree-root' : '') + '">';
+    for (var i = 0; i < items.length; i++) {
+      var name = items[i];
+      var childNode = callgraph[name];
+      var childItems = childNode ? (direction === 'calls' ? childNode.calls : childNode.called_by) : [];
+      var hasChildren = childItems && childItems.length > 0;
+      var isCycle = visited.has(name);
+      var hasCode = childNode && childNode.code;
+      var isDefined = childNode && childNode.defined_in && childNode.defined_in.length > 0;
+
+      html += '<li class="cg-node' + (hasChildren && !isCycle ? ' cg-node-expandable' : '') + '">';
+      // 展开/折叠三角
+      if (hasChildren && !isCycle) {
+        html += '<span class="cg-toggle" data-fn="' + name + '" data-dir="' + direction + '" data-depth="' + depth + '">\u25b6</span>';
+      } else {
+        html += '<span class="cg-toggle-placeholder"></span>';
+      }
+      // 函数名
+      html += '<span class="cg-fn-link' +
+        (isDefined ? '' : ' cg-fn-external') +
+        (hasCode ? '' : ' cg-fn-nocode') +
+        '" data-fn="' + name + '" title="' + name + '()">' + name + '()</span>';
+      // 徽章
+      if (isCycle) {
+        html += '<span class="cg-badge cg-badge-cycle">\u21bb \u5faa\u73af</span>';
+      } else if (hasChildren) {
+        html += '<span class="cg-badge">' + childItems.length + '</span>';
+      } else if (!childNode) {
+        html += '<span class="cg-badge cg-badge-undef">\u5916\u90e8</span>';
+      } else if (hasCode) {
+        // 叶子节点但有代码，显示 { } 图标提示可展开
+        html += '<span class="cg-badge cg-badge-code" title="\u5355\u51fb\u67e5\u770b\u6e90\u7801">{ }</span>';
+      }
+      html += '</li>';
+    }
+    html += '</ul>';
+    return html;
+  }
+
+  // ---- 树事件绑定 ----
+  function bindTreeEvents(container) {
+    // 函数名单击 → 右栏显示详情（不跳转）
+    container.querySelectorAll('.cg-fn-link').forEach(function (el) {
+      el.onclick = function (e) {
+        e.stopPropagation();
+        var fn = this.dataset.fn;
+        // 更新选中状态
+        container.querySelectorAll('.cg-fn-link').forEach(function(l) {
+          l.classList.remove('cg-fn-selected');
+        });
+        this.classList.add('cg-fn-selected');
+        // 右栏显示详情
+        renderDetail(fn);
+      };
+      // 函数名双击 → 聚焦模式（以该函数为根重建左栏树）
+      el.ondblclick = function (e) {
+        e.stopPropagation();
+        focusOn(this.dataset.fn);
+      };
+    });
+    // 展开/折叠三角
+    container.querySelectorAll('.cg-toggle').forEach(function (el) {
+      el.onclick = function (e) {
+        e.stopPropagation();
+        toggleTreeNode(this);
+      };
+    });
+  }
+
+  function toggleTreeNode(toggleEl) {
+    var li = toggleEl.parentElement;
+    var fn = toggleEl.dataset.fn;
+    var dir = toggleEl.dataset.dir;
+    var depth = parseInt(toggleEl.dataset.depth);
+    var existingSubTree = li.querySelector(':scope > ul.cg-tree');
+    if (existingSubTree) {
+      // 已渲染过，切换显示
+      existingSubTree.classList.toggle('collapsed');
+      toggleEl.textContent = existingSubTree.classList.contains('collapsed') ? '\u25b6' : '\u25bc';
+      toggleEl.classList.toggle('expanded');
+      return;
+    }
+    // 深度限制
+    if (depth >= MAX_TREE_DEPTH) {
+      toggleEl.textContent = '\u26d4';
+      toggleEl.title = '\u5df2\u8fbe\u6700\u5927\u6df1\u5ea6';
+      return;
+    }
+    // 构建子树 visited 集合：从当前 li 向上收集所有祖先函数名
+    var visited = new Set();
+    var cur = li.parentElement;
+    while (cur && cur !== document.getElementById('cg-body')) {
+      if (cur.classList && cur.classList.contains('cg-node')) {
+        var link = cur.querySelector(':scope > .cg-fn-link');
+        if (link) visited.add(link.dataset.fn);
+      }
+      cur = cur.parentElement;
+    }
+    // 加入当前函数（树的根）
+    visited.add(currentFn);
+    var subHtml = renderTreeHtml(fn, dir, visited, depth + 1);
+    if (subHtml) {
+      li.insertAdjacentHTML('beforeend', subHtml);
+      bindTreeEvents(li);
+      toggleEl.textContent = '\u25bc';
+      toggleEl.classList.add('expanded');
+    }
+  }
+
+  // ---- 内联展开/折叠函数信息 ----
+  function toggleInlineExpand(fnLinkEl) {
+    var li = fnLinkEl.parentElement;
+    var fn = fnLinkEl.dataset.fn;
+    var node = callgraph[fn];
+    if (!node) return;
+
+    // 查找已有的内联展开区域
+    var existingInline = li.querySelector(':scope > .cg-inline-expand');
+
+    if (existingInline) {
+      // 已展开 → 折叠
+      existingInline.remove();
+      fnLinkEl.classList.remove('cg-fn-expanded');
+      // 同时折叠子树（如果有）
+      var toggle = li.querySelector(':scope > .cg-toggle');
+      if (toggle && toggle.classList.contains('expanded')) {
+        var subTree = li.querySelector(':scope > ul.cg-tree');
+        if (subTree) {
+          subTree.classList.add('collapsed');
+          toggle.textContent = '\u25b6';
+          toggle.classList.remove('expanded');
+        }
+      }
+      return;
+    }
+
+    // 未展开 → 创建内联展开区域
+    var inlineHtml = '<div class="cg-inline-expand">';
+
+    // 1. 函数签名
+    if (node.signature) {
+      inlineHtml += '<div class="cg-inline-signature">' +
+        escapeHtml(node.signature) + '</div>';
+    }
+
+    // 2. 源码（可折叠）
+    if (node.code) {
+      inlineHtml += '<details class="cg-inline-code-section">';
+      inlineHtml += '<summary>\u6e90\u7801</summary>';
+      inlineHtml += '<pre class="cg-inline-code"><code class="language-c">' +
+        escapeHtml(node.code) + '</code></pre>';
+      inlineHtml += '</details>';
+    }
+
+    // 3. 源码链接
+    if (node.source && node.source.path) {
+      var srcText = node.source.path.replace(/^file:\/\//, '');
+      var shortPath = CG_CONFIG.sourceMark
+        ? (srcText.split(CG_CONFIG.sourceMark).pop() || srcText)
+        : srcText;
+      var lineInfo = '';
+      if (node.source.line_start) {
+        lineInfo = '#L' + node.source.line_start +
+          (node.source.line_end ? '-L' + node.source.line_end : '');
+      }
+      inlineHtml += '<div class="cg-inline-source-link">' +
+        '<a href="' + node.source.path + lineInfo + '" target="_blank">' +
+        shortPath + lineInfo + ' \u2197</a></div>';
+    }
+
+    inlineHtml += '</div>';
+
+    // 插入到 li 末尾（在子树之前）
+    li.insertAdjacentHTML('beforeend', inlineHtml);
+    fnLinkEl.classList.add('cg-fn-expanded');
+
+    // 高亮代码
+    var codeEl = li.querySelector('.cg-inline-code code');
+    if (codeEl && window.hljs) {
+      try {
+        var result = hljs.highlight(codeEl.textContent, { language: 'c' });
+        codeEl.innerHTML = result.value;
+      } catch (e) {}
+    }
+
+    // 同时展开子树（如果有子调用且未展开）
+    var toggle = li.querySelector(':scope > .cg-toggle');
+    if (toggle && !li.querySelector(':scope > ul.cg-tree')) {
+      toggleTreeNode(toggle);
+    }
+  }
+
+  // ---- 聚焦模式 ----
+  function focusOn(funcName) {
+    if (!callgraph[funcName]) return;
+    focusStack.push(funcName);
+    currentFn = funcName;
+    render();
+  }
+
+  function backToRoot() {
+    focusStack = [];
+    if (history.length > 0) {
+      currentFn = history[0].func;
+      activeTab = history[0].tab;
+    }
+    render();
+  }
+
+  // ---- 面包屑导航 ----
+  function renderBreadcrumb() {
+    var el = document.getElementById('cg-breadcrumb');
+    if (!el) return;
+    var html = '';
+    if (focusStack.length > 0) {
+      html += '<span class="cg-breadcrumb-root" id="cg-bc-root" title="返回根视图">⌂</span>';
+      html += '<span class="cg-breadcrumb-sep">/</span>';
+      focusStack.forEach(function(fn, i) {
+        if (i > 0) html += '<span class="cg-breadcrumb-sep">›</span>';
+        if (i === focusStack.length - 1) {
+          html += '<span class="cg-breadcrumb-current">' + fn + '()</span>';
+        } else {
+          html += '<span class="cg-breadcrumb-link" data-fn="' + fn + '">' + fn + '()</span>';
+        }
+      });
+    }
+    el.innerHTML = html;
+    var rootBtn = el.querySelector('#cg-bc-root');
+    if (rootBtn) rootBtn.onclick = backToRoot;
+    el.querySelectorAll('.cg-breadcrumb-link').forEach(function(link) {
+      link.onclick = function() {
+        var fn = this.dataset.fn;
+        var idx = focusStack.indexOf(fn);
+        if (idx >= 0) focusStack = focusStack.slice(0, idx + 1);
+        currentFn = fn;
+        render();
+      };
+    });
+  }
+
+  // ---- 标签切换 ----
+  function bindTabEvents(container) {
+    container.querySelectorAll('.cg-tab').forEach(function (tab) {
+      tab.onclick = function () {
+        activeTab = this.dataset.tab;
+        // 更新历史中当前位置的 tab
+        if (historyIdx >= 0 && historyIdx < history.length) {
+          history[historyIdx].tab = activeTab;
+        }
+        render();
+      };
+    });
+    // 空状态中的"切换查看"链接
+    container.querySelectorAll('.cg-switch-tab').forEach(function (link) {
+      link.onclick = function (e) {
+        e.preventDefault();
+        activeTab = this.dataset.tab;
+        if (historyIdx >= 0 && historyIdx < history.length) {
+          history[historyIdx].tab = activeTab;
+        }
+        render();
+      };
+    });
+  }
+
+  // ---- 文档标签点击 → 跳转到该文档 ----
+  function bindDocTagEvents(container) {
+    container.querySelectorAll('.cg-doc-tag').forEach(function (tag) {
+      tag.onclick = function () {
+        var doc = this.dataset.doc;
+        if (typeof loadDoc === 'function') {
+          close();
+          loadDoc(doc);
+        }
+      };
+    });
+  }
+
+  // ---- 内联：代码块下方添加调用图按钮 ----
+  function attachToCodeBlocks() {
+    document.querySelectorAll('.content pre > code').forEach(function (codeEl) {
+      var pre = codeEl.parentElement;
+      if (pre.dataset.cgDone) return;
+      pre.dataset.cgDone = '1';
+      var code = codeEl.textContent;
+      var fns = detectFuncDefs(code);
+      if (fns.length === 0) return;
+      // 只为 callgraph 中存在的函数添加按钮
+      var known = fns.filter(function (fn) { return callgraph[fn]; });
+      if (known.length === 0) return;
+      var btn = document.createElement('div');
+      btn.className = 'cg-btn';
+      var label = known.length === 1
+        ? '\u{1F50E} \u8c03\u7528\u56fe: ' + known[0] + '()'
+        : '\u{1F50E} \u8c03\u7528\u56fe (' + known.length + ' \u4e2a\u51fd\u6570)';
+      btn.textContent = label;
+      btn.title = known.join(', ');
+      btn.onclick = function (e) {
+        e.stopPropagation();
+        navigate(known[0]);
+      };
+      pre.parentElement.insertBefore(btn, pre.nextSibling);
+    });
+  }
+
+  // ---- 内联：函数名引用可点击 ----
+  function attachToInlineRefs() {
+    document.querySelectorAll('.content code').forEach(function (codeEl) {
+      if (codeEl.dataset.cgLinked) return;
+      // 跳过代码块内的 code（已由 attachToCodeBlocks 处理）
+      if (codeEl.parentElement && codeEl.parentElement.tagName === 'PRE') return;
+      var text = codeEl.textContent.trim();
+      // 匹配 func_name() 或 func_name  形式
+      var m = text.match(/^([a-zA-Z_]\w*)\s*\(\s*\)?$/);
+      if (!m) {
+        m = text.match(/^([a-zA-Z_]\w*)\s*\(/);
+      }
+      if (!m) return;
+      var name = m[1];
+      if (isExcludedName(name)) return;
+      if (!callgraph[name]) return;
+      codeEl.dataset.cgLinked = '1';
+      codeEl.classList.add('cg-inline-link');
+      codeEl.title = name + '() \u2014 \u70b9\u51fb\u67e5\u770b\u8c03\u7528\u56fe';
+      codeEl.onclick = function (e) {
+        e.stopPropagation();
+        navigate(name);
+      };
+    });
+  }
+
+  // ---- 源码文件链接：点击在侧边栏展开 ----
+  function navigateToSource(urlKey) {
+    var snippet = sourceSnippets[urlKey];
+    if (!snippet) return false;
+
+    openDrawer();
+
+    // 更新标题
+    var titleEl = document.getElementById('cg-title');
+    if (titleEl) titleEl.textContent = snippet.short_path;
+
+    // 左栏显示文件信息
+    var paneLeft = document.getElementById('cg-pane-left');
+    if (paneLeft) {
+      paneLeft.innerHTML =
+        '<div class="cg-file-info">' +
+          '<div class="cg-file-info-icon">\uD83D\uDCC4</div>' +
+          '<div class="cg-file-info-path">' + escapeHtml(snippet.short_path) + '</div>' +
+          '<div class="cg-file-info-lines">\u884c ' + snippet.line_start + '-' + snippet.line_end + '</div>' +
+          '<div class="cg-file-info-hint">\u6E90\u7801\u6587\u4EF6\u89C6\u56FE</div>' +
+        '</div>';
+    }
+
+    // 右栏渲染源码
+    renderFileView(snippet);
+
+    // 清空导航历史
+    history = [];
+    historyIdx = -1;
+    currentFn = null;
+    updateNavButtons();
+
+    return true;
+  }
+
+  function renderFileView(snippet) {
+    var paneRight = document.getElementById('cg-pane-right');
+    if (!paneRight) return;
+
+    var html = '<div class="cg-detail cg-file-view">';
+    html += '<div class="cg-detail-header">';
+    html += '<h3>' + escapeHtml(snippet.short_path) + '</h3>';
+    html += '<div class="cg-detail-docs">';
+    html += '<span class="cg-meta-label">\u884c ' + snippet.line_start + '-' + snippet.line_end + '</span>';
+    html += '</div>';
+    html += '</div>';
+    html += '<div class="cg-detail-code-section">';
+    html += '<div class="cg-detail-section-title">\u6E90\u7801</div>';
+    html += '<pre class="cg-detail-pre cg-file-pre"><code class="language-c">' + escapeHtml(snippet.content) + '</code></pre>';
+    html += '</div>';
+    html += '</div>';
+    paneRight.innerHTML = html;
+
+    // 高亮代码
+    var codeEl = paneRight.querySelector('.cg-detail-pre code');
+    if (codeEl && window.hljs) {
+      try {
+        var result = hljs.highlight(codeEl.textContent, { language: 'c' });
+        codeEl.innerHTML = result.value;
+      } catch (e) {}
+    }
+  }
+
+  function attachToSourceLinks() {
+    document.querySelectorAll('.content a[href^="file://"]').forEach(function (a) {
+      if (a.dataset.cgSrcLinked) return;
+      var href = a.getAttribute('href');
+      if (!sourceSnippets[href]) return;
+      a.dataset.cgSrcLinked = '1';
+      a.classList.add('cg-src-link-inline');
+      a.removeAttribute('target');
+      a.title = '\u70B9\u51FB\u5728\u4FA7\u8FB9\u680F\u67E5\u770B\u6E90\u7801';
+      a.addEventListener('click', function (e) {
+        e.preventDefault();
+        navigateToSource(href);
+      });
+    });
+  }
+
+  // ---- C 代码块函数定义检测（与 Python 端逻辑对齐） ----
+  function stripCComments(code) {
+    var out = [];
+    var i = 0, n = code.length;
+    var inLine = false, inBlock = false, inStr = false, inChar = false;
+    while (i < n) {
+      var c = code[i], nxt = i + 1 < n ? code[i + 1] : '';
+      if (inLine) {
+        if (c === '\n') { inLine = false; out.push(c); } else out.push(' ');
+      } else if (inBlock) {
+        if (c === '*' && nxt === '/') { inBlock = false; out.push('  '); i += 2; continue; }
+        else if (c === '\n') out.push(c); else out.push(' ');
+      } else if (inStr) {
+        if (c === '\\' && nxt) { out.push('  '); i += 2; continue; }
+        else if (c === '"') { inStr = false; out.push('"'); }
+        else if (c === '\n') { inStr = false; out.push(c); }
+        else out.push(' ');
+      } else if (inChar) {
+        if (c === '\\' && nxt) { out.push('  '); i += 2; continue; }
+        else if (c === "'") { inChar = false; out.push("'"); }
+        else if (c === '\n') { inChar = false; out.push(c); }
+        else out.push(' ');
+      } else {
+        if (c === '/' && nxt === '/') { inLine = true; out.push('  '); i += 2; continue; }
+        else if (c === '/' && nxt === '*') { inBlock = true; out.push('  '); i += 2; continue; }
+        else if (c === '"') { inStr = true; out.push('"'); }
+        else if (c === "'") { inChar = true; out.push("'"); }
+        else out.push(c);
+      }
+      i++;
+    }
+    return out.join('');
+  }
+
+  function findMatching(s, openPos, openCh, closeCh) {
+    var depth = 0;
+    for (var i = openPos; i < s.length; i++) {
+      if (s[i] === openCh) depth++;
+      else if (s[i] === closeCh) { depth--; if (depth === 0) return i; }
+    }
+    return -1;
+  }
+
+  function detectFuncDefs(code) {
+    var cleaned = stripCComments(code);
+    var results = [];
+    var re = /^(?:(?:[a-zA-Z_]\w*\s+)+\**\s*)([a-zA-Z_]\w*)\s*\(/gm;
+    var m;
+    while ((m = re.exec(cleaned)) !== null) {
+      var name = m[1];
+      if (isExcludedName(name)) { re.lastIndex = m.index + 1; continue; }
+      var openParen = m.index + m[0].length - 1;
+      var closeParen = findMatching(cleaned, openParen, '(', ')');
+      if (closeParen === -1) { re.lastIndex = m.index + 1; continue; }
+      var after = cleaned.substring(closeParen + 1);
+      var nextBrace = after.indexOf('{');
+      var nextSemi = after.indexOf(';');
+      var nextEq = after.indexOf('=');
+      if (nextBrace === -1) { re.lastIndex = m.index + 1; continue; }
+      if (nextSemi !== -1 && nextSemi < nextBrace) { re.lastIndex = m.index + 1; continue; }
+      if (nextEq !== -1 && nextEq < nextBrace) { re.lastIndex = m.index + 1; continue; }
+      var bodyOpen = closeParen + 1 + nextBrace;
+      var bodyClose = findMatching(cleaned, bodyOpen, '{', '}');
+      if (bodyClose === -1) { re.lastIndex = m.index + 1; continue; }
+      results.push(name);
+      re.lastIndex = bodyClose + 1;
+    }
+    return results;
+  }
+
+  // ---- 工具 ----
+  function escapeHtml(s) {
+    return String(s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
+
+  // ---- 公开 API ----
+  return {
+    init: init,
+    open: navigate,
+    openDrawer: function () {
+      if (currentFn) openDrawer();
+      else {
+        // 没有当前函数时，打开抽屉并聚焦搜索框
+        openDrawer();
+        setTimeout(function () {
+          document.getElementById('cg-search-input').focus();
+        }, 100);
+      }
+    },
+    close: close,
+    refresh: function () {
+      attachToCodeBlocks();
+      attachToInlineRefs();
+      attachToSourceLinks();
+    }
+  };
+})();
+
+// 供 loadDoc 调用
+function initCallGraph() { CG.refresh(); }"""
 
 
 HTML_TEMPLATE = r"""<!DOCTYPE html>
@@ -945,6 +3338,7 @@ body {
   .main { margin-left: 0; padding: 20px 16px 100px; }
 }
 </style>
+{{CG_CSS}}
 </head>
 <body>
 
@@ -952,6 +3346,7 @@ body {
   <button class="topbar-hamburger" id="hamburger" onclick="toggleSidebar()" aria-label="菜单">☰</button>
   <span class="topbar-title">{{TITLE}}</span>
   <span class="topbar-meta" id="topbar-meta"></span>
+  {{CG_BUTTON}}
   <div class="topbar-progress" id="progress"></div>
 </div>
 
@@ -969,6 +3364,8 @@ body {
 
 <!-- 嵌入的 markdown 文档 -->
 {{SCRIPTS}}
+{{CG_DATA}}
+{{CG_JS}}
 
 <script>
 // ==================== 应用状态 ====================
@@ -1276,6 +3673,7 @@ function loadDoc(name, anchor) {
   renderMermaid(el.content);    // 同步替换 DOM,异步渲染 SVG
   highlightCode(el.content);
   renderMath(el.content);       // ignoredClasses 跳过 mermaid
+  if (window.initCallGraph) initCallGraph();  // 代码块调用图按钮 + 行内函数链接(需在高亮后跑)
 
   // 上一篇/下一篇
   appendDocNav(doc);
@@ -1418,6 +3816,7 @@ function init() {
     if ((e.altKey || e.metaKey) && e.key === 'ArrowLeft')  { e.preventDefault(); navDoc(-1); }
     if ((e.altKey || e.metaKey) && e.key === 'ArrowRight') { e.preventDefault(); navDoc(1); }
   });
+  if (window.CG) CG.init();  // 调用图浏览器(未启用专题无 CG,自动跳过)
   loadFromHash();
 }
 
@@ -1441,8 +3840,9 @@ init();
 """
 
 
-def build_html(docs, site_title: str, vendor: dict, vendor_dir: Path) -> str:
-    """组装最终 HTML。"""
+def build_html(docs, site_title: str, vendor: dict, vendor_dir: Path,
+               cg: dict | None = None) -> str:
+    """组装最终 HTML。cg 为调用图资源(css/button/data/js),未启用时为 None。"""
     sidebar_html = build_sidebar(docs, site_title)
     scripts_html = build_scripts_block(docs)
     docs_meta_json = build_docs_meta_json(docs)
@@ -1455,6 +3855,10 @@ def build_html(docs, site_title: str, vendor: dict, vendor_dir: Path) -> str:
     out = out.replace("{{DOCS_META}}", docs_meta_json)
     out = out.replace("{{ASSET_CSS}}", css_block)
     out = out.replace("{{ASSET_JS}}", js_block)
+    out = out.replace("{{CG_CSS}}", cg["css"] if cg else "")
+    out = out.replace("{{CG_BUTTON}}", cg["button"] if cg else "")
+    out = out.replace("{{CG_DATA}}", cg["data"] if cg else "")
+    out = out.replace("{{CG_JS}}", cg["js"] if cg else "")
     return out
 
 
@@ -1486,6 +3890,10 @@ def main():
                     help="只校验(死链/缺图/坏 mermaid/源码引用问题),不写 HTML。有 error 退出码非 0。")
     ap.add_argument("--json", action="store_true",
                     help="输出机器可读 JSON(每篇渲染统计 + 问题列表),供 agent 解析。")
+    ap.add_argument("--callgraph", dest="cg", action="store_true", default=None,
+                    help="强制启用调用图浏览器(默认:专题目录存在 callgraph_overrides.json 时启用)")
+    ap.add_argument("--no-callgraph", dest="cg", action="store_false",
+                    help="禁用调用图浏览器")
     args = ap.parse_args()
 
     src_dir = Path(args.src_dir).resolve()
@@ -1494,7 +3902,7 @@ def main():
         sys.exit(1)
 
     # 加载文档(同时校验、收集统计、处理源码引用)
-    docs, problems, stats = load_documents(src_dir)
+    docs, problems, stats, collected = load_documents(src_dir)
     if not docs:
         print(f"错误:未在 {src_dir} 找到 README.md 或 {DOC_GLOB}", file=sys.stderr)
         sys.exit(1)
@@ -1560,9 +3968,30 @@ def main():
     inline_n = sum(1 for v in vendor.values() if v[0] == "inline")
     print(f"  内嵌 {inline_n} / {len(vendor)} 个库", file=sys.stderr)
 
+    # 调用图(opt-in:专题目录存在 callgraph_overrides.json,或 --callgraph 强制)
+    cg = None
+    cg_enabled = args.cg if args.cg is not None else (src_dir / "callgraph_overrides.json").is_file()
+    if cg_enabled:
+        cfg = load_callgraph_config(src_dir) or default_callgraph_config(src_dir)
+        graph, defined_n, filled_n = build_call_graph(src_dir, collected, cfg)
+        cg_json = json.dumps(graph, ensure_ascii=False, separators=(",", ":")).replace("</", "<\\/")
+        print(f"\n调用图:{len(graph)} 函数(笔记内定义 {defined_n},源码回填 {filled_n}),"
+              f"JSON {len(cg_json.encode('utf-8')) / 1024:.0f} KB", file=sys.stderr)
+        cg_conf = {"sourceMark": cfg.get("source_mark") or "",
+                   "excludePrefixes": list(cfg.get("exclude_prefixes") or [])}
+        cg = {
+            "css": f"<style>\n{CG_CSS}\n</style>",
+            "button": ('<button class="cg-topbar-btn" onclick="CG.openDrawer()" '
+                       'title="打开调用图浏览器(搜索函数、查看调用/被调用关系)">调用图</button>'),
+            "data": f'<script id="cg-data" type="application/json">{cg_json}</script>',
+            "js": ('<script>window.__CG_CONFIG__ = '
+                   + json.dumps(cg_conf, ensure_ascii=False) + ';</script>\n'
+                   + f"<script>\n{CALLLGRAPH_JS}\n</script>"),
+        }
+
     # 构建
     print(f"\n构建 HTML ...", file=sys.stderr)
-    html_content = build_html(docs, site_title, vendor, vendor_dir)
+    html_content = build_html(docs, site_title, vendor, vendor_dir, cg)
 
     # 写入
     output_file.write_text(html_content, encoding="utf-8")
