@@ -210,7 +210,7 @@ IO3  --xxxx----....-----------------xxxx----1010----1010----...
 | dummy 周期 | Quad IO 读所需 | 6 拍（104 MHz）/ 8 拍（133 MHz） |
 | $t_{\text{SHSL2}}$ | 两次访问 CS 高电平 | 50 ns |
 
-dummy 周期随频率升高而增多——这是 [1.3 节](#13-四阶段事务命令--地址--dummy--数据) "Flash 内部取数延迟" 的直接体现：频率越高，Flash 阵列访问时间相对周期数越多，需要的空转拍数越多。
+dummy 周期随频率升高而增多——这是 [1.3 节](#13-四阶段事务命令-地址-dummy-数据) "Flash 内部取数延迟" 的直接体现：频率越高，Flash 阵列访问时间相对周期数越多，需要的空转拍数越多。
 
 ### 2.3 Octal / OSPI 时序
 
@@ -939,7 +939,7 @@ Profile 1.0 的意义是 "Octal Flash 命令集标准化"——不同厂商的 O
 
 8-8-8 DTR 是当前 SPI NOR 性能顶点。如 [2.4 节](#24-dtr-双沿采样带宽再翻倍) 所述，DTR 需要 DQS 对齐采样。Octal DTR Flash（如 MX25UM）通常在数据阶段输出 DQS，控制器用 DQS 训练采样点。
 
-`spi-nor` 用 `SNOR_PROTO_8_8_8_DTR`（spi-nor.h:L244）标识此模式，`spi_nor_read` 在此模式下走 `spi_nor_octal_dtr_read`（core.c:L2105）专用路径——因为 DTR 的命令字节需重复（opcode 高低字节相同，见 [4.3 节](#43-supports_op能力协商) Cadence 检查），dummy 按周期而非字节计。
+`spi-nor` 用 `SNOR_PROTO_8_8_8_DTR`（spi-nor.h:L244）标识此模式，`spi_nor_read` 在此模式下走 `spi_nor_octal_dtr_read`（core.c:L2105）专用路径——因为 DTR 的命令字节需重复（opcode 高低字节相同，见 [4.3 节](#43-supportsop能力协商) Cadence 检查），dummy 按周期而非字节计。
 
 ### 8.4 HyperBus 对照
 

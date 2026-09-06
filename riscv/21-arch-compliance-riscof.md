@@ -87,7 +87,7 @@ riscv-tests 是自检查套件:每个测试自带 pass/fail 判定,经 tohost �
 ```c src="./src/riscv-tests/isa/macros/scalar/test_macros.h" lines="172-177" anchor="test_rr_op"
 ```
 
-`TEST_RR_OP` 展开成 `TEST_CASE`:先 `li TESTNUM, testnum` 记下测试号,执行指令,`bne` 比对——不匹配就跳到 `fail` 标签。`TESTNUM` 就是 `gp` 寄存器,失败时它指明死在第几号用例。整个测试文件以 [`TEST_PASSFAIL`](#src-test_passfail) 收尾,它根据 `TESTNUM` 是否为 0 跳到 fail 或 pass:
+`TEST_RR_OP` 展开成 `TEST_CASE`:先 `li TESTNUM, testnum` 记下测试号,执行指令,`bne` 比对——不匹配就跳到 `fail` 标签。`TESTNUM` 就是 `gp` 寄存器,失败时它指明死在第几号用例。整个测试文件以 [`TEST_PASSFAIL`](#test_passfail) 收尾,它根据 `TESTNUM` 是否为 0 跳到 fail 或 pass:
 
 ```c src="./src/riscv-tests/isa/macros/scalar/test_macros.h" lines="882-887" anchor="test_passfail"
 ```
@@ -106,7 +106,7 @@ pass/fail 最终由 `env/p/riscv_test.h` 的宏落地。这两个宏没有用任
 ```c src="./src/riscv-tests/env/p/riscv_test.h" lines="262-293" anchor="passfail_sig"
 ```
 
-`RVTEST_PASS` 把 `TESTNUM` 置 1 后 `ecall`;`RVTEST_FAIL` 把测试号左移一位再置最低位(`(n<<1)|1`)后 `ecall`。ecall 进入 trap 向量,由 [`trap_vector`](#src-trap_vector) 识别 `mcause` 为 ecall 后跳 `write_tohost`,把 `TESTNUM` 写进 `tohost` 变量:
+`RVTEST_PASS` 把 `TESTNUM` 置 1 后 `ecall`;`RVTEST_FAIL` 把测试号左移一位再置最低位(`(n<<1)|1`)后 `ecall`。ecall 进入 trap 向量,由 [`trap_vector`](#trap_vector) 识别 `mcause` 为 ecall 后跳 `write_tohost`,把 `TESTNUM` 写进 `tohost` 变量:
 
 ```c src="./src/riscv-tests/env/p/riscv_test.h" lines="183-218" anchor="trap_vector"
 ```
@@ -121,7 +121,7 @@ pass/fail 最终由 `env/p/riscv_test.h` 的宏落地。这两个宏没有用任
 - 未经处理的异常(走到了 `other_exception`)会把 `TESTNUM` OR 上 1337 再写,同样表现为失败;
 - 永远不变:挂死,由超时机制兜底(见 2.5)。
 
-数据段的 [`RVTEST_DATA_BEGIN`](#src-passfail_sig) 还定义了 `begin_signature`/`end_signature` 标签。签名区(signature)是测试执行过程中有意留下的"结果痕迹"。
+数据段的 [`RVTEST_DATA_BEGIN`](#passfail_sig) 还定义了 `begin_signature`/`end_signature` 标签。签名区(signature)是测试执行过程中有意留下的"结果痕迹"。
 
 riscv-tests 的自检查测试大多不写签名区;签名区服务于 golden-model 比对流程——同一测试在 DUT 与 Spike/Sail 上各跑一遍,dump 出 `begin_signature..end_signature` 之间的内存逐字比对。RISCOF 的整个判定体系就建立在这上面(见 §3)。
 

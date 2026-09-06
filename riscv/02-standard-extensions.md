@@ -1108,7 +1108,7 @@ cbo.zero   (a0)     # 将缓存行清零（用于内存分配优化）
 
 ### 8.2 Zicntr / Zihpm：性能计数器
 
-> 详细内容见 [第 7 章 PMU](#7-pmu性能监控单元)。Zicntr 提供 cycle/time/instret 基本计数器，Zihpm 提供 29 个可编程事件计数器。RVA22 强制要求两者。
+> 详细内容见 [第 7 章 PMU](#7-pmu性能监控单元performance-monitoring-unit)。Zicntr 提供 cycle/time/instret 基本计数器，Zihpm 提供 29 个可编程事件计数器。RVA22 强制要求两者。
 
 ### 8.3 Zicsr：CSR 指令（Control and Status Register）
 
