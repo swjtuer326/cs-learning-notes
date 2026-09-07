@@ -103,7 +103,7 @@ power_domain 的状态枚举(`mod_power_domain.h`):标准三态 `OFF`/`ON`/`SLEE
 ```c src="./src/SCP-firmware/product/morello/scp_ramfw_fvp/config_dvfs.c" lines="22-61" anchor="dvfs-domain"
 ```
 
-一个 DVFS 域把三样东西绑在一起:`psu_id`(电压轨,查电源轨表)、`clock_id`(时钟源链)、一份 **opps 表**(level → 频率/功耗)。请求链路:
+一个 DVFS 域把三样东西绑在一起:`psu_id`(电压轨,查电源轨表)、`clock_id`(时钟源链)、一份 **opps 表**(每档四项:level/频率/电压/功耗)。请求链路:
 
 ```text
 SCMI PERFORMANCE_LEVEL_SET(level)
@@ -118,6 +118,8 @@ psu 之下还有一层,上图没画:真板上 psu 元素绑的是 PMIC 驱动—
 为什么协议层只传 level、不传频率?因为**level 的物理含义可由实现决定**,同一档 level 在不同芯片上的频率/电压可以各不相同;把 level 作为协议契约留在 SCMI 里、把频率/电压表留在 SCP 固件里,OS 才能"一套代码跑多种芯片"。抽象有代价:映射对 OS 不透明。Morello 选择把 level 直接配成 Hz——档位就是频率,OS 看得见真实值,代价是"加一档必须知道具体频率"。
 
 时钟侧:每个 clock 元素是一条"时钟源链"(父时钟 + 分频/倍频),`config_clock.c` 里 CPU_GROUP0/1 绑 `css-clock`(PLL 类),Interconnect 绑 `pik-clock`。DVFS 切档时先调时钟再调电压(或反之按硬件约束),顺序敏感,所以 DVFS 模块把整套操作做成**原子事务**——这也是一次典型的"慢操作"走 `FWK_PENDING`。
+
+opps 表里的 **power 字段**(毫瓦)不是摆设:`scmi-perf` 的 PERFORMANCE_DESCRIBE_LEVELS(协议 0x13、消息 0x4)回给 AP 的每一档都带 `power_cost`,取值就是 `opp.power`,`power` 为 0 才退回用电压充数(`scmi_perf_protocol_ops.c:498`)。Morello 的配方是经验公式 `(250 + 1.645 × 频率MHz) × (V/1000)²`——静态功耗 250 mW 加上与频率、电压平方成正比的动态功耗,五档算出来约 1806/2126/2633/3214/3873 mW。谁在消费它:OS 的功耗感知调度(如 EAS)靠 DESCRIBE_LEVELS 拿到每档功耗来建模,SCP 这边只是如实上报,不拿它做任何本地决策。要注意单位是"抽象刻度"也合法——规范(DEN0056F §3.5.2)只要求线性,多数平台根本不给真值,`power` 留 0、DESCRIBE_LEVELS 拿电压顶上,OS 也只能当相对值用。
 
 ## 7. 参考平台没做满的部分
 
