@@ -3234,8 +3234,8 @@ body {
 .content img.md-img { max-width: 100%; height: auto; border-radius: 8px; box-shadow: var(--shadow); margin: .8em 0; }
 .content hr { border: none; border-top: 1px solid var(--border-soft); margin: 2em 0; }
 .content table {
-  border-collapse: collapse; width: 100%; margin: 1em 0;
-  font-size: 13.5px; display: block; overflow-x: auto;
+  border-collapse: collapse; width: fit-content; max-width: 100%;
+  margin: 1em auto; font-size: 13.5px; display: block; overflow-x: auto;
 }
 .content table th, .content table td {
   border: 1px solid var(--border); padding: 6px 12px; text-align: left;
@@ -3510,13 +3510,17 @@ function renderMermaid(root) {
       theme: 'neutral',
       securityLevel: 'loose',
       fontFamily: 'inherit',
-      flowchart: { useMaxWidth: true, htmlLabels: true, curve: 'basis' },
+      flowchart: { useMaxWidth: true, htmlLabels: true, curve: 'linear', nodeSpacing: 45, rankSpacing: 55 },
       sequence: { useMaxWidth: true, actorMargin: 50, boxMargin: 10 },
       themeVariables: {
-        fontSize: '14px',
-        primaryColor: '#ddf4ff', primaryBorderColor: '#0969da',
-        primaryTextColor: '#1f2328', lineColor: '#656d76',
-        secondaryColor: '#f6f8fa', tertiaryColor: '#ffffff'
+        fontSize: '15px',
+        primaryColor: '#eef7ff', primaryBorderColor: '#0e7490',
+        primaryTextColor: '#1e293b', lineColor: '#64748b',
+        secondaryColor: '#f6f8fa', secondaryBorderColor: '#94a3b8',
+        tertiaryColor: '#ffffff',
+        edgeLabelBackground: '#ffffff',
+        clusterBkg: '#f8fafc', clusterBorder: '#cbd5e1',
+        titleColor: '#334155'
       }
     });
   } catch (e) {}
