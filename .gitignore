@@ -47,3 +47,6 @@ riscv/src/*
 # scp-mcp 本地源码克隆(SCP-firmware,gitlab.arm.com HTTPS,不入库)
 scp-mcp/src/
 .gstack/
+
+# Kimi K3 专题旧产物(工具生成,归档不删)
+kimi-k3-inference/_old/
