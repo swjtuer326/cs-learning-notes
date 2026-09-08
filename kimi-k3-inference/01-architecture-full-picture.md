@@ -47,7 +47,7 @@ K3 的全部尺寸与形态由报告表 1 一张表给定,是后续 02-10 篇反
 
 ## 2. 三路信息流主线
 
-报告 §2 开篇概括:K3 沿 sequence length、network depth、model width 三条互补维度扩展信息流(报告 §2)。这三根轴不是并列的模块清单,而是三条问题链,每条链都对应一个必须解决的规模难题与一个部署后果:
+报告 §2 把 K3 的信息流沿 sequence length、network depth、model width 三条轴展开(报告 §2)。三根轴对应三个机制,各用一个特定运算形状解决一条规模问题,也各带一个部署后果:
 
 | 轴 | 机制 | 部署后果 | 后续篇 |
 | --- | --- | --- | --- |
@@ -55,36 +55,34 @@ K3 的全部尺寸与形态由报告表 1 一张表给定,是后续 02-10 篇反
 | depth | Attention Residuals(AttnRes) | 跨层取回使层间依赖变宽,影响激活存留与 kernel | 04、09 |
 | width | Stable LatentMoE | 896 专家极端稀疏,要求专家并行与 all-to-all 通信 | 03、06、07 |
 
-### 2.1 sequence 轴:两种 KV 形态并存
+### 2.1 sequence 轴:KDA 固定状态 + MLA 逐 token 压缩 KV
 
-1M 上下文下,标准 softmax 注意力的 KV cache 随序列增长、逐 token 全量点积都不可承受;K3 用 KDA 与 Gated MLA 两种注意力并存来解,代价是部署端要同时管理两套性质完全不同的缓存。
+sequence 轴要解的是 softmax 注意力把每 token 的 key/value 都存下来、KV cache 随序列线性增长,1M 上下文不可承受。K3 用两种注意力并存来解,代价是部署端要同时维护两套性质不同的缓存。
 
-- **KDA 固定大小状态**。KDA 取代 softmax 注意力"随序列增长的 key–value cache"(报告 §5.1),把每个 token 的信息写进固定大小的循环状态 $S \in \mathbb{R}^{d_k \times d_v}$(报告 §2.1.1);状态不随序列增长、每请求只存一份(报告 §5.1、§5.4.1)。
-- **Gated MLA 逐 token 压缩 KV**。MLA 把每个 token 的 key/value 压进低维 latent 向量再缓存,缓存随序列增长但被压缩,同时保留全局 token-to-token 注意力(报告 §2.1.2)。每 block 只放 1 层 MLA,保证全局精确回溯。
+- **KDA 把历史写进固定大小的状态**。每头一份 $S \in \mathbb{R}^{d_k \times d_v}$;输入 $x_t \in \mathbb{R}^{7168}$ 经投影得 $q_t, k_t \in \mathbb{R}^{d_k}$、$v_t \in \mathbb{R}^{d_v}$。每 token 的写入是通道衰减 + 外积 $k_t v_t^\top$(对固定矩阵加一个秩 1 项),读出是 $S^\top q_t$(一个 $d_v$ 维向量)。状态不随序列增长、每请求只存一份(报告 §5.1、§5.4.1)。
+- **MLA 把每 token 压成低维 latent 再缓存**。缓存 $c_t$ 一个向量而非每头 key + value,注意力仍是标准 softmax 注意力族:$QK^\top \to \operatorname{softmax} \to V$。缓存随序列增长但被压缩,同时保留全局 token-to-token 交互(报告 §2.1.2)。每 block 只放 1 层 MLA,保证全局精确回溯。
 
-两种 KV 形态并存直接决定三条部署结论:
+两套缓存落到部署端三条结论:
 
-1. **KV Cache 显存**。KDA 层缓存近似 O(1) 不随序列涨,MLA 层缓存随序列涨但被 latent 压缩——1M 上下文下显存大头集中在 24 个 MLA 层,05 篇据此展开账本。
-2. **前缀缓存**。前缀复用必须把 KDA 状态与 MLA KV 同时恢复到同一边界才有效,报告 §5.4.1 因此设计统一的 paged 布局,把固定大小的 KDA 状态与逐 token 的 MLA KV 装进同一分页池(报告 §5.4.1)。
-3. **prefill/decode 分离**。prefill 与 decode 节点采用不同 TP 度时,两种 cache 在传输路径上要各自重排,零 GPU 侧 shuffle(报告 §5.4.1)。
+1. **KV Cache 显存**。KDA 层缓存近似 O(1) 不随序列涨,MLA 层随序列涨但被 latent 压缩——1M 上下文下显存大头集中在 24 个 MLA 层,05 篇据此展开账本。
+2. **前缀缓存**。复用前缀必须把 KDA 状态与 MLA KV 同时恢复到同一边界才有效;统一分页池把固定大小的 KDA 状态与逐 token 的 MLA KV 装进同一池(报告 §5.4.1)。
+3. **prefill/decode 分离**。prefill 与 decode 节点采用不同 TP 度时,两种 cache 在传输路径上各自重排,零 GPU 侧 shuffle(报告 §5.4.1)。
 
 ### 2.2 depth 轴:跨层取回与激活存留
 
-层一深,标准残差把所有前序信息压进单一状态、逐层衰减,成为"深度上的 RNN 瓶颈";AttnRes 让每层用可学习 pseudo-query 选择性检索 embedding 与前序 block 表示(报告 §2.2)。这换来 K3 能训到 93 层,代价是跨层表示要常驻显存、推理时要专门 kernel 合并。
+层一深,标准残差把所有前序信息压进单一状态、逐层衰减;AttnRes 让每层用可学习 pseudo-query 选择性检索 embedding 与前序 block 表示,换取 93 层可训(报告 §2.2)。代价是跨层表示要常驻显存、推理时要专门 kernel 合并。
 
-- **机制**:每个注意力层的输出都作为一个 key/value 候选,层用 pseudo-query 对 embedding 与前序层输出做 attention,按数据相关权重取回(报告 §2.2)。
+- **取回运算**:每个注意力层的输出都作为一个 key/value 候选,pseudo-query 对 embedding 与前序层输出做 attention,按数据相关权重取回(报告 §2.2)。
 - **Block 形式**:93 层切成 8 个约 12 层的 block,块内先求和、块间做 attention,内存与通信开销从 O(Ld) 降到 O(Nd)(报告 §2.2)。
-- **激活存留**:块表示在边界层算一次、被后续层共享并常驻 GPU,AttnRes 计算整体被 checkpointing 包裹(报告 §5.2.2)。层间依赖从"只依赖上一层"变成"依赖前面所有块",激活存留范围变宽。
-- **kernel 设计**:decode 时 inter-block kernel 放 side stream 与主 stream 计算重叠,online softmax 合并进 TP all-reduce(报告 §5.4.2)。这块是 09 篇的落点。
+- **kernel**:块表示在边界层算一次、被后续层共享并常驻 GPU,AttnRes 计算整体被 checkpointing 包裹(报告 §5.2.2);decode 时 inter-block kernel 放 side stream 与主 stream 计算重叠,online softmax 合并进 TP all-reduce(报告 §5.4.2)。落点在 09 篇。
 
 ### 2.3 width 轴:896 专家的极端稀疏
 
-宽度维把 channel 混合扩到 896 个路由专家、每 token 激活 16 个(稀疏度 56):权重总盘子 2.78T,单 token 只读 104.2B。极端稀疏换来容量,代价是专家并行、all-to-all 通信、负载均衡三件事同时成为必须解决的部署问题。
+width 轴把 channel 混合扩到 896 个路由专家、每 token 激活 16 个(稀疏度 56):2.78T 权重、单 token 只读 104.2B(约 3.7%)。极端稀疏换来容量,代价是专家并行、all-to-all 通信、负载均衡三件事同时必须解决。
 
-- **机制**:Stable LatentMoE 用 2 个共享专家走全宽处理常见变换,896 个路由专家工作在 3584 维 latent 空间,每 token 激活其中 16 个(报告 §2.3)。
-- **权重与激活的解耦**:2.78T 权重大部分存放在 896 专家的 FFN 里,单 token 只激活约 3.7%(104.2B / 2.78T,按表 1 推算)。总参数大 → 参数显存与量化是 08 篇账本的大头;单 token 计算小 → 推理吞吐更多受通信与带宽约束而非纯 FLOPs。
-- **专家并行与 all-to-all**:896 专家分布到多卡后,每个 token 被选中的 16 个专家落在不同卡上,每层前向要把该 token 的 latent 表示派发(dispatch)到专家所在卡、算完再把 16 份输出合并(combine)回原卡,两段都是 all-to-all。报告 §5.2.1 用 MoonEP 实现完美负载均衡、静态计算形状与零拷贝通信(报告 §5.2.1)。这是 06/07 篇。
-- **负载均衡**:近 10³ 专家超出既有无辅助损失方法的均衡能力,Quantile Balancing 在路由得分上加一个专家特定偏置 $b_j$ 再取 Top-k,并把该偏置调到每专家目标负载 $q = mk/n$ 对应的得分分位数上,使专家选中分布趋于均匀;偏置只影响 Top-k 选择、不进入混合权重(报告 §2.3.3)。机制细节在 03 篇,均衡的并行侧在 06/07 篇。
+- **形状链**。$x[L,7168] \to W_\downarrow[3584,7168] \to z[L,3584] \to$ 16 个路由专家 $\to$ RMSNorm $+ W_\uparrow[7168,3584] \to$ out$[L,7168]$;2 个共享专家走全宽 7168 直接处理、每 token 恒激活(报告 §2.3)。完整数据流在 §4。
+- **派发与合并**。被选中的 16 个专家落在不同卡上,每层前向把该 token 的 latent 表示派发(dispatch)到专家所在卡、算完把 16 份输出合并(combine)回原卡,传输单元是每 token 3584 维,两段都是 all-to-all。报告 §5.2.1 用 MoonEP 实现完美负载均衡、静态计算形状与零拷贝通信,这是 06/07 篇。
+- **负载均衡**。Quantile Balancing 在路由得分上加专家特定偏置 $b_j$ 再取 Top-k,偏置调到每专家目标负载 $q = mk/n$ 对应的分位数上;偏置只影响 Top-k 选择、不进混合权重(报告 §2.3.3)。机制在 03 篇,并行侧在 06/07 篇。
 
 ## 3. block 结构:三路信息流落成一个 block
 

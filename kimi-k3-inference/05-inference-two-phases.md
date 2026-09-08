@@ -46,9 +46,17 @@ flowchart LR
     SPEC --> OUT["产出 token"]
 ```
 
+同一层前向在 prefill 与 decode 下的张量形状差异,是理解访存与 kernel 划分的关键:prefill 沿 `[L,·]` 批量推进,decode 沿 `[1,·]` 逐个 token 走。注意力与 MoE 各步的形状变化见下图。
+
+![一层前向的 shape 变化:prefill(L) 与 decode(1) 各步张量形状(源:报告表 1、§2.1/§2.3 整理)](./images/k3-shape-flow.png)
+
 ## 2. 两套 KV 落地:统一分页池
 
 02 §4 给出两条部署结论:KDA 状态固定、每请求一份,MLA KV 逐 token 增长但被 latent 压缩。推理路径上这两套 cache 不能各建一个管理器——大小、生命周期、复用粒度都不同,却要在同一边界一起恢复。K3 的做法是把 KDA 状态装进与 MLA KV 同一个分页池,统一下游的分配、引用计数与驱逐逻辑(报告 §5.4.1)。
+
+两套缓存沿请求生命周期的写、读、复用与回滚点,见下图:
+
+![K3 推理中两套 KV 的写/读/复用生命周期:prefill 写入、前缀命中边界复用、decode 读取与追加、投机回滚时 KDA 用投影输入回放重建(源:报告 §5.1、§5.4.1 整理)](./images/k3-kv-lifecycle.png)
 
 两种 cache 的形态差异,决定统一池要解决什么:
 
