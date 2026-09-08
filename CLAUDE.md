@@ -6,11 +6,11 @@
 
 > 既有笔记中以散文形式引用的 `CLAUDE.md §1.8` / `§1.8.3`(三层背景、跨实现/跨架构对比)现对应 **A 类(工程/系统/源码类)补强**中的"概述建立上下文"。
 
-## 写作流水线(按阶段分流 subagent)
+## 写作流水线
 
-新专题/审核走 `.claude/commands/` 与 `.claude/agents/` 预置的流水线,不用每次手写流程:
+新专题/审核走 `.claude/commands/` 与 `.claude/agents/` 里预置的流水线,不用每次手写流程:
 
-- `/new-note <专题名>` 新建专题:`note-planner`(规划,opus)→ `figure-reader`(视觉读图,glm-5.3-flash)→ `note-writer`(撰写,固定 DeepSeek-V4-Pro)→ `diagram-builder`(抽论文原图 + 补图,固定 glm-5.3-flash)→ `note-reviewer`(文字/事实审核+构建,opus)→ `diagram-reviewer`(配图核对,glm-5.3-flash)。
+- `/new-note <专题名>` 新建专题:`note-planner`(规划,opus)→ `figure-reader`(视觉读图,glm-5.3-flash)→ `note-writer`(撰写,DeepSeek-V4-Pro)→ `diagram-builder`(抽论文原图 + 补图,glm-5.3-flash)→ `note-reviewer`(文字/事实审核+构建,opus)→ `diagram-reviewer`(配图核对,glm-5.3-flash)。
 - `/review-note <路径>` 审核已有笔记。
 
-各阶段混用不同模型 subagent 完成重活,主线程保持轻量;入口命令每阶段向用户简报、可介入。agent/命令细节见各文件自带说明。
+各阶段用不同模型的 subagent 分担;入口命令每阶段向用户简报、可随时介入。细节见各 agent/命令文件。
