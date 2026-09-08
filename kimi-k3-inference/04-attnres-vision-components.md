@@ -156,7 +156,7 @@ MTP 是预训练阶段挂的 1 层多 token 预测头(表 1:Number of MTP Layers
 
 draft 输入融合目标模型的低/中/高层特征,取自第 1、第 4 与最后一个 AttnRes block 的输出,拼接后经 bias-free 矩阵 $W_{E3}$ 投影,初值 $[0\ 0\ I]$ 保证初始时退化为只依赖高层特征(报告 §4.1.4)。
 
-MTP 层复用 AttnRes block 表示作为特征源,是块表示在部署端的另一处用途;投机解码的机制与 draft/target 配合细节在 05/09 篇展开。
+MTP 层复用 AttnRes block 表示作为特征源,是块表示在部署端的另一处用途。投机解码的机制是:draft 模型先一次猜多个 token、目标模型再一次性验证,接受则跳过重复的逐 token 计算、拒绝则回退到最后一个接受 token;K3 的 draft/target 配合细节在 05/09 篇展开。
 
 ## 6. 小结
 
